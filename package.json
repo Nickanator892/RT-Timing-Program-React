@@ -1,0 +1,48 @@
+{
+    "name": "rt-timing-program",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "main": "electron/main.js",
+    "scripts": {
+        "start": "concurrently \"npm run server\" \"npm run client\"",
+        "server": "ts-node src/backend/server.ts",
+        "client": "react-scripts start",
+        "dev": "vite",
+        "electron": "electron .",
+        "electron:dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+        "build": "vite build",
+        "electron:build": "npm run build && electron ."
+    },
+    "dependencies": {
+        "cors": "^2.8.6",
+        "dotenv": "^17.2.3",
+        "express": "^5.2.1",
+        "nanotimer": "^0.3.15",
+        "performance": "^1.4.0",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+        "sqlite": "^5.1.1",
+        "sqlite3": "^5.1.7"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.1",
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/nanotimer": "^0.3.2",
+        "@types/node": "^24.10.1",
+        "@types/react": "^19.2.5",
+        "@types/react-dom": "^19.2.3",
+        "@vitejs/plugin-react": "^5.1.1",
+        "concurrently": "^9.2.1",
+        "cross-env": "^10.1.0",
+        "electron": "^40.0.0",
+        "eslint": "^9.39.1",
+        "eslint-plugin-react-hooks": "^7.0.1",
+        "eslint-plugin-react-refresh": "^0.4.24",
+        "globals": "^16.5.0",
+        "typescript": "~5.9.3",
+        "typescript-eslint": "^8.46.4",
+        "vite": "^7.2.4"
+    }
+}
