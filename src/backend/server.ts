@@ -100,7 +100,6 @@ class SQLController {
 // Routes
 // --------------------
 
-// 🔍 CHECK DB STATUS
 app.get("/api/db-status", async (_req, res) => {
     if (!dbPath) {
         return res.json({
@@ -121,7 +120,6 @@ app.get("/api/db-status", async (_req, res) => {
     }
 });
 
-// 💾 SET DB PATH
 app.post("/api/set-db-path", async (req, res) => {
     const incomingPath = req.body?.path;
 
@@ -151,7 +149,6 @@ app.post("/api/set-db-path", async (req, res) => {
     }
 });
 
-// 🧠 EXECUTE QUERY
 app.post("/api/query", async (req, res) => {
     if (!dbPath) {
         return res.status(400).json({
@@ -172,10 +169,12 @@ app.post("/api/query", async (req, res) => {
     const sql = new SQLController(dbPath);
 
     try {
+        console.log(req);
         const result = await sql.exec(query, params);
         res.json({ success: true, result });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.log(err);
         res.status(500).json({ success: false, error: message });
     }
 });

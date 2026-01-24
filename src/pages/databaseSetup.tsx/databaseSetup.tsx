@@ -27,7 +27,6 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
                 setDbSet(true);
                 setError("");
 
-                // ✅ Store path for renderer-side use
                 localStorage.setItem("dbPath", path);
 
                 if (onDbSet) onDbSet();
@@ -35,7 +34,12 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
                 setError(data.error || "Unknown server error");
             }
         } catch (err: any) {
-            setError(err.message);
+            if (err.message === "Failed to fetch") {
+                setError("Server not running");
+                return;
+            } else {
+                setError(err.message);
+            }
         }
     };
 

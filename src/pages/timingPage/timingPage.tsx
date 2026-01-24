@@ -11,6 +11,7 @@ function TimingPage() {
     const intervalRef = useRef<number | null>(null);
     const startRef = useRef<number | null>(null);
     const elapsedRef = useRef(0);
+    const [dbSuccess, setDbSuccess] = useState("Submit");
 
     function startTimer() {
         if (intervalRef.current) return;
@@ -36,6 +37,7 @@ function TimingPage() {
             );
         }, 100);
         setErr("");
+        setDbSuccess("Submit");
     }
 
     function pauseTimer() {
@@ -54,19 +56,29 @@ function TimingPage() {
         pauseTimer();
     }
 
-    function submitTime() {
+    async function submitTime() {
+        setDbSuccess("TimerStopCheck");
         if (isTimerRunning()) {
             setErr("Timer is still running");
+            setDbSuccess("Submit");
             return;
         }
+        setDbSuccess("TimerRunCheck");
         if (displayTimer === "00:00:00") {
-            setErr("Timer not running");
+            setErr("Timer is 00:00:00");
+            setDbSuccess("Submit");
             return;
         } else {
-            const result = runQuery("SELECT * FROM users");
+            setDbSuccess("Fetching");
+            const result = await execQuery("SELECT * FROM users", []);
+            if (!result) {
+                return;
+            }
             console.log(result);
             elapsedRef.current = 0;
             setDisplayTimer("00:00:00");
+            setDbSuccess("Success✅");
+            setErr("");
         }
     }
 
@@ -83,17 +95,27 @@ function TimingPage() {
         if (button === "submit") submitTime();
     };
 
-    const runQuery = async (query: string) => {
-        const response = await fetch("http://localhost:5000/api/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                query: query,
-                params: [1],
-            }),
-        });
-        const data = await response.json();
-        console.log(data);
+    const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<unknown> => {
+        try {
+            const response = await fetch("http://localhost:5000/api/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: requestedQuery, params }),
+            });
+            console.log(`RESPONSE: ${response}`);
+            const data = await response.json();
+
+            if (data.success === false) {
+                setErr("Database Query Fail");
+                setDbSuccess("Error❌");
+                return;
+            }
+            const formattedData = JSON.stringify(data.result);
+            return formattedData;
+        } catch (err: any) {
+            setErr("Server Not Running");
+            setDbSuccess("Error❌");
+        }
     };
 
     return (
@@ -130,7 +152,7 @@ function TimingPage() {
                     className={activeButton === "end" ? "pressed" : ""}
                     onClick={() => handleButtonClick("submit")}
                 >
-                    Submit
+                    {dbSuccess}
                 </button>
             </div>
 
