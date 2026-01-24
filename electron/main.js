@@ -15,6 +15,7 @@ function createWindow() {
         },
         resizable: false,
         maximizable: false,
+        center: true,
     });
 
     // Dev vs Prod

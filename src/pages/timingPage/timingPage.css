@@ -86,29 +86,74 @@ hr {
     width: 350px;
 }
 
+@keyframes startButtonAnimation {
+    0% {
+        background-color: green;
+    }
+    50% {
+        background-color: rgb(14, 36, 14);
+    }
+    100% {
+        background-color: green;
+    }
+}
+
+@keyframes stopButtonAnimation {
+    0% {
+        background-color: red;
+    }
+    50% {
+        background-color: rgb(53, 16, 16);
+    }
+    100% {
+        background-color: red;
+    }
+}
+
+@keyframes pauseButtonAnimation {
+    0% {
+        background-color: yellow;
+    }
+    50% {
+        background-color: rgb(49, 49, 17);
+    }
+    100% {
+        background-color: yellow;
+    }
+}
+
 #start-button.pressed {
     background-color: green;
+    animation-name: startButtonAnimation;
+    animation-duration: 2s;
+    animation-iteration-count: infinite;
 }
 
 #pause-button.pressed {
     background-color: yellow;
+    animation-name: pauseButtonAnimation;
+    animation-duration: 2s;
+    animation-iteration-count: infinite;
     color: black;
 }
 
 #end-button.pressed {
     background-color: red;
+    animation-name: stopButtonAnimation;
+    animation-duration: 2s;
+    animation-iteration-count: infinite;
 }
 
 #start-button.pressed ~ #colour-indicator {
-    border: 3px solid green;
+    border: 1px solid green;
 }
 
 #pause-button.pressed ~ #colour-indicator {
-    border: 3px solid yellow;
+    border: 1px solid yellow;
 }
 
 #end-button.pressed ~ #colour-indicator {
-    border: 3px solid red;
+    border: 1px solid red;
 }
 
 #start-button.pressed ~ #submit-time-button {
@@ -123,7 +168,6 @@ hr {
 
 #error-message {
     color: red;
-    animation: ease-in-out 0.5s;
 }
 
 #RT-logo {
