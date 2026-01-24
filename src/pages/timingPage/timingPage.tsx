@@ -1,5 +1,5 @@
-import { useState, useRef } from "react";
 import "./timingPage.css";
+import { useState, useRef } from "react";
 
 function TimingPage() {
     const [displayTimer, setDisplayTimer] = useState("00:00:00");
@@ -57,19 +57,19 @@ function TimingPage() {
     }
 
     async function submitTime() {
-        setDbSuccess("TimerStopCheck");
+        setDbSuccess("TimerStopCheck...");
         if (isTimerRunning()) {
             setErr("Timer is still running");
             setDbSuccess("Submit");
             return;
         }
-        setDbSuccess("TimerRunCheck");
+        setDbSuccess("TimerRunCheck...");
         if (displayTimer === "00:00:00") {
             setErr("Timer is 00:00:00");
             setDbSuccess("Submit");
             return;
         } else {
-            setDbSuccess("Fetching");
+            setDbSuccess("Fetching...");
             // Change this query when db schema is available
             const result = await execQuery("SELECT * FROM users WHERE number = (?)", [1]);
             if (!result) {
