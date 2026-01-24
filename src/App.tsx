@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import TimingPage from "./pages/timingPage/timingPage";
-import DatabaseSetup from "./databaseSetup";
+import DatabaseSetup from "./pages/databaseSetup.tsx/databaseSetup";
 
 const API_BASE = "http://localhost:5000";
 

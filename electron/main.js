@@ -13,7 +13,7 @@ function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
         },
-        resizable: false, // ✨ prevent user resizing
+        resizable: false,
         maximizable: false,
     });
 

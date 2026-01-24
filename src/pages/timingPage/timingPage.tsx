@@ -3,15 +3,17 @@ import "./timingPage.css";
 
 function TimingPage() {
     const [displayTimer, setDisplayTimer] = useState("00:00:00");
-    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | null>(null);
+    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
+        null
+    );
+    const [err, setErr] = useState("");
 
     const intervalRef = useRef<number | null>(null);
-    const startRef = useRef<number | null>(null); // timestamp of current run
-    const elapsedRef = useRef(0); // total elapsed ms
+    const startRef = useRef<number | null>(null);
+    const elapsedRef = useRef(0);
 
-    // Start or resume the timer
     function startTimer() {
-        if (intervalRef.current) return; // already running
+        if (intervalRef.current) return;
 
         const start = performance.now() - elapsedRef.current;
         startRef.current = start;
@@ -32,38 +34,53 @@ function TimingPage() {
                     seconds
                 ).padStart(2, "0")}`
             );
-        }, 100); // update every 100ms
+        }, 100);
+        setErr("");
     }
 
-    // Pause the timer
     function pauseTimer() {
         if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
-            startRef.current = null; // stop current run
+            startRef.current = null;
+            setErr("");
         }
     }
 
-    // Reset the timer
     function resetTimer() {
-        runQuery("SELECT * FROM users");
+        if (displayTimer === "00:00:00") {
+            return;
+        }
         pauseTimer();
-        elapsedRef.current = 0;
-        setDisplayTimer("00:00:00");
     }
 
-    // Check if timer is running
+    function submitTime() {
+        if (isTimerRunning()) {
+            setErr("Timer is still running");
+            return;
+        }
+        if (displayTimer === "00:00:00") {
+            setErr("Timer not running");
+            return;
+        } else {
+            const result = runQuery("SELECT * FROM users");
+            console.log(result);
+            elapsedRef.current = 0;
+            setDisplayTimer("00:00:00");
+        }
+    }
+
     function isTimerRunning() {
         return intervalRef.current !== null;
     }
 
-    const handleButtonClick = (button: "start" | "pause" | "end") => {
+    const handleButtonClick = (button: "start" | "pause" | "end" | "submit") => {
         setActiveButton(button);
 
-        // Call your timer functions
         if (button === "start") startTimer();
         if (button === "pause") pauseTimer();
         if (button === "end") resetTimer();
+        if (button === "submit") submitTime();
     };
 
     const runQuery = async (query: string) => {
@@ -82,7 +99,6 @@ function TimingPage() {
     return (
         <div className="timing-page">
             <div id="buttons">
-                {/* Start or Resume button */}
                 <button
                     id="start-button"
                     className={activeButton === "start" ? "pressed" : ""}
@@ -90,7 +106,7 @@ function TimingPage() {
                 >
                     {elapsedRef.current === 0 ? "Start" : "Resume"}
                 </button>
-                {/* Pause button */}
+
                 <button
                     id="pause-button"
                     className={activeButton === "pause" ? "pressed" : ""}
@@ -100,7 +116,6 @@ function TimingPage() {
                     Pause
                 </button>
 
-                {/* Reset button */}
                 <button
                     id="end-button"
                     className={activeButton === "end" ? "pressed" : ""}
@@ -109,9 +124,23 @@ function TimingPage() {
                     End
                 </button>
                 <hr id="colour-indicator" />
+
+                <button
+                    id="submit-time-button"
+                    className={activeButton === "end" ? "pressed" : ""}
+                    onClick={() => handleButtonClick("submit")}
+                >
+                    Submit
+                </button>
             </div>
 
-            <p id="timer">{displayTimer}</p>
+            <div id="error-timer">
+                <p id="timer">{displayTimer}</p>
+                <p id="error-message">{err}</p>
+                <div id="RT-logo">
+                    <p id="RT-part-one">RT </p> <p id="RT-part-two">Technologies</p>
+                </div>
+            </div>
         </div>
     );
 }

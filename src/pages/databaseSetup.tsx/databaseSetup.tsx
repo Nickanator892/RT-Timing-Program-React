@@ -1,4 +1,4 @@
-// src/DatabaseSetup.tsx
+import "./databaseSetup.css";
 import { useState } from "react";
 
 type DatabaseSetupProps = {
@@ -58,32 +58,31 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
     };
 
     return (
-        <div style={{ marginTop: 20 }}>
+        <div>
             {!dbSet && !showInput && (
                 <button onClick={() => setShowInput(true)}>Set Database Path</button>
             )}
 
             {!dbSet && showInput && (
-                <div style={{ marginTop: 10 }}>
-                    <p>Database not found. Enter path to SQLite DB:</p>
+                <div id="input-div">
+                    <p id="db-not-found">Database not found. Enter path to SQLite DB:</p>
                     <input
+                        id="database-path-input"
                         type="text"
                         value={inputPath}
                         onChange={(e) => setInputPath(e.target.value)}
                         placeholder="C:/path/to/database.db"
-                        style={{ width: "320px", marginRight: 10 }}
+                        //style={{ width: "320px", marginRight: 10 }}
                     />
-                    <button onClick={() => setDbPath(inputPath)}>Submit</button>
+                    <button id="set-path-button" onClick={() => setDbPath(inputPath)}>
+                        Submit
+                    </button>
                 </div>
             )}
 
-            {error && <p style={{ color: "red" }}>{error}</p>}
+            {error && <p>{error}</p>}
 
-            {dbSet && (
-                <button style={{ marginTop: 10 }} onClick={runQuery}>
-                    Run Query
-                </button>
-            )}
+            {dbSet && <button onClick={runQuery}>Run Query</button>}
         </div>
     );
 }
