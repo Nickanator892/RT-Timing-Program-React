@@ -71,7 +71,7 @@ function TimingPage() {
         } else {
             setDbSuccess("Fetching...");
             // Change this query when db schema is available
-            const result = await execQuery("SELECT * FROM users WHERE number = (?)", [1]);
+            const result = await execQuery("SELECT * FROM user WHERE number = (?)", [1]);
             if (!result) {
                 return;
             }

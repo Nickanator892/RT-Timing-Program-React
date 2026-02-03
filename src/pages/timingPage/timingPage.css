@@ -132,7 +132,7 @@ hr {
 #pause-button.pressed {
     background-color: yellow;
     animation-name: pauseButtonAnimation;
-    animation-duration: 2s;
+    animation-duration: 0.25s;
     animation-iteration-count: infinite;
     color: black;
 }
