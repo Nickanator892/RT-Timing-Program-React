@@ -55,7 +55,7 @@ function createWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         win.loadURL(process.env.VITE_DEV_SERVER_URL);
-        win.webContents.openDevTools(); // Open dev tools to see console
+        //win.webContents.openDevTools(); // Open dev tools to see console
     } else {
         win.loadFile(path.join(__dirname, "../dist/index.html"));
     }

@@ -20,10 +20,6 @@ type timingPageProps = {
 
 function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButton, pauseReason, err, setErr, intervalRef, startRef, elapsedRef }: timingPageProps) {
 
-    console.log('TimingPage props:', { intervalRef, startRef, elapsedRef });
-    console.log('elapsedRef:', elapsedRef);
-    console.log('elapsedRef.current:', elapsedRef?.current);
-
     const [dbSuccess, setDbSuccess] = useState("Submit");
     const [harnPn, setHarnPn] = useState("HYSV-10001-R5")
     const [harnLeft, setHarnLeft] = useState(4)
