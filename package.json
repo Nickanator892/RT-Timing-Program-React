@@ -12,7 +12,20 @@
         "electron": "electron .",
         "electron:dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
         "build": "vite build",
-        "electron:build": "npm run build && electron ."
+        "electron:build": "npm run build && electron .",
+        "pack": "npm run build && electron-builder --dir",
+        "dist": "npm run build && electron-builder"
+    },
+    "build": {
+        "appId": "com.yourcompany.rt-timing",
+        "productName": "RT Timing",
+        "files": [
+        "dist/**/*",
+        "electron/**/*"
+        ],
+        "win": {
+        "target": "nsis"
+        }
     },
     "dependencies": {
         "cors": "^2.8.6",
@@ -22,12 +35,14 @@
         "performance": "^1.4.0",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
+        "react-router-dom": "^7.13.0",
         "sqlite": "^5.1.1",
         "sqlite3": "^5.1.7"
     },
     "devDependencies": {
         "@eslint/js": "^9.39.1",
         "@types/cors": "^2.8.19",
+        "@types/electron": "^1.4.38",
         "@types/express": "^5.0.6",
         "@types/nanotimer": "^0.3.2",
         "@types/node": "^24.10.1",
@@ -43,6 +58,7 @@
         "globals": "^16.5.0",
         "typescript": "~5.9.3",
         "typescript-eslint": "^8.46.4",
-        "vite": "^7.2.4"
+        "vite": "^7.2.4",
+        "vite-plugin-electron": "^0.29.0"
     }
 }

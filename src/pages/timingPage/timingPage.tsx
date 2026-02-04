@@ -1,24 +1,41 @@
 import "./timingPage.css";
-import { useState, useRef } from "react";
+import { useState } from "react";
+import SettingsButton from "../../common/settingsButton/settingsButton";
+import TimerButton from "../../common/timerButton/timerButton";
+import { useNavigate } from "react-router-dom";
+import type { PauseReason } from "../../assets/types/pauseReasonType";
 
-function TimingPage() {
-    const [displayTimer, setDisplayTimer] = useState("00:00:00");
-    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
-        null
-    );
-    const [err, setErr] = useState("");
+type timingPageProps = {
+    displayTimer: string,
+    setDisplayTimer: React.Dispatch<React.SetStateAction<string>>,
+    activeButton: "start" | "pause" | "end" | "submit" | null,
+    setActiveButton: React.Dispatch<React.SetStateAction<"start" | "pause" | "end" | "submit" | null>>,
+    pauseReason: PauseReason[],
+    err: string,
+    setErr: React.Dispatch<React.SetStateAction<string>>,
+    intervalRef: React.MutableRefObject<number | null>,
+    startRef: React.MutableRefObject<number | null>,
+    elapsedRef: React.MutableRefObject<number>
+}
 
-    const intervalRef = useRef<number | null>(null);
-    const startRef = useRef<number | null>(null);
-    const elapsedRef = useRef(0);
+function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButton, pauseReason, err, setErr, intervalRef, startRef, elapsedRef }: timingPageProps) {
+
+    console.log('TimingPage props:', { intervalRef, startRef, elapsedRef });
+    console.log('elapsedRef:', elapsedRef);
+    console.log('elapsedRef.current:', elapsedRef?.current);
+
     const [dbSuccess, setDbSuccess] = useState("Submit");
+    const [harnPn, setHarnPn] = useState("HYSV-10001-R5")
+    const [harnLeft, setHarnLeft] = useState(4)
+    const [harnBuilt, setHarnBuilt] = useState(26)
+    const nav = useNavigate()
 
     function startTimer() {
         if (intervalRef.current) return;
 
         const start = performance.now() - elapsedRef.current;
         startRef.current = start;
-
+        
         intervalRef.current = window.setInterval(() => {
             const now = performance.now();
             const newElapsed = now - (startRef.current ?? now);
@@ -45,7 +62,7 @@ function TimingPage() {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
-            setErr("");
+            nav('/pause-reason-page')
         }
     }
 
@@ -71,15 +88,19 @@ function TimingPage() {
         } else {
             setDbSuccess("Fetching...");
             // Change this query when db schema is available
-            const result = await execQuery("SELECT * FROM user WHERE number = (?)", [1]);
+            const result = await execQuery("SELECT * FROM users WHERE number = (?)", [1]);
             if (!result) {
                 return;
             }
-            console.log(result);
             elapsedRef.current = 0;
             setDisplayTimer("00:00:00");
             setDbSuccess("Success✅");
+            setHarnBuilt(prev => prev + 1)
+            setHarnLeft(prev => prev - 1)
             setErr("");
+            if (harnLeft == 1) {
+                setDisplayTimer("ALL BUILT")
+            }
         }
     }
 
@@ -158,7 +179,19 @@ function TimingPage() {
             </div>
 
             <div id="error-timer">
+                <div id="nav-buttons">
+                    <TimerButton/>
+                    <SettingsButton/>
+                </div>
                 <p id="timer">{displayTimer}</p>
+        
+                <div className="harn-build-info">
+                    <p id="current-build-pn">Part #: {harnPn}</p>
+                    <p id="to-build-number">{harnLeft} Left</p>
+                    <p id="harn-build">{harnBuilt} Built</p>
+                    <p id="total-build">Total: {harnBuilt + harnLeft}</p>
+                </div>
+
                 <p id="error-message">{err}</p>
                 <div id="RT-logo">
                     <p id="RT-part-one">RT </p> <p id="RT-part-two">Technologies</p>

@@ -9,7 +9,7 @@ body {
 }
 #timer {
     width: 8ch;
-    font-size: 100px;
+    font-size: 90px;
     font-family: "Orbitron";
 }
 
@@ -60,13 +60,13 @@ body {
 #end-button:active {
     background-color: red;
     transform: translateY(4px);
-    box-shadow: 0px -5px white;
+    box-shadow: inset 0px -5px white;
 }
 
 #start-button:active {
     background-color: green;
     transform: translateY(4px);
-    box-shadow: 0 -5px #2e7d32;
+    box-shadow: 0 -5px white;
 }
 
 #pause-button:active {
@@ -140,7 +140,7 @@ hr {
 #end-button.pressed {
     background-color: red;
     animation-name: stopButtonAnimation;
-    animation-duration: 2s;
+    animation-duration: 0.25s;
     animation-iteration-count: infinite;
 }
 
@@ -168,6 +168,7 @@ hr {
 
 #error-message {
     color: red;
+    font-size: 25px;
 }
 
 #RT-logo {
@@ -192,4 +193,27 @@ hr {
 
 #db-success {
     font-size: 15px;
+}
+
+.harn-build-info {
+    border-top: 2px solid white;
+    border-bottom: 2px solid white;
+    border-left: 2px solid white;
+    width: 70%;
+    margin-right: 30%;
+    padding-left: 2%;
+    margin-bottom: 9%;
+    margin-top: -10%;
+}
+
+.harn-build-info p {
+    font-size: 1.4em;
+    width: 25em;
+    font-family: "RobotoMono";
+}
+
+#nav-buttons {
+    display: flex;
+    padding-top: 2%;
+    gap: 1.5em;
 }

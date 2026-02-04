@@ -1,0 +1,63 @@
+#nav-buttons {
+    display: flex;
+    position: absolute;
+    left: 580px;
+    top: 0px
+}
+
+input {
+    border: 2px solid white;
+    border-radius: 6px;
+    font-size: 20px;
+    font-family: "Orbitron";
+}
+
+li, button {
+    font-family: "Orbitron";
+}
+
+#error-message {
+    width: 100%;
+}
+
+#reasons-list {
+    padding-top: 2%;
+}
+
+#reasons-list div {
+    display: flex;
+    flex-direction: row;
+    border: 2px solid white;
+    width: 100%;
+    margin-top: 1%;
+}
+
+#reasons-list p {
+    width: 100%;
+    font-size: 20px;
+    margin-bottom: 1%;
+    margin-top: 1%;
+    padding-left: 2%;
+}
+
+#reasons-list button {
+    margin-top: 1%;
+    width: 15em;
+    height: 1.5em;
+}
+
+h2 {
+    padding-left: 6.5em;
+    text-decoration: underline;
+    font-family: "Orbitron";
+}
+
+.pause-reasons {
+    top: 150px;
+    left: 40px;
+    position: absolute;
+    border: 4px solid white;
+    padding-left: 15px;
+    padding-right: 17px;
+    border-radius: 8px;
+}

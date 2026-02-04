@@ -1,5 +1,8 @@
-import { contextBridge, ipcRenderer } from "electron";
+const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electron", {
-    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    readSettings: () => ipcRenderer.invoke('read-settings'),
+    writeSettings: (settings) => ipcRenderer.invoke('write-settings', settings)
 });
+
+console.log('Preload script executed!');
