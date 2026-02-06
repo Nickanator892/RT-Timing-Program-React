@@ -1,0 +1,38 @@
+#users-list-login {
+    display: grid;
+    grid-template-columns: 20em 20em 20em;
+    margin-top: 10%;
+    gap: 1em;
+    padding-top: 2%;
+    padding-bottom: 5%;
+}
+
+#users-list-login div {
+    display: flex;
+    flex-direction: row;
+    border: 2px solid white;
+    width: 100%;
+    margin-top: 1%;
+}
+
+#users-list-login p {
+    width: 100%;
+    font-size: 30px;
+    margin-bottom: 1%;
+    margin-top: 1%;
+    padding-right: 2%;
+}
+
+#users-list-login button {
+    margin-top: 1%;
+    width: 15em;
+    height: 5em;
+}
+
+.login-header {
+    position: absolute;
+    top: 40px;
+    right: 480px;
+    font-size: 50px;
+    text-decoration: underline;
+}

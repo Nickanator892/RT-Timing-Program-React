@@ -101,6 +101,7 @@ class SQLController {
 // --------------------
 
 app.get("/api/db-status", async (_req, res) => {
+    console.log(dbPath);
     if (!dbPath) {
         return res.json({
             ready: false,

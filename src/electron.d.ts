@@ -3,8 +3,14 @@ interface PauseReason {
     name: string;
 }
 
+interface User {
+    Id: number;
+    name: string;
+}
+
 interface Settings {
     pauseReasons: PauseReason[];
+    users: User[];
 }
 
 declare global {
@@ -12,7 +18,7 @@ declare global {
         electron: {
             readSettings: () => Promise<Settings>;
             writeSettings: (settings: Settings) => Promise<{ success: boolean; error?: string }>;
-        }
+        };
     }
 }
 

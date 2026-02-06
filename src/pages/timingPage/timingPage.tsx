@@ -4,34 +4,51 @@ import SettingsButton from "../../common/settingsButton/settingsButton";
 import TimerButton from "../../common/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
+import type { User } from "../../assets/types/UserType";
 
 type timingPageProps = {
-    displayTimer: string,
-    setDisplayTimer: React.Dispatch<React.SetStateAction<string>>,
-    activeButton: "start" | "pause" | "end" | "submit" | null,
-    setActiveButton: React.Dispatch<React.SetStateAction<"start" | "pause" | "end" | "submit" | null>>,
-    pauseReason: PauseReason[],
-    err: string,
-    setErr: React.Dispatch<React.SetStateAction<string>>,
-    intervalRef: React.MutableRefObject<number | null>,
-    startRef: React.MutableRefObject<number | null>,
-    elapsedRef: React.MutableRefObject<number>
-}
+    displayTimer: string;
+    setDisplayTimer: React.Dispatch<React.SetStateAction<string>>;
+    activeButton: "start" | "pause" | "end" | "submit" | null;
+    setActiveButton: React.Dispatch<
+        React.SetStateAction<"start" | "pause" | "end" | "submit" | null>
+    >;
+    pauseReason: PauseReason[];
+    err: string;
+    setErr: React.Dispatch<React.SetStateAction<string>>;
+    intervalRef: React.MutableRefObject<number | null>;
+    startRef: React.MutableRefObject<number | null>;
+    elapsedRef: React.MutableRefObject<number>;
+    selectedUser: User | undefined;
+};
 
-function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButton, pauseReason, err, setErr, intervalRef, startRef, elapsedRef }: timingPageProps) {
-
+function TimingPage({
+    displayTimer,
+    setDisplayTimer,
+    activeButton,
+    setActiveButton,
+    pauseReason,
+    err,
+    setErr,
+    intervalRef,
+    startRef,
+    elapsedRef,
+    selectedUser,
+}: timingPageProps) {
     const [dbSuccess, setDbSuccess] = useState("Submit");
-    const [harnPn, setHarnPn] = useState("HYSV-10001-R5")
-    const [harnLeft, setHarnLeft] = useState(4)
-    const [harnBuilt, setHarnBuilt] = useState(26)
-    const nav = useNavigate()
+    const [harnPn, setHarnPn] = useState("HYSV-10001-R5");
+    const [harnLeft, setHarnLeft] = useState(4);
+    const [harnBuilt, setHarnBuilt] = useState(26);
+    const nav = useNavigate();
+
+    console.log("Selected User:", selectedUser);
 
     function startTimer() {
         if (intervalRef.current) return;
 
         const start = performance.now() - elapsedRef.current;
         startRef.current = start;
-        
+
         intervalRef.current = window.setInterval(() => {
             const now = performance.now();
             const newElapsed = now - (startRef.current ?? now);
@@ -58,7 +75,7 @@ function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButt
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
-            nav('/pause-reason-page')
+            nav("/pause-reason-page");
         }
     }
 
@@ -66,7 +83,11 @@ function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButt
         if (displayTimer === "00:00:00") {
             return;
         }
-        pauseTimer();
+        if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+            startRef.current = null;
+        }
     }
 
     async function submitTime() {
@@ -91,11 +112,11 @@ function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButt
             elapsedRef.current = 0;
             setDisplayTimer("00:00:00");
             setDbSuccess("Success✅");
-            setHarnBuilt(prev => prev + 1)
-            setHarnLeft(prev => prev - 1)
+            setHarnBuilt((prev) => prev + 1);
+            setHarnLeft((prev) => prev - 1);
             setErr("");
             if (harnLeft == 1) {
-                setDisplayTimer("ALL BUILT")
+                setDisplayTimer("ALL BUILT");
             }
         }
     }
@@ -176,11 +197,11 @@ function TimingPage({ displayTimer, setDisplayTimer, activeButton, setActiveButt
 
             <div id="error-timer">
                 <div id="nav-buttons">
-                    <TimerButton/>
-                    <SettingsButton/>
+                    <TimerButton />
+                    <SettingsButton />
                 </div>
                 <p id="timer">{displayTimer}</p>
-        
+
                 <div className="harn-build-info">
                     <p id="current-build-pn">Part #: {harnPn}</p>
                     <p id="to-build-number">{harnLeft} Left</p>

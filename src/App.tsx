@@ -7,6 +7,8 @@ import SettingsPage from "./pages/settingsPage/settingsPage";
 import PausePage from "./pages/pausePage/pausePage";
 import useSettings from "./hooks/pauseReasonHook";
 import type { PauseReason } from "./assets/types/pauseReasonType";
+import LoginPage from "./pages/loginPage/loginPage";
+import type { User } from "./assets/types/UserType";
 
 const API_BASE = "http://localhost:5000";
 
@@ -15,10 +17,13 @@ function TimerLayout() {
     const { pauseReasons, loading } = useSettings();
     const [pauseReason, setPauseReason] = useState<PauseReason[]>([]);
     const [displayTimer, setDisplayTimer] = useState<string>("00:00:00");
-    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(null);
+    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
+        null
+    );
     const intervalRef = useRef<number | null>(null);
     const startRef = useRef<number | null>(null);
     const elapsedRef = useRef(0);
+    const [selectedUser, setUser] = useState<User>();
 
     useEffect(() => {
         if (pauseReasons.length > 0) {
@@ -36,14 +41,26 @@ function TimerLayout() {
         setErr,
         intervalRef,
         startRef,
-        elapsedRef
+        elapsedRef,
+        selectedUser,
     };
+    console.log(selectedUser);
 
     return (
         <Routes>
-            <Route path="/" element={<TimingPage {...timerProps} />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/pause-reason-page" element={<PausePage pauseReasons={pauseReasons} setPauseReason={setPauseReason} setErr={setErr} />} />
+            <Route path="/" element={<LoginPage user={selectedUser} setUser={setUser} />}></Route>
+            <Route path="/timer" element={<TimingPage {...timerProps} />} />
+            <Route path="/settings" element={<SettingsPage selectedUser={selectedUser} />} />
+            <Route
+                path="/pause-reason-page"
+                element={
+                    <PausePage
+                        pauseReasons={pauseReasons}
+                        setPauseReason={setPauseReason}
+                        setErr={setErr}
+                    />
+                }
+            />
         </Routes>
     );
 }

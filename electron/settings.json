@@ -12,5 +12,59 @@
       "Id": "4",
       "name": "Untwist Wire"
     }
+  ],
+  "users": [
+    {
+      "Id": 1,
+      "name": "nick-martens"
+    },
+    {
+      "Id": 2,
+      "name": "caleb-kehler"
+    },
+    {
+      "Id": 3,
+      "name": "aiden-cameron"
+    },
+    {
+      "Id": 6,
+      "name": "randy-martens"
+    },
+    {
+      "Id": 7,
+      "name": "jen-martens"
+    },
+    {
+      "Id": 8,
+      "name": "mila-kinash"
+    },
+    {
+      "Id": 9,
+      "name": "aliana-bruce"
+    },
+    {
+      "Id": 10,
+      "name": "maya-reuther"
+    },
+    {
+      "Id": 11,
+      "name": "meggie-penner"
+    },
+    {
+      "Id": 12,
+      "name": "jane-doe"
+    },
+    {
+      "Id": 13,
+      "name": "ashley-hildebrand"
+    },
+    {
+      "Id": 14,
+      "name": "jason-smith"
+    },
+    {
+      "Id": 15,
+      "name": "justin-kroeker"
+    }
   ]
 }
