@@ -1,0 +1,21 @@
+.harn-choice-header {
+    position: absolute;
+    top: 20px;
+    right: 480px;
+    font-size: 50px;
+    text-decoration: underline;
+}
+
+#harn-list div {
+    display: flex;
+    flex-direction: row;
+    gap: 15em;
+    border: 3px solid white;
+    height: 5em;
+    width: 40em;
+    padding-bottom: 1.5em;
+}
+
+#harn-list div button {
+    margin-top: 1.5em;
+}

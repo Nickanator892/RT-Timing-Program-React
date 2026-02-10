@@ -36,7 +36,7 @@ function TimingPage({
     selectedUser,
 }: timingPageProps) {
     const [dbSuccess, setDbSuccess] = useState("Submit");
-    const [harnPn, setHarnPn] = useState("HYSV-10001-R5");
+    const [harnPn, setHarnPn] = useState();
     const [harnLeft, setHarnLeft] = useState(4);
     const [harnBuilt, setHarnBuilt] = useState(26);
     const nav = useNavigate();

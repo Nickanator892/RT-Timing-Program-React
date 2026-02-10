@@ -35,7 +35,7 @@ function LoginPage({ user, setUser }: loginProps) {
         if (selectedUser != undefined) {
             setUser(selectedUser);
             setTimeout(() => {
-                nav("/timer");
+                nav("/choose-harn");
             }, 500);
         }
     }

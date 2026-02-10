@@ -13,13 +13,21 @@ interface Settings {
     users: User[];
 }
 
+
+export {};
+
 declare global {
     interface Window {
         electron: {
-            readSettings: () => Promise<Settings>;
-            writeSettings: (settings: Settings) => Promise<{ success: boolean; error?: string }>;
+            readSettings: () => Promise<any>;
+            writeSettings: (settings: any) => Promise<{ success: boolean; error?: string }>;
+            getSharedData: () => Promise<any>;
+            getWindowType: () => Promise<string>;
+            updateSharedData: (data: any) => void;
+            addSession: (sessionData: any) => void;
+            onSharedDataChanged: (callback: (data: any) => void) => () => void;
+            openAnalyticsWindow: () => void;
+            onNavigateTo?: (callback: (route: string) => void) => () => void;
         };
     }
 }
-
-export {};
