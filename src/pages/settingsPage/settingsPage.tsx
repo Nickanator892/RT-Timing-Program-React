@@ -16,13 +16,10 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     const [inputValue, setInputValue] = useState("");
     const [userInput, setUserInput] = useState("");
     const [err, setErr] = useState("");
-
-    // Add modal state at the component level
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [userToDelete, setUserToDelete] = useState<number | null>(null);
     const [currentPage, setCurrentPage] = useState(0);
     const itemsPerPage = 5;
-
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = users.length > endIndex;

@@ -43,8 +43,8 @@ function TimingPage({
     const [harnLeft, setHarnLeft] = useState(4);
     const [harnBuilt, setHarnBuilt] = useState(26);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
-    const [startTime, setStartTime] = useState<string>("")
-    const [endTime, setEndTime] = useState<string>("")
+    const [startTime, setStartTime] = useSharedState<string>("startTime", "")
+    const [endTime, setEndTime] = useSharedState<string>("endTime", "")
     const [selectedHarn] = useSharedState<string>("selectedHarn", "")
     const { writeTime, fetchTimes } = useTimes()
     const nav = useNavigate();
@@ -82,6 +82,7 @@ function TimingPage({
 
     function pauseTimer() {
         if (intervalRef.current) {
+            setEndTime(new Date().toLocaleTimeString('en-GB', { hour12: false }))
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
@@ -95,11 +96,11 @@ function TimingPage({
             return;
         }
         if (intervalRef.current) {
+            setEndTime(new Date().toLocaleTimeString('en-GB', { hour12: false }))
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
             setIsRunning(false)
-            setEndTime(new Date().toLocaleTimeString('en-GB', { hour12: false }))
         }
     }
 
