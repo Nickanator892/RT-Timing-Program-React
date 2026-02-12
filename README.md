@@ -6,10 +6,11 @@ Meant to be used on a Raspberry Pi to time harness builds and automatically log 
 
 ## Components
 
-- Frontend - Handles user input and UI updates - Build using React, Vite, and Electron
+- Frontend - Handles user input and UI updates - Built using React, Vite, and Electron
 - Backend - Handles front end database requests using an API - Built using SQLite and Express
 
 ## Requirements
 
 - Database path json titled "db-config.json" with a variable called "dbPath"
+- Settings.json file to store users and pause reasons
   
