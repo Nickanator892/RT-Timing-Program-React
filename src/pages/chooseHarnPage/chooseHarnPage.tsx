@@ -55,7 +55,7 @@ function ChooseHarnPage({ setHarn }: harnProps) {
     
     return (
         <div>
-        <h2 className="harn-choice-header">Select Builder</h2>
+        <h2 className="harn-choice-header">Select Harness</h2>
         <div id="harn-list">
             {tempHarns.slice(startIndex, endIndex).map((harn) => (
                 <div key={harn}>

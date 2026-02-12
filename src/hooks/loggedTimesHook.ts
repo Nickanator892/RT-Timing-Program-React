@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
+import { useSharedState } from "./useSharedState"; // Import your shared state hook
 
 export interface LoggedTime {
-    startTime: Date;
-    endTime: Date;
+    startTime: string;
+    endTime: string;
     seconds: number;
     formattedTime: string
     harnNumber: string;
-    dateBuilt: Date
+    dateBuilt: string
 }
 
-
 export function useTimes() {
-    const [loggedTimes, setLoggedTimes] = useState<LoggedTime[]>()
+    // Change this to useSharedState so it's shared across components
+    const [loggedTimes, setLoggedTimes] = useSharedState<LoggedTime[] | undefined>("loggedTimes", undefined);
 
     const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<LoggedTime[] | unknown> => {
         console.log(requestedQuery)
@@ -40,10 +41,10 @@ export function useTimes() {
             "SELECT * FROM times WHERE harnNumber = (?) ORDER BY dateBuilt ASC, startTime ASC",
             [harnNumber]
         );
-        console.log(result)
+        console.log("Fetch result:", result)
 
         if (Array.isArray(result)) {
-            setLoggedTimes(result);
+            setLoggedTimes(result); // This now updates shared state
             return result
         }
     }
@@ -66,7 +67,6 @@ export function useTimes() {
         writeTime,
         fetchTimes
     };
-
 }
 
 export default useTimes

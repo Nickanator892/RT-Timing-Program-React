@@ -16,16 +16,16 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     const [isRunning] = useSharedState<boolean>("isRunning", false);
     const [selectedUser] = useSharedState<User | null>("selectedUser", null);
     const [buildTimeEst, setBuildTimeEst] = useState({seconds: 350, formattedTime: "01:00:00"})
+    const [selectedHarn] = useSharedState<string>("selectedHarn", "");
     
     const { loggedTimes, fetchTimes } = useTimes();
     
     useEffect(() => {
-        if (harn) {
-            fetchTimes(harn);
+        const harnToUse = selectedHarn || harn
+        if (harnToUse) {
+            fetchTimes(harnToUse);
         }
-    }, [harn]);
-
-    console.log("harn", harn, "times", loggedTimes);
+    }, [selectedHarn, harn]);
 
     const times: { seconds: number; formattedTime: string }[] = [];
     
@@ -54,6 +54,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     function checkIsRunning() {
         return isRunning ? (
             <div className="indication-div-on"></div>
+
         ) : (
             <div className="indication-div-off"></div>
         )

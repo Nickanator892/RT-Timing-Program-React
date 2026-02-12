@@ -35,7 +35,7 @@ function TimerLayout() {
     const startRef = useRef<number | null>(null);
     const elapsedRef = useRef(0);
     const [windowType, setWindowType] = useState<string>("main");
-    const [selectedHarn, setSelectedHarn] = useSharedState<string>("", "")
+    const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "")
 
     useEffect(() => {
         // Determine window type

@@ -1,11 +1,13 @@
 import "./timingPage.css";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SettingsButton from "../../common/settingsButton/settingsButton";
 import TimerButton from "../../common/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSharedState } from "../../hooks/useSharedState";
+import ChooseHarnessButton from "../../common/chooseHarnessButton/chooseHarnessButton";
+import useTimes, { type LoggedTime } from "../../hooks/loggedTimesHook";
 
 type timingPageProps = {
     displayTimer: string;
@@ -37,10 +39,14 @@ function TimingPage({
     selectedUser,
 }: timingPageProps) {
     const [dbSuccess, setDbSuccess] = useState("Submit");
-    const [harnPn, setHarnPn] = useState();
+    const [harnPn, setHarnPn] = useState("");
     const [harnLeft, setHarnLeft] = useState(4);
     const [harnBuilt, setHarnBuilt] = useState(26);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
+    const [startTime, setStartTime] = useState<string>("")
+    const [endTime, setEndTime] = useState<string>("")
+    const [selectedHarn] = useSharedState<string>("selectedHarn", "")
+    const { writeTime, fetchTimes } = useTimes()
     const nav = useNavigate();
 
     console.log("Selected User:", selectedUser);
@@ -70,6 +76,7 @@ function TimingPage({
         }, 100);
         setErr("");
         setIsRunning(true)
+        setStartTime(new Date().toLocaleTimeString('en-GB', { hour12: false }))
         setDbSuccess("Submit");
     }
 
@@ -92,8 +99,29 @@ function TimingPage({
             intervalRef.current = null;
             startRef.current = null;
             setIsRunning(false)
+            setEndTime(new Date().toLocaleTimeString('en-GB', { hour12: false }))
         }
     }
+
+    function calculateSeconds(timeString: string): number {
+        if (!timeString || typeof timeString !== 'string') {
+            return 0;
+        }
+        
+        try {
+            const [hours, minutes, seconds] = timeString.split(':').map(Number);
+            return (hours * 3600) + (minutes * 60) + seconds;
+        } catch (error) {
+            console.error('Error parsing time string:', timeString, error);
+            return 0;
+        }
+    }
+
+    useEffect(() => {
+        if (selectedHarn) {
+            fetchTimes(selectedHarn);
+        }
+    }, [selectedHarn]);
 
     async function submitTime() {
         setDbSuccess("TimerStopCheck...");
@@ -109,10 +137,28 @@ function TimingPage({
             return;
         } else {
             setDbSuccess("Fetching...");
-            // Change this query when db schema is available
-            const result = await execQuery("SELECT * FROM users WHERE number = (?)", [1]);
+            let result = undefined
+            try {
+                const timeObject: LoggedTime = {
+                    startTime: startTime,
+                    endTime: endTime,
+                    seconds: calculateSeconds(displayTimer),
+                    formattedTime: displayTimer,
+                    harnNumber: selectedHarn,
+                    dateBuilt: (new Date().toISOString().split('T')[0])
+                }
+                result = await writeTime(timeObject);
+            } catch (err: any) {
+                setErr(err)
+            }
+
+
             if (!result) {
                 return;
+            }
+
+            if (selectedHarn) {
+                await fetchTimes(selectedHarn);
             }
             elapsedRef.current = 0;
             setDisplayTimer("00:00:00");
@@ -137,29 +183,6 @@ function TimingPage({
         if (button === "pause") pauseTimer();
         if (button === "end") resetTimer();
         if (button === "submit") submitTime();
-    };
-
-    const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<unknown> => {
-        try {
-            const response = await fetch("http://localhost:5000/api/query", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ query: requestedQuery, params }),
-            });
-            console.log(`RESPONSE: ${response}`);
-            const data = await response.json();
-
-            if (data.success === false) {
-                setErr("Database Query Fail");
-                setDbSuccess("Error❌");
-                return;
-            }
-            const formattedData = JSON.stringify(data.result);
-            return formattedData;
-        } catch (err: any) {
-            setErr("Server Not Running");
-            setDbSuccess("Error❌");
-        }
     };
 
     return (
@@ -204,6 +227,7 @@ function TimingPage({
                 <div id="nav-buttons">
                     <TimerButton />
                     <SettingsButton />
+                    <ChooseHarnessButton/>
                 </div>
                 <p id="timer">{displayTimer}</p>
 
