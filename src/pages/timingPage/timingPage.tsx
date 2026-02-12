@@ -5,6 +5,7 @@ import TimerButton from "../../common/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
+import { useSharedState } from "../../hooks/useSharedState";
 
 type timingPageProps = {
     displayTimer: string;
@@ -39,6 +40,7 @@ function TimingPage({
     const [harnPn, setHarnPn] = useState();
     const [harnLeft, setHarnLeft] = useState(4);
     const [harnBuilt, setHarnBuilt] = useState(26);
+    const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
     const nav = useNavigate();
 
     console.log("Selected User:", selectedUser);
@@ -67,6 +69,7 @@ function TimingPage({
             );
         }, 100);
         setErr("");
+        setIsRunning(true)
         setDbSuccess("Submit");
     }
 
@@ -75,6 +78,7 @@ function TimingPage({
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
+            setIsRunning(false)
             nav("/pause-reason-page");
         }
     }
@@ -87,6 +91,7 @@ function TimingPage({
             clearInterval(intervalRef.current);
             intervalRef.current = null;
             startRef.current = null;
+            setIsRunning(false)
         }
     }
 

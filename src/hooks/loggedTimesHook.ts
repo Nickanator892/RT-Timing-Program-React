@@ -11,7 +11,7 @@ export interface LoggedTime {
 
 
 export function useTimes() {
-    const [loggedTimes, setLoggedTimes] = useState<LoggedTime[] | unknown>()
+    const [loggedTimes, setLoggedTimes] = useState<LoggedTime[]>()
 
     const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<LoggedTime[] | unknown> => {
         console.log(requestedQuery)
@@ -44,6 +44,7 @@ export function useTimes() {
 
         if (Array.isArray(result)) {
             setLoggedTimes(result);
+            return result
         }
     }
     

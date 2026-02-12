@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef } from "react";
 import "./chart.css"
 import Chart from "react-apexcharts"
 import type { ApexOptions } from "apexcharts"
 import useTimes from "../../hooks/loggedTimesHook";
+import { useMemo } from "react"
 
 interface chartData {
     loggedTimes: {
@@ -14,7 +15,8 @@ interface chartData {
     buildTimeEst: {
         seconds: number; 
         formattedTime: string;
-    }
+    };
+    currentTimeSeconds: string
 }
 
 interface seriesSettings {
@@ -29,13 +31,32 @@ interface chartPlots {
     }[]
 }
 
-function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst }: chartData) {
-
+function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst, currentTimeSeconds }: chartData) {
     const chartData = loggedTimes.map((time, i) => ({
         x: `Build ${i + 1}`,
         y: Math.round(time.seconds / 60)
     }));
     
+    function calculateSeconds(timeString: string): number {
+        if (!timeString || typeof timeString !== 'string') {
+            return 0;
+        }
+        
+        try {
+            const [hours, minutes, seconds] = timeString.split(':').map(Number);
+            return (hours * 3600) + (minutes * 60) + seconds;
+        } catch (error) {
+            console.error('Error parsing time string:', timeString, error);
+            return 0;
+        }
+    }
+
+    const currentTimeMinutes = useMemo(() => {
+        const minutes = calculateSeconds(currentTimeSeconds) / 60;
+        console.log('Current time updated:', currentTimeSeconds, '=', minutes, 'minutes');
+        return minutes;
+    }, [currentTimeSeconds]);
+
     const series = [
         {
             name: "Sessions",
@@ -43,17 +64,25 @@ function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst }: 
         }
     ];
     
-    const apexOptions: ApexOptions = {
+    const apexOptions: ApexOptions = useMemo(() => ({
         chart: {
             type: "line",
             toolbar: { show: false },
-            foreColor: "#FFFFFF"
+            foreColor: "#FFFFFF",
+            animations: {
+                enabled: true,
+                dynamicAnimation: {
+                    enabled: true,
+                    speed: 350
+                }
+            }
         },
         title: {
             text: "Build Analytics",
             align: "center",
             style: {
-                fontSize: '20px'
+                fontSize: '25px',
+                fontFamily: 'Orbitron'
             }
         },
         xaxis: {
@@ -69,7 +98,8 @@ function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst }: 
             title: {
                 text: "Minutes",
                 style: {
-                    fontSize: '20px'
+                    fontSize: '25px',
+                    fontFamily: 'Orbitron'
                 },
             }
         },
@@ -88,6 +118,20 @@ function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst }: 
                         },
                         text: 'Estimated Time'
                     }
+                },
+                {
+                    y: currentTimeMinutes,
+                    borderColor: '#FF4560',
+                    strokeDashArray: 5,
+                    borderWidth: 2,
+                    label: {
+                        borderColor: '#FF4560',
+                        style: {
+                            color: '#FFFFFF',
+                            background: '#000000',
+                        },
+                        text: `Current: ${currentTimeSeconds}`
+                    }
                 }
             ]
         },
@@ -99,9 +143,68 @@ function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst }: 
         markers: {
             size: 8
         },
-    };
+    }), [currentTimeMinutes, buildTimeEst.seconds, currentTimeSeconds]);
+
+
+function AnalyticsChart({ loggedTimes, harnNumber, buildNumber, buildTimeEst, currentTimeSeconds }: chartData) {
+    const chartRef = useRef<any>(null);
     
-    
+    // ... your existing code ...
+
+    // Update annotations when currentTimeMinutes changes
+    useEffect(() => {
+        if (chartRef.current && chartRef.current.chart) {
+            chartRef.current.chart.updateOptions({
+                annotations: {
+                    yaxis: [
+                        {
+                            y: buildTimeEst.seconds / 60,
+                            borderColor: '#F527F5',
+                            strokeDashArray: 0,
+                            borderWidth: 2,
+                            label: {
+                                borderColor: '#FF4560',
+                                style: {
+                                    color: '#FFFFFF',
+                                    background: '#000000',
+                                },
+                                text: 'Estimated Time'
+                            }
+                        },
+                        {
+                            y: currentTimeMinutes,
+                            borderColor: '#FF4560',
+                            strokeDashArray: 5,
+                            borderWidth: 2,
+                            label: {
+                                borderColor: '#FF4560',
+                                style: {
+                                    color: '#FFFFFF',
+                                    background: '#000000',
+                                },
+                                text: `Current: ${currentTimeSeconds}`
+                            }
+                        }
+                    ]
+                }
+            });
+        }
+    }, [currentTimeMinutes, currentTimeSeconds, buildTimeEst.seconds]);
+
+    return (
+        <div className="chart">
+            <Chart
+                ref={chartRef}
+                options={apexOptions}
+                series={series}
+                type="line"
+                height={350}
+                width={900}
+            />
+        </div>
+    )
+}
+
 
     return (
         <div className="chart">
