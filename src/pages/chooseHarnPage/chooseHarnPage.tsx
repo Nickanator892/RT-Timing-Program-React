@@ -9,10 +9,10 @@ interface harnProps {
 
 function ChooseHarnPage({ setHarn }: harnProps) {
     const nav = useNavigate();
-    const tempHarns = ["HYSV-10001-R5", "HYSV-10002-R2", "HYSV-10003-R1"]
+    const tempHarns = ["HYSV-10001-R5", "HYSV-10002-R2", "HYSV-10003-R1", "HYSV-10004-R2", "HYSV-10005-R6"]
 
     const [currentPage, setCurrentPage] = useState(0);
-    const itemsPerPage = 5;
+    const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = tempHarns.length > endIndex;

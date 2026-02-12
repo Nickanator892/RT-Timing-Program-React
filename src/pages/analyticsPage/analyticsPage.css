@@ -30,6 +30,7 @@
     bottom: 3em;
     left: 30px;
     font-size: 150px;
+    font-family: "Orbitron";
 }
 
 @keyframes runningDivAnimation {
@@ -50,8 +51,8 @@
     animation-name: runningDivAnimation;
     animation-duration: 2s;
     animation-iteration-count: infinite;
-    top: 120px;
-    left: 770px;
+    top: 125px;
+    left: 870px;
     width: 90px;
     height: 90px;
     border-radius: 50px;
@@ -75,8 +76,8 @@
     animation-name: pauseDivAnimation;
     animation-duration: 0.5s;
     animation-iteration-count: infinite;
-    top: 120px;
-    left: 770px;
+    top: 125px;
+    left: 870px;
     width: 90px;
     height: 90px;
     border-radius: 50px;

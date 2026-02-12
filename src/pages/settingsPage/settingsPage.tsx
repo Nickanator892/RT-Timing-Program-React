@@ -4,6 +4,7 @@ import "./settingsPage.css";
 import TimerButton from "../../common/timerButton/timerButton";
 import SettingsButton from "../../common/settingsButton/settingsButton";
 import type { User } from "../../assets/types/UserType";
+import ChooseHarnessButton from "../../common/chooseHarnessButton/chooseHarnessButton";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
@@ -102,6 +103,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             <div id="nav-buttons">
                 <TimerButton />
                 <SettingsButton />
+                <ChooseHarnessButton/>
             </div>
 
             <div className="pause-reasons">

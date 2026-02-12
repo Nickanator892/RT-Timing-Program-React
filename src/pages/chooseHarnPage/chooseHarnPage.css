@@ -1,21 +1,41 @@
 .harn-choice-header {
     position: absolute;
-    top: 20px;
-    right: 480px;
+    top: 0px;
+    right: 413px;
     font-size: 50px;
     text-decoration: underline;
+    font-family: "Orbitron";
 }
 
 #harn-list div {
     display: flex;
     flex-direction: row;
-    gap: 15em;
     border: 3px solid white;
-    height: 5em;
+    height: 3em;
     width: 40em;
     padding-bottom: 1.5em;
 }
 
+#harn-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+}
+
 #harn-list div button {
-    margin-top: 1.5em;
+    height: 4em;
+    width: 10em;
+    margin-top: 0.4em;
+    margin-right: 1em;
+}
+
+#harn-list div p {
+    font-size: 30px;
+    font-family: "Orbitron";
+    width: 30em;
+    margin-left: 0.3em;
+}
+
+.pagination-buttons {
+    padding-top: 1em;
 }
