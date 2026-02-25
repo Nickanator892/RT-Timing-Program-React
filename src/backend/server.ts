@@ -8,11 +8,13 @@ import cors from "cors";
 const app = express();
 const port = 5000;
 
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    credentials: true
-}));
+app.use(
+    cors({
+        origin: "*",
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+        credentials: true,
+    })
+);
 app.use(express.json());
 
 // --------------------
@@ -66,8 +68,9 @@ class SQLController {
     async exec(query: string, params: any[] = []) {
         const db = await this.connectToDatabase();
         try {
-            console.log(query, params)
+            console.log(query, params);
             if (query.trim().toUpperCase().startsWith("SELECT")) {
+                console.log(await db.all(query, params));
                 return await db.all(query, params);
             } else {
                 const result = await db.run(query, params);
@@ -156,7 +159,7 @@ app.post("/api/set-db-path", async (req, res) => {
 });
 
 app.post("/api/query", async (req, res) => {
-    console.log(req)
+    console.log(req);
     if (!dbPath) {
         return res.status(400).json({
             success: false,

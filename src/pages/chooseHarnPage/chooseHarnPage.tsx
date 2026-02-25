@@ -1,7 +1,8 @@
-import "./chooseHarnPage.css"
+import "./chooseHarnPage.css";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import useTimes from "../../hooks/loggedTimesHook";
+import { useBuildKit } from "../../hooks/useBuildKit";
 
 interface harnProps {
     setHarn: React.Dispatch<React.SetStateAction<string>>;
@@ -9,37 +10,42 @@ interface harnProps {
 
 function ChooseHarnPage({ setHarn }: harnProps) {
     const nav = useNavigate();
-    const tempHarns = ["HYSV-10001-R5", "HYSV-10002-R2", "HYSV-10003-R1", "HYSV-10004-R2", "HYSV-10005-R6"]
+    const { buildKit } = useBuildKit();
 
     const [currentPage, setCurrentPage] = useState(0);
     const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
-    const hasNextPage = tempHarns.length > endIndex;
+    let hasNextPage = false;
+    if (buildKit) {
+        hasNextPage = buildKit.harnesses.length > endIndex;
+    }
+
     const hasPreviousPage = currentPage > 0;
 
     function selectHarn(harnNumber: string) {
         let selectedHarn = undefined;
-        tempHarns.map((harn) => {
-            if (harn == harnNumber) {
-                selectedHarn = harn;
+        if (buildKit) {
+            buildKit.harnesses.map((harn) => {
+                if (harn.partNum == harnNumber) {
+                    selectedHarn = harn.partNum;
+                }
+            });
+            if (selectedHarn != undefined) {
+                console.log(selectedHarn);
+                setHarn(selectedHarn);
+                setTimeout(() => {
+                    nav("/timer");
+                }, 500);
+                handleOpenAnalytics();
+                useTimes().fetchTimes(selectedHarn);
             }
-        });
-        if (selectedHarn != undefined) {
-            console.log(selectedHarn)
-            setHarn(selectedHarn);
-            setTimeout(() => {
-                nav("/timer");
-            }, 500);
-            handleOpenAnalytics()
-            useTimes().fetchTimes(selectedHarn)
         }
     }
 
     const handleOpenAnalytics = () => {
         window.electron.openAnalyticsWindow();
     };
-
 
     function nextPage() {
         if (hasNextPage) {
@@ -52,30 +58,30 @@ function ChooseHarnPage({ setHarn }: harnProps) {
             setCurrentPage((prev) => prev - 1);
         }
     }
-    
+
     return (
         <div>
-        <h2 className="harn-choice-header">Select Harness</h2>
-        <div id="harn-list">
-            {tempHarns.slice(startIndex, endIndex).map((harn) => (
-                <div key={harn}>
-                    <p>{harn}</p>
-                    <button type="button" onClick={() => selectHarn(harn)}>
-                        Choose
-                    </button>
-                </div>
-            ))}
+            <h2 className="harn-choice-header">Select Harness</h2>
+            <div id="harn-list">
+                {buildKit?.harnesses.slice(startIndex, endIndex).map((harn) => (
+                    <div key={harn.partNum}>
+                        <p>{harn.partNum}</p>
+                        <button type="button" onClick={() => selectHarn(harn.partNum)}>
+                            Choose
+                        </button>
+                    </div>
+                ))}
+            </div>
+            <div className="pagination-buttons">
+                <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
+                    Previous
+                </button>
+                <button type="button" onClick={nextPage} disabled={!hasNextPage}>
+                    Next
+                </button>
+            </div>
         </div>
-        <div className="pagination-buttons">
-            <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
-                Previous
-            </button>
-            <button type="button" onClick={nextPage} disabled={!hasNextPage}>
-                Next
-            </button>
-        </div>
-    </div>
-    )
+    );
 }
 
-export default ChooseHarnPage
+export default ChooseHarnPage;

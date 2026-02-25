@@ -10,6 +10,9 @@ const settingsPath = path.join(__dirname$1, "settings.json");
 let windows = [];
 let mainWindow = null;
 let analyticsWindow = null;
+let timerInterval = null;
+let timerStart = null;
+let timerElapsed = 0;
 let sharedTimerData = {
   displayTimer: "00:00:00",
   activeButton: null,
@@ -19,8 +22,56 @@ let sharedTimerData = {
   pauseReason: [],
   currentSessionStart: null,
   sessions: []
-  // Historical session data for analytics
 };
+function broadcastToAll(data) {
+  windows.forEach((win) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("shared-data-changed", data);
+    }
+  });
+}
+function formatTime(ms) {
+  const totalSeconds = Math.floor(ms / 1e3);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
+    seconds
+  ).padStart(2, "0")}`;
+}
+ipcMain.on("timer-start", () => {
+  if (timerInterval) return;
+  timerStart = Date.now() - timerElapsed;
+  sharedTimerData.isRunning = true;
+  broadcastToAll(sharedTimerData);
+  timerInterval = setInterval(() => {
+    timerElapsed = Date.now() - timerStart;
+    const formatted = formatTime(timerElapsed);
+    sharedTimerData.displayTimer = formatted;
+    sharedTimerData.elapsedTime = timerElapsed;
+    broadcastToAll(sharedTimerData);
+  }, 1e3);
+});
+ipcMain.on("timer-pause", () => {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  sharedTimerData.isRunning = false;
+  broadcastToAll(sharedTimerData);
+});
+ipcMain.on("timer-reset", () => {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  timerElapsed = 0;
+  timerStart = null;
+  sharedTimerData.displayTimer = "00:00:00";
+  sharedTimerData.elapsedTime = 0;
+  sharedTimerData.isRunning = false;
+  broadcastToAll(sharedTimerData);
+});
 ipcMain.handle("read-settings", async () => {
   try {
     const data = fs.readFileSync(settingsPath, "utf-8");
@@ -50,19 +101,14 @@ ipcMain.handle("get-window-type", (event) => {
 });
 ipcMain.on("update-shared-data", (event, newData) => {
   sharedTimerData = { ...sharedTimerData, ...newData };
-  windows.forEach((win) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send("shared-data-changed", sharedTimerData);
-    }
-  });
+  broadcastToAll(sharedTimerData);
 });
 ipcMain.on("add-session", (event, sessionData) => {
   sharedTimerData.sessions.push(sessionData);
-  windows.forEach((win) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send("shared-data-changed", sharedTimerData);
-    }
-  });
+  broadcastToAll(sharedTimerData);
+});
+ipcMain.on("open-analytics-window", () => {
+  createAnalyticsWindow();
 });
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -97,8 +143,8 @@ function createAnalyticsWindow() {
     return analyticsWindow;
   }
   analyticsWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 1920,
+    height: 1080,
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -123,9 +169,6 @@ function createAnalyticsWindow() {
   }
   return analyticsWindow;
 }
-ipcMain.on("open-analytics-window", () => {
-  createAnalyticsWindow();
-});
 app.whenReady().then(createMainWindow);
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

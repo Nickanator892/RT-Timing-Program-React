@@ -14,8 +14,8 @@
     display: flex;
     flex-direction: column;
     position: absolute;
-    left: 10px;
-    bottom: 90px;
+    right: 10px;
+    top: 120px;
     padding-left: 1%;
 }
 
@@ -27,9 +27,9 @@
 .timer {
     display: flex;
     position: absolute;
-    bottom: 3em;
-    left: 30px;
-    font-size: 150px;
+    bottom: 6.9em;
+    left: 600px;
+    font-size: 110px;
     font-family: "Orbitron";
 }
 
@@ -51,11 +51,11 @@
     animation-name: runningDivAnimation;
     animation-duration: 2s;
     animation-iteration-count: infinite;
-    top: 125px;
-    left: 870px;
-    width: 90px;
-    height: 90px;
-    border-radius: 50px;
+    top: 40px;
+    left: 1225px;
+    width: 120px;
+    height: 120px;
+    border-radius: 60px;
 }
 
 @keyframes pauseDivAnimation {
@@ -76,9 +76,26 @@
     animation-name: pauseDivAnimation;
     animation-duration: 0.5s;
     animation-iteration-count: infinite;
-    top: 125px;
-    left: 870px;
-    width: 90px;
-    height: 90px;
-    border-radius: 50px;
+    top: 40px;
+    left: 1225px;
+    width: 120px;
+    height: 120px;
+    border-radius: 60px;
+}
+
+.progress {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    left: 8px;
+    top: 2em;
+    font-family: "Orbitron";
+}
+
+.harn-progress-item p {
+    font-size: 22px;
+    margin-top: 0;
+    margin-bottom: 0.5em;
+    padding: 0.1em;
+    border: 1px solid white;
 }

@@ -13,7 +13,6 @@ interface Settings {
     users: User[];
 }
 
-
 export {};
 
 declare global {
@@ -28,6 +27,9 @@ declare global {
             onSharedDataChanged: (callback: (data: any) => void) => () => void;
             openAnalyticsWindow: () => void;
             onNavigateTo?: (callback: (route: string) => void) => () => void;
+            timerStart: () => void;
+            timerPause: () => void;
+            timerReset: () => void;
         };
     }
 }

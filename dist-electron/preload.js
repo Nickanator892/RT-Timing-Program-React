@@ -1,9 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("electron", {
-  // Existing settings methods
+  // Settings
   readSettings: () => ipcRenderer.invoke("read-settings"),
   writeSettings: (settings) => ipcRenderer.invoke("write-settings", settings),
-  // Shared data methods
+  // Shared data
   getSharedData: () => ipcRenderer.invoke("get-shared-data"),
   getWindowType: () => ipcRenderer.invoke("get-window-type"),
   updateSharedData: (data) => ipcRenderer.send("update-shared-data", data),
@@ -15,9 +15,13 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.removeListener("shared-data-changed", subscription);
     };
   },
+  // Timer controls
+  timerStart: () => ipcRenderer.send("timer-start"),
+  timerPause: () => ipcRenderer.send("timer-pause"),
+  timerReset: () => ipcRenderer.send("timer-reset"),
   // Window management
   openAnalyticsWindow: () => ipcRenderer.send("open-analytics-window"),
-  // Navigation (for analytics window)
+  // Navigation
   onNavigateTo: (callback) => {
     ipcRenderer.on("navigate-to", (event, route) => callback(route));
   }

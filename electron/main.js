@@ -11,17 +11,17 @@ const preloadPath = isDev
     ? path.join(process.cwd(), "electron", "preload.js")
     : path.join(__dirname, "preload.js");
 
-//console.log("Preload path:", preloadPath);
-//console.log("Does it exist?", fs.existsSync(preloadPath));
-
 const settingsPath = path.join(__dirname, "settings.json");
 
-// Store all windows
 let windows = [];
 let mainWindow = null;
 let analyticsWindow = null;
 
-// Shared timer data
+// Timer state owned by main process
+let timerInterval = null;
+let timerStart = null;
+let timerElapsed = 0;
+
 let sharedTimerData = {
     displayTimer: "00:00:00",
     activeButton: null,
@@ -30,10 +30,69 @@ let sharedTimerData = {
     selectedUser: null,
     pauseReason: [],
     currentSessionStart: null,
-    sessions: [] // Historical session data for analytics
+    sessions: [],
 };
 
-// IPC Handlers for settings
+function broadcastToAll(data) {
+    windows.forEach((win) => {
+        if (!win.isDestroyed()) {
+            win.webContents.send("shared-data-changed", data);
+        }
+    });
+}
+
+function formatTime(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
+        seconds
+    ).padStart(2, "0")}`;
+}
+
+// Timer IPC handlers
+ipcMain.on("timer-start", () => {
+    if (timerInterval) return;
+    timerStart = Date.now() - timerElapsed;
+    sharedTimerData.isRunning = true;
+    broadcastToAll(sharedTimerData); // ← broadcast isRunning: true once here
+
+    timerInterval = setInterval(() => {
+        timerElapsed = Date.now() - timerStart;
+        const formatted = formatTime(timerElapsed);
+
+        sharedTimerData.displayTimer = formatted;
+        sharedTimerData.elapsedTime = timerElapsed;
+        // ← removed isRunning: true from here
+
+        broadcastToAll(sharedTimerData);
+    }, 1000);
+});
+
+ipcMain.on("timer-pause", () => {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+    sharedTimerData.isRunning = false;
+    broadcastToAll(sharedTimerData);
+});
+
+ipcMain.on("timer-reset", () => {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+    timerElapsed = 0;
+    timerStart = null;
+    sharedTimerData.displayTimer = "00:00:00";
+    sharedTimerData.elapsedTime = 0;
+    sharedTimerData.isRunning = false;
+    broadcastToAll(sharedTimerData);
+});
+
+// Settings IPC handlers
 ipcMain.handle("read-settings", async () => {
     try {
         const data = fs.readFileSync(settingsPath, "utf-8");
@@ -67,27 +126,17 @@ ipcMain.handle("get-window-type", (event) => {
 });
 
 ipcMain.on("update-shared-data", (event, newData) => {
-    // Merge new data with existing shared data
     sharedTimerData = { ...sharedTimerData, ...newData };
-    
-    // Broadcast to all windows
-    windows.forEach(win => {
-        if (!win.isDestroyed()) {
-            win.webContents.send("shared-data-changed", sharedTimerData);
-        }
-    });
+    broadcastToAll(sharedTimerData);
 });
 
-// Add session data (when timer completes)
 ipcMain.on("add-session", (event, sessionData) => {
     sharedTimerData.sessions.push(sessionData);
-    
-    // Broadcast to all windows
-    windows.forEach(win => {
-        if (!win.isDestroyed()) {
-            win.webContents.send("shared-data-changed", sharedTimerData);
-        }
-    });
+    broadcastToAll(sharedTimerData);
+});
+
+ipcMain.on("open-analytics-window", () => {
+    createAnalyticsWindow();
 });
 
 function createMainWindow() {
@@ -108,7 +157,7 @@ function createMainWindow() {
     windows.push(mainWindow);
 
     mainWindow.on("closed", () => {
-        windows = windows.filter(w => w !== mainWindow);
+        windows = windows.filter((w) => w !== mainWindow);
         mainWindow = null;
     });
 
@@ -123,15 +172,14 @@ function createMainWindow() {
 }
 
 function createAnalyticsWindow() {
-    // Don't create if already exists
     if (analyticsWindow && !analyticsWindow.isDestroyed()) {
         analyticsWindow.focus();
         return analyticsWindow;
     }
 
     analyticsWindow = new BrowserWindow({
-        width: 1400,
-        height: 900,
+        width: 1920,
+        height: 1080,
         autoHideMenuBar: true,
         webPreferences: {
             preload: preloadPath,
@@ -144,7 +192,7 @@ function createAnalyticsWindow() {
     windows.push(analyticsWindow);
 
     analyticsWindow.on("closed", () => {
-        windows = windows.filter(w => w !== analyticsWindow);
+        windows = windows.filter((w) => w !== analyticsWindow);
         analyticsWindow = null;
     });
 
@@ -153,7 +201,6 @@ function createAnalyticsWindow() {
         analyticsWindow.webContents.openDevTools();
     } else {
         analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"));
-        // After load, navigate to analytics route
         analyticsWindow.webContents.on("did-finish-load", () => {
             analyticsWindow.webContents.send("navigate-to", "/analytics");
         });
@@ -161,11 +208,6 @@ function createAnalyticsWindow() {
 
     return analyticsWindow;
 }
-
-// Create analytics window on demand
-ipcMain.on("open-analytics-window", () => {
-    createAnalyticsWindow();
-});
 
 app.whenReady().then(createMainWindow);
 

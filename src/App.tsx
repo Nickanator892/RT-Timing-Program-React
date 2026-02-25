@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Route, Routes, useNavigate } from "react-router-dom";
 import TimingPage from "./pages/timingPage/timingPage";
 import DatabaseSetup from "./pages/databaseSetup.tsx/databaseSetup";
@@ -12,41 +12,33 @@ import type { User } from "./assets/types/UserType";
 import AnalyticsPage from "./pages/analyticsPage/analyticsPage";
 import ChooseHarnPage from "./pages/chooseHarnPage/chooseHarnPage";
 import type { LoggedTime } from "./hooks/loggedTimesHook";
+import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 
 const API_BASE = "http://localhost:5000";
 
 function TimerLayout() {
     const navigate = useNavigate();
     const [err, setErr] = useState("");
-    const { pauseReasons, loading } = useSettings();
+    const { pauseReasons } = useSettings();
     const [pauseReason, setPauseReason] = useState<PauseReason[]>([]);
-    
-    // Use shared state for timer-related data
-    const [displayTimer, setDisplayTimer] = useSharedState<string>("displayTimer", "00:00:00");
-    const [activeButton, setActiveButton] = useSharedState<"start" | "pause" | "end" | "submit" | null>(
-        "activeButton", 
+
+    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
         null
     );
-    const [selectedUser, setSelectedUser] = useSharedState<User | undefined>("selectedUser", undefined);
-    const [loggedTimes, setLoggedTimes] = useState<LoggedTime[]>();
-    const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
-    
-    const intervalRef = useRef<number | null>(null);
-    const startRef = useRef<number | null>(null);
-    const elapsedRef = useRef(0);
-    const [windowType, setWindowType] = useState<string>("main");
-    const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "")
+
+    const [selectedUser, setSelectedUser] = useSharedState<User | undefined>(
+        "selectedUser",
+        undefined
+    );
+    const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "");
 
     useEffect(() => {
-        // Determine window type
-        window.electron.getWindowType().then(type => {
-            setWindowType(type);
+        window.electron.getWindowType().then((type) => {
             if (type === "analytics") {
                 navigate("/analytics");
             }
         });
 
-        // Listen for navigation commands (for analytics window)
         const unsubscribe = window.electron.onNavigateTo?.((route: string) => {
             navigate(route);
         });
@@ -60,26 +52,24 @@ function TimerLayout() {
         }
     }, [pauseReasons]);
 
-    const timerProps = {
-        displayTimer,
-        setDisplayTimer,
-        activeButton,
-        setActiveButton,
-        pauseReason,
-        err,
-        setErr,
-        intervalRef,
-        startRef,
-        elapsedRef,
-        selectedUser,
-        setIsRunning,
-    };
-
     return (
         <>
             <Routes>
-                <Route path="/" element={<LoginPage user={selectedUser} setUser={setSelectedUser} />} />
-                <Route path="/timer" element={<TimingPage {...timerProps} />} />
+                <Route
+                    path="/"
+                    element={<LoginPage user={selectedUser} setUser={setSelectedUser} />}
+                />
+                <Route
+                    path="/timer"
+                    element={
+                        <TimingPage
+                            activeButton={activeButton}
+                            setActiveButton={setActiveButton}
+                            err={err}
+                            setErr={setErr}
+                        />
+                    }
+                />
                 <Route path="/settings" element={<SettingsPage selectedUser={selectedUser} />} />
                 <Route
                     path="/pause-reason-page"
@@ -91,8 +81,9 @@ function TimerLayout() {
                         />
                     }
                 />
-                <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn}/>} />
-                <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn}/>}/>
+                <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
+                <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
+                <Route path="/choose-kit" element={<ChooseKitPage />} />
             </Routes>
         </>
     );
@@ -116,13 +107,8 @@ function App() {
         checkDbStatus();
     }, [checkDbStatus]);
 
-    if (dbReady === null) {
-        return <p>Checking database...</p>;
-    }
-
-    if (!dbReady) {
-        return <DatabaseSetup onDbSet={checkDbStatus} />;
-    }
+    if (dbReady === null) return <p>Checking database...</p>;
+    if (!dbReady) return <DatabaseSetup onDbSet={checkDbStatus} />;
 
     return <TimerLayout />;
 }
