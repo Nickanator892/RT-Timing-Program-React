@@ -38,10 +38,12 @@ function AnalyticsChart({
     buildTimeEst,
     currentTimeSeconds,
 }: chartData) {
-    const chartData = loggedTimes.map((time, i) => ({
-        x: `Build ${i + 1}`,
-        y: parseFloat((time.seconds / 60).toFixed(2)),
-    }));
+    const chartData = loggedTimes.length > 0
+        ? loggedTimes.map((time, i) => ({
+            x: `Build ${i + 1}`,
+            y: parseFloat((time.seconds / 60).toFixed(2)),
+        }))
+        : [{ x: "No builds yet", y: 0 }];
 
     function calculateSeconds(timeString: string): number {
         if (!timeString || typeof timeString !== "string") {
@@ -213,7 +215,7 @@ function AnalyticsChart({
 
     return (
         <div className="chart">
-            <Chart options={apexOptions} series={series} type="line" height={450} width={1000} />
+            <Chart options={apexOptions} series={series} type="line" height="100%" width="100%" />
         </div>
     );
 }

@@ -1,101 +1,172 @@
-.build-chart {
+.analytics-root {
     display: flex;
     flex-direction: row;
-    position: absolute;
-    bottom: 50px;
-    right: 20px;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #111;
+    box-sizing: border-box;
+    color: white;
+}
+
+.left-col {
+    padding-top: 5vw;
+    width: 30vw;
+    min-width: 320px;
+    max-width: 500px;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.progress-list {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    font-family: "Orbitron", monospace;
+    max-height: 60vw;
+}
+
+.harn-progress-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: clamp(11px, 1vw, 18px);
+    margin-bottom: 2px;
+    padding: 2px 4px;
+    border: 1px solid white;
+    white-space: nowrap;
+}
+
+.harn-part-num {
+    width: 16ch;
+    text-align: right;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.progress-bar {
+    flex: 1;
+    min-width: 0;
+}
+
+.harn-count {
+    width: 5ch;
+    text-align: right;
+    flex-shrink: 0;
 }
 
 .harn-build-chart-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5em;
+    flex-shrink: 0;
     border-top: 2px solid white;
     border-bottom: 2px solid white;
     border-left: 2px solid white;
-    width: 25%;
-    display: flex;
-    flex-direction: column;
-    position: absolute;
-    right: 10px;
-    top: 120px;
-    padding-left: 1%;
+    padding: 0.5vh 0.5vw;
+    box-sizing: border-box;
+    height: 10vw;
 }
 
 .harn-build-chart-info p {
-    font-family: "RobotoMono";
-    font-size: 20px;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(11px, 0.9vw, 18px);
+    margin: 0.3vh 0;
+}
+
+.right-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 0.5vh 1vw 1vh 1vw;
+    min-width: 0;
+}
+
+.top-bar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    width: 100%;
+}
+
+.timer-section {
+    padding-top: 5vw;
+    padding-left: 2vw;
+    display: flex;
+    align-items: center;
+    gap: 1.5vw;
 }
 
 .timer {
-    display: flex;
-    position: absolute;
-    bottom: 6.9em;
-    left: 600px;
-    font-size: 110px;
-    font-family: "Orbitron";
+    font-family: "Orbitron", monospace;
+    font-size: clamp(50px, 9vw, 160px);
+    margin: 0;
+    line-height: 1;
 }
 
 @keyframes runningDivAnimation {
-    0% {
-        background-color: green;
-    }
-    50% {
-        background-color: rgb(13, 31, 13);
-    }
-    100% {
-        background-color: green;
-    }
+    0%, 100% { background-color: green; }
+    50%       { background-color: rgb(13, 31, 13); }
 }
-
-.indication-div-on {
-    display: flex;
-    position: absolute;
-    animation-name: runningDivAnimation;
-    animation-duration: 2s;
-    animation-iteration-count: infinite;
-    top: 40px;
-    left: 1225px;
-    width: 120px;
-    height: 120px;
-    border-radius: 60px;
-}
-
 @keyframes pauseDivAnimation {
-    0% {
-        background-color: red;
-    }
-    50% {
-        background-color: rgb(53, 35, 35);
-    }
-    100% {
-        background-color: red;
-    }
+    0%, 100% { background-color: red; }
+    50%       { background-color: rgb(80, 20, 20); }
 }
 
+.indication-div-on,
 .indication-div-off {
+    width:  clamp(60px, 7vw, 140px);
+    height: clamp(60px, 7vw, 140px);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.indication-div-on  { animation: runningDivAnimation 2s   infinite; }
+.indication-div-off { animation: pauseDivAnimation   0.5s infinite; }
+
+#RT-logo {
     display: flex;
-    position: absolute;
-    animation-name: pauseDivAnimation;
-    animation-duration: 0.5s;
-    animation-iteration-count: infinite;
-    top: 40px;
-    left: 1225px;
-    width: 120px;
-    height: 120px;
-    border-radius: 60px;
+    align-items: baseline;
+    gap: 0.4vw;
+    font-family: "Orbitron", monospace;
+}
+#RT-part-one {
+    font-size: clamp(26px, 2.8vw, 56px);
+}
+#RT-part-two {
+    font-size: clamp(15px, 1.1vw, 22px);
 }
 
-.progress {
+.chart-area {
+    position: absolute;
+    bottom: 1vh;
+    right: 1vw;
+    width: 70vw;
+    height: 55vh;
+}
+
+.chart-area > * {
+    width: 100%;
+    height: 100%;
+}
+
+.db-progress {
+    position: fixed;
+    inset: 0;
     display: flex;
     flex-direction: column;
-    position: absolute;
-    left: 8px;
-    top: 2em;
-    font-family: "Orbitron";
+    align-items: center;
+    justify-content: center;
+    font-family: "Orbitron", monospace;
+    font-size: clamp(18px, 2vw, 36px);
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.8);
 }
-
-.harn-progress-item p {
-    font-size: 22px;
-    margin-top: 0;
-    margin-bottom: 0.5em;
-    padding: 0.1em;
-    border: 1px solid white;
-}
+.db-progress h4 { margin-bottom: 1vh; }

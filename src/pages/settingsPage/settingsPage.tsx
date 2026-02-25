@@ -1,10 +1,11 @@
 import { useState } from "react";
 import useSettings from "../../hooks/pauseReasonHook";
 import "./settingsPage.css";
-import TimerButton from "../../common/timerButton/timerButton";
-import SettingsButton from "../../common/settingsButton/settingsButton";
+import TimerButton from "../../common/buttons/timerButton/timerButton";
+import SettingsButton from "../../common/buttons/settingsButton/settingsButton";
 import type { User } from "../../assets/types/UserType";
-import ChooseHarnessButton from "../../common/chooseHarnessButton/chooseHarnessButton";
+import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
+import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
@@ -101,6 +102,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                 <TimerButton />
                 <SettingsButton />
                 <ChooseHarnessButton/>
+                <ChooseKitButton/>
             </div>
 
             <div className="pause-reasons">

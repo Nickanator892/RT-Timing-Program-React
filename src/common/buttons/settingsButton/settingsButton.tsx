@@ -1,6 +1,6 @@
 import "./settingsButton.css"
 import { NavLink } from "react-router-dom"
-import settingsIcon from "../../assets/settingsIcon.png"
+import settingsIcon from "../../../assets/settingsIcon.png"
 
 function SettingsButton() {
     return (

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSharedState } from "./useSharedState"; // Import your shared state hook
+import { useBuildKit } from "./useBuildKit";
 
 export interface LoggedTime {
     startTime: string;
@@ -15,6 +16,7 @@ export function useTimes() {
         "loggedTimes",
         undefined
     );
+    const { buildKit } = useBuildKit()
 
     const execQuery = async (
         requestedQuery: string,
@@ -57,7 +59,7 @@ export function useTimes() {
     async function writeTime(time: LoggedTime) {
         try {
             const result = await execQuery(
-                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt, REV) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
                     time.startTime,
                     time.endTime,
@@ -65,6 +67,7 @@ export function useTimes() {
                     time.formattedTime,
                     time.harnNumber,
                     time.dateBuilt,
+                    buildKit?.REV
                 ]
             );
             return result;

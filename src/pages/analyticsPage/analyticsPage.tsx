@@ -23,6 +23,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     });
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
     const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
+    const [dbProgressValues, setDbProgressValues] = useState<{active: Boolean, max: number, current: number}>()
 
     const { fetchTimes } = useTimes();
     const { buildKit } = useBuildKit();
@@ -90,11 +91,23 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
         countsFetched.current = true;
         async function loadCounts() {
             const counts: Record<string, number> = {};
+            let index = 0
             for (const harness of buildKit!.harnesses) {
+                if (buildKit) {
+                    setDbProgressValues({active: true, max: buildKit?.harnesses.length, current: index})
+                }
+
                 const result = await fetchTimes(harness.partNum);
                 counts[harness.partNum] = Array.isArray(result) ? result.length : 0;
+                index += 1
+
+                if (buildKit) {
+                setDbProgressValues({active: true, max: buildKit.harnesses.length, current: index})
+            }
             }
             setHarnCounts(counts);
+            setDbProgressValues({active: false, max: 0, current: 0})
+
         }
         loadCounts();
     }, [buildKit, refreshTrigger]);
@@ -118,48 +131,68 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             const built = harnCounts[harness.partNum] ?? 0;
             return (
                 <div key={harness.partNum} className="harn-progress-item">
-                    <p>
-                        {harness.partNum}:{" "}
+                    <span className="harn-part-num">{harness.partNum}:</span>
                         <progress
                             className="progress-bar"
                             value={built}
                             max={harness.buildNumber}
-                        />{" "}
-                        {built}/{harness.buildNumber}
-                    </p>
+                        />
+                    <span className="harn-count">{built}/{harness.buildNumber}</span>
                 </div>
             );
         });
     }
 
+    function dbProgressBar() {
+        if (!dbProgressValues?.active) {
+            return
+        } else {
+            return (
+                <div className="db-progress">
+                    <h4>Fetching Times</h4>
+                    <progress max={dbProgressValues?.max} value={dbProgressValues?.current}></progress>
+                </div>
+            )
+        }
+
+    }
+
     return (
-        <div>
-            <div className="timer-info">
-                <p className="timer">{displayTimer}</p>
-                {checkIsRunning()}
+        <div className="analytics-root">
+            {dbProgressBar()}
+
+            <div className="left-col">
+                <div className="progress-list">{getProgress()}</div>
+                <div className="harn-build-chart-info">
+                    <p id="current-build-pn">Part #: {harn}</p>
+                    <p id="build-time-estimate">Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes</p>
+                    {createInfoElement()}
+                </div>
             </div>
-            <div className="progress">{getProgress()}</div>
-            <div className="harn-build-chart-info">
-                <p id="current-build-pn">Part #: {harn}</p>
-                <p id="build-time-estimate">
-                    Estimate: {Math.round(buildTimeEst.seconds / 60)} Minutes
-                </p>
-                {createInfoElement()}
-            </div>
-            <div className="build-chart">
-                <AnalyticsChart
-                    loggedTimes={times}
-                    harnNumber={harn || ""}
-                    buildNumber={30}
-                    buildTimeEst={buildTimeEst}
-                    currentTimeSeconds={displayTimer}
-                />
-            </div>
-            <div id="RT-logo">
-                <p id="RT-part-one">RT </p> <p id="RT-part-two">Technologies</p>
+
+            <div className="right-col">
+                <div className="top-bar">
+                    <div className="timer-section">
+                        <p className="timer">{displayTimer}</p>
+                        {checkIsRunning()}
+                    </div>
+                    <div id="RT-logo">
+                        <span id="RT-part-one">RT </span>
+                        <span id="RT-part-two">Technologies</span>
+                    </div>
+                </div>
+                <div className="chart-area">
+                    <AnalyticsChart
+                        loggedTimes={times}
+                        harnNumber={harn || ""}
+                        buildNumber={30}
+                        buildTimeEst={buildTimeEst}
+                        currentTimeSeconds={displayTimer}
+                    />
+                </div>
             </div>
         </div>
     );
-}
+    }
 
 export default AnalyticsPage;

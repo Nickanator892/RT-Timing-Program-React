@@ -1,6 +1,6 @@
 import "./chooseHarnessButton.css"
 import { NavLink } from "react-router-dom"
-import chooseHarnIcon from "../../assets/harnessIcon.png"
+import chooseHarnIcon from "../../../assets/harnessIcon.png"
 
 function ChooseHarnessButton() {
     return (

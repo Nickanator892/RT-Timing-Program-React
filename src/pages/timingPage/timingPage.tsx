@@ -1,12 +1,13 @@
 import "./timingPage.css";
 import { useState, useEffect, useRef } from "react";
-import SettingsButton from "../../common/settingsButton/settingsButton";
-import TimerButton from "../../common/timerButton/timerButton";
+import SettingsButton from "../../common/buttons/settingsButton/settingsButton";
+import TimerButton from "../../common/buttons/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
 import { useSharedState } from "../../hooks/useSharedState";
-import ChooseHarnessButton from "../../common/chooseHarnessButton/chooseHarnessButton";
+import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
 import useTimes, { type LoggedTime } from "../../hooks/loggedTimesHook";
 import { useBuildKit } from "../../hooks/useBuildKit";
+import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -119,8 +120,12 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                 harnNumber: selectedHarn,
                 dateBuilt: new Date().toISOString().split("T")[0],
             };
-            const result = await writeTime(timeObject);
-            if (!result) return;
+            if (buildKit) {
+                const result = await writeTime(timeObject, buildKit?.REV);
+                if (!result) return;
+            }
+
+
 
             // Refresh counts locally
             const updatedTimes = await fetchTimes(selectedHarn);
@@ -191,6 +196,7 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                     <TimerButton />
                     <SettingsButton />
                     <ChooseHarnessButton />
+                    <ChooseKitButton/>
                 </div>
                 <p id="timer">{displayTimer}</p>
                 <div className="harn-build-info">

@@ -1,6 +1,6 @@
 import "./timerButton.css";
 import { NavLink } from "react-router-dom";
-import timerIcon from "../../assets/timerIcon.png";
+import timerIcon from "../../../assets/timerIcon.png";
 
 function TimerButton() {
     return (
