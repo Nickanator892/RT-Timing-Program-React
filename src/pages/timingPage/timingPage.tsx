@@ -120,12 +120,8 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                 harnNumber: selectedHarn,
                 dateBuilt: new Date().toISOString().split("T")[0],
             };
-            if (buildKit) {
-                const result = await writeTime(timeObject, buildKit?.REV);
-                if (!result) return;
-            }
-
-
+            const result = await writeTime(timeObject);
+            if (!result) return;
 
             // Refresh counts locally
             const updatedTimes = await fetchTimes(selectedHarn);
