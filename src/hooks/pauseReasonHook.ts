@@ -15,104 +15,100 @@ interface Settings {
     users: User[];
 }
 
-function useSettings() {
+const execQuery = async (query: string, params: unknown[] = []): Promise<any> => {
+    try {
+        const response = await fetch("http://localhost:5000/api/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, params }),
+        });
+        const data = await response.json();
+        if (data.success === false) return undefined;
+        return data.result;
+    } catch (err) {
+        console.log(err);
+        return undefined;
+    }
+};
+
+export function useSettings() {
     const [settings, setSettings] = useState<Settings | null>(null);
     const [loading, setLoading] = useState(true);
 
-    // Load settings on mount
     useEffect(() => {
-        window.electron
-            .readSettings()
-            .then((data: Settings) => {
-                setSettings(data);
-                setLoading(false);
-            })
-            .catch((err) => {
-                console.error("Failed to load settings:", err);
-                setLoading(false);
-            });
+        const loadSettings = async () => {
+            const reasonRows = await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS");
+            const userRows = await execQuery("SELECT * FROM HARNBUILDERS");
+
+            if (reasonRows && userRows) {
+                const pauseReasons: PauseReason[] = reasonRows.map((row: any) => ({
+                    Id: row["Id"],
+                    name: row["reason_name"],
+                }));
+                const users: User[] = userRows.map((row: any) => ({
+                    Id: row["Id"],
+                    name: row["userName"],
+                }));
+                setSettings({ pauseReasons, users });
+            }
+            setLoading(false);
+        };
+        loadSettings();
     }, []);
 
-    // Add a new pause reason
     const addPauseReason = async (name: string) => {
         if (!settings) return;
-
-        const newId = (
-            Math.max(...settings.pauseReasons.map((r) => parseInt(r.Id)), 0) + 1
-        ).toString();
-        const newReason: PauseReason = { Id: newId, name };
-
-        const updated = {
-            ...settings,
-            pauseReasons: [...settings.pauseReasons, newReason],
-        };
-
-        setSettings(updated);
-        await window.electron.writeSettings(updated);
+        const result = await execQuery(
+            "INSERT INTO HARNBUILDPAUSEREASONS (reason_name) VALUES (?)",
+            [name]
+        );
+        if (result !== undefined) {
+            const newReason: PauseReason = { Id: result.lastID, name };
+            setSettings({ ...settings, pauseReasons: [...settings.pauseReasons, newReason] });
+        }
     };
 
-    // Remove a pause reason by Id
     const removePauseReason = async (id: string) => {
         if (!settings) return;
-
-        const updated = {
+        await execQuery("DELETE FROM HARNBUILDPAUSEREASONS WHERE Id = ?", [id]);
+        setSettings({
             ...settings,
             pauseReasons: settings.pauseReasons.filter((r) => r.Id !== id),
-        };
-
-        setSettings(updated);
-        await window.electron.writeSettings(updated);
+        });
     };
 
-    // Update a pause reason
     const updatePauseReason = async (id: string, newName: string) => {
         if (!settings) return;
-
-        const updated = {
+        await execQuery("UPDATE HARNBUILDPAUSEREASONS SET reason_name = ? WHERE Id = ?", [
+            newName,
+            id,
+        ]);
+        setSettings({
             ...settings,
             pauseReasons: settings.pauseReasons.map((r) =>
                 r.Id === id ? { ...r, name: newName } : r
             ),
-        };
-
-        setSettings(updated);
-        await window.electron.writeSettings(updated);
+        });
     };
 
     const addUser = async (name: string) => {
         if (!settings) return;
-        for (const user of settings.users) {
-            if (user.name == name) {
-                return;
-            }
-        }
-        let prevId = 0;
-        settings.users.map((u) => {
-            if (u.Id > prevId) {
-                prevId = u.Id;
-            }
-        });
-        const newId = (prevId += 1);
-        const newUser: User = { Id: newId, name };
+        if (settings.users.some((u) => u.name === name)) return;
 
-        const updated = {
-            ...settings,
-            users: [...settings.users, newUser],
-        };
-        setSettings(updated);
-        await window.electron.writeSettings(updated);
+        const result = await execQuery("INSERT INTO HARNBUILDERS (userName) VALUES (?)", [name]);
+        if (result !== undefined) {
+            const newUser: User = { Id: result.lastID, name };
+            setSettings({ ...settings, users: [...settings.users, newUser] });
+        }
     };
 
     const deleteUser = async (id: number) => {
         if (!settings) return;
-
-        const updated = {
+        await execQuery("DELETE FROM HARNBUILDERS WHERE Id = ?", [id]);
+        setSettings({
             ...settings,
             users: settings.users.filter((u) => u.Id !== id),
-        };
-
-        setSettings(updated);
-        await window.electron.writeSettings(updated);
+        });
     };
 
     return {

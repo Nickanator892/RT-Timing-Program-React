@@ -14,7 +14,7 @@ interface loginProps {
     setUser: React.Dispatch<React.SetStateAction<User | undefined>>;
 }
 
-function LoginPage({ user, setUser }: loginProps) {
+function LoginPage({ setUser }: loginProps) {
     const { users } = useSettings();
     const nav = useNavigate();
 
@@ -24,6 +24,17 @@ function LoginPage({ user, setUser }: loginProps) {
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = users.length > endIndex;
     const hasPreviousPage = currentPage > 0;
+
+    function populateUserList() {
+        return users.slice(startIndex, endIndex).map((user) => (
+            <div key={user.Id}>
+                <p>{user.name}</p>
+                <button type="button" onClick={() => selectUser(user.Id)}>
+                    Login
+                </button>
+            </div>
+        ));
+    }
 
     function selectUser(Id: number) {
         let selectedUser = undefined;
@@ -55,16 +66,7 @@ function LoginPage({ user, setUser }: loginProps) {
     return (
         <div>
             <h2 className="login-header">Select Builder</h2>
-            <div id="users-list">
-                {users.slice(startIndex, endIndex).map((user) => (
-                    <div key={user.Id}>
-                        <p>{user.name}</p>
-                        <button type="button" onClick={() => selectUser(user.Id)}>
-                            Login
-                        </button>
-                    </div>
-                ))}
-            </div>
+            <div id="users-list">{populateUserList()}</div>
             <div className="pagination-buttons">
                 <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
                     Previous

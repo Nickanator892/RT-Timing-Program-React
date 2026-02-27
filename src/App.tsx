@@ -11,7 +11,6 @@ import LoginPage from "./pages/loginPage/loginPage";
 import type { User } from "./assets/types/UserType";
 import AnalyticsPage from "./pages/analyticsPage/analyticsPage";
 import ChooseHarnPage from "./pages/chooseHarnPage/chooseHarnPage";
-import type { LoggedTime } from "./hooks/loggedTimesHook";
 import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 
 const API_BASE = "http://localhost:5000";
@@ -20,7 +19,8 @@ function TimerLayout() {
     const navigate = useNavigate();
     const [err, setErr] = useState("");
     const { pauseReasons } = useSettings();
-    const [pauseReason, setPauseReason] = useState<PauseReason[]>([]);
+    const [pauseReason, setPauseReason] = useState<PauseReason | undefined>();
+    const [pauseStart, setPauseStart] = useState<string | null>(null);
 
     const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
         null
@@ -46,12 +46,6 @@ function TimerLayout() {
         return unsubscribe;
     }, [navigate]);
 
-    useEffect(() => {
-        if (pauseReasons.length > 0) {
-            setPauseReason(pauseReasons);
-        }
-    }, [pauseReasons]);
-
     return (
         <>
             <Routes>
@@ -67,6 +61,8 @@ function TimerLayout() {
                             setActiveButton={setActiveButton}
                             err={err}
                             setErr={setErr}
+                            pauseStart={pauseStart}
+                            setPauseStart={setPauseStart}
                         />
                     }
                 />
@@ -78,6 +74,8 @@ function TimerLayout() {
                             pauseReasons={pauseReasons}
                             setPauseReason={setPauseReason}
                             setErr={setErr}
+                            pauseStart={pauseStart}
+                            setPauseStart={setPauseStart}
                         />
                     }
                 />

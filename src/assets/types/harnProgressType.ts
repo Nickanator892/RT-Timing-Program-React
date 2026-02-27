@@ -3,5 +3,6 @@ export interface HarnProgress {
     harns: {
         harnNumber: string;
         buildNumber: number;
+        built: number;
     }[];
 }

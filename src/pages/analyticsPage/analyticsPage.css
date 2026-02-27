@@ -113,23 +113,37 @@
 }
 
 @keyframes runningDivAnimation {
-    0%, 100% { background-color: green; }
-    50%       { background-color: rgb(13, 31, 13); }
+    0%,
+    100% {
+        background-color: green;
+    }
+    50% {
+        background-color: rgb(13, 31, 13);
+    }
 }
 @keyframes pauseDivAnimation {
-    0%, 100% { background-color: red; }
-    50%       { background-color: rgb(80, 20, 20); }
+    0%,
+    100% {
+        background-color: red;
+    }
+    50% {
+        background-color: rgb(80, 20, 20);
+    }
 }
 
 .indication-div-on,
 .indication-div-off {
-    width:  clamp(60px, 7vw, 140px);
+    width: clamp(60px, 7vw, 140px);
     height: clamp(60px, 7vw, 140px);
     border-radius: 50%;
     flex-shrink: 0;
 }
-.indication-div-on  { animation: runningDivAnimation 2s   infinite; }
-.indication-div-off { animation: pauseDivAnimation   0.5s infinite; }
+.indication-div-on {
+    animation: runningDivAnimation 2s infinite;
+}
+.indication-div-off {
+    animation: pauseDivAnimation 0.5s infinite;
+}
 
 #RT-logo {
     display: flex;
@@ -169,4 +183,6 @@
     z-index: 200;
     background: rgba(0, 0, 0, 0.8);
 }
-.db-progress h4 { margin-bottom: 1vh; }
+.db-progress h4 {
+    margin-bottom: 1vh;
+}

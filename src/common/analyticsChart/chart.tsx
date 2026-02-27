@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import "./chart.css";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import useTimes from "../../hooks/loggedTimesHook";
 import { useMemo } from "react";
 
 interface chartData {
@@ -19,18 +18,6 @@ interface chartData {
     currentTimeSeconds: string;
 }
 
-interface seriesSettings {
-    name: string;
-    data: { x: string; y: number }[];
-}
-
-interface chartPlots {
-    loggedTimes: {
-        x: string;
-        y: number;
-    }[];
-}
-
 function AnalyticsChart({
     loggedTimes,
     harnNumber,
@@ -38,12 +25,13 @@ function AnalyticsChart({
     buildTimeEst,
     currentTimeSeconds,
 }: chartData) {
-    const chartData = loggedTimes.length > 0
-        ? loggedTimes.map((time, i) => ({
-            x: `Build ${i + 1}`,
-            y: parseFloat((time.seconds / 60).toFixed(2)),
-        }))
-        : [{ x: "No builds yet", y: 0 }];
+    const chartData =
+        loggedTimes.length > 0
+            ? loggedTimes.map((time, i) => ({
+                  x: `Build ${i + 1}`,
+                  y: parseFloat((time.seconds / 60).toFixed(2)),
+              }))
+            : [{ x: "No builds yet", y: 0 }];
 
     function calculateSeconds(timeString: string): number {
         if (!timeString || typeof timeString !== "string") {

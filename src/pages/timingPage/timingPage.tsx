@@ -8,25 +8,46 @@ import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/choose
 import useTimes, { type LoggedTime } from "../../hooks/loggedTimesHook";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
+import type { PauseReason } from "../../assets/types/pauseReasonType";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
     setActiveButton: (value: "start" | "pause" | "end" | "submit" | null) => void;
     err: string;
     setErr: (value: string) => void;
+    pauseStart: string | null;
+    setPauseStart: React.Dispatch<React.SetStateAction<string | null>>;
 };
 
-function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPageProps) {
+function TimingPage({
+    activeButton,
+    setActiveButton,
+    err,
+    setErr,
+    pauseStart,
+    setPauseStart,
+}: timingPageProps) {
     const { buildKit } = useBuildKit();
     const [dbSuccess, setDbSuccess] = useState("Submit");
     const [harnBuilt, setHarnBuilt] = useState(0);
     const [harnTotal, setHarnTotal] = useState(0);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
+    const [timerDone, setTimerDone] = useSharedState<boolean>("timerDone", true);
     const [displayTimer] = useSharedState<string>("displayTimer", "00:00:00");
     const [startTime, setStartTime] = useSharedState<string>("startTime", "");
     const [endTime, setEndTime] = useSharedState<string>("endTime", "");
     const [selectedHarn] = useSharedState<string>("selectedHarn", "");
+    const [disableButtons, setDisabledButtons] = useState<boolean>(false);
+    const [disableSubmit, setDisableSubmit] = useState<boolean>(true);
     const [refreshTrigger, setRefreshTrigger] = useSharedState<number>("refreshTrigger", 0);
+    const [currentBuildId, setCurrentBuildId] = useSharedState<number | boolean>(
+        "currentBuildId",
+        0
+    );
+    const [sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
+        "pauseReason",
+        undefined
+    );
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
 
@@ -61,18 +82,76 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
         timesFetched.current = false;
     }, [refreshTrigger]);
 
+    const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<any> => {
+        try {
+            const response = await fetch("http://localhost:5000/api/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: requestedQuery, params }),
+            });
+            const data = await response.json();
+
+            if (data.success === false) return false;
+            return data;
+        } catch (err: any) {
+            console.log(err);
+            return false;
+        }
+    };
+
+    async function getBuildId() {
+        const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDTIMES");
+        console.log(data);
+        const buildId = Number(data["result"]["0"].maxId ?? 0) + 1;
+        setCurrentBuildId(buildId);
+    }
+
+    async function insertPause() {
+        const pauseEnd = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        if (sharedPauseReason) {
+            try {
+                await execQuery(
+                    "INSERT INTO HARNBUILDPAUSEHISTORY (buildId, pauseId, pauseStart, pauseEnd) VALUES(?, ?, ?, ?)",
+                    [currentBuildId, sharedPauseReason.Id, pauseStart, pauseEnd]
+                );
+                console.log(`${currentBuildId} ${sharedPauseReason.Id} ${pauseStart} ${pauseEnd}`);
+            } catch (err: unknown) {
+                throw new Error("Error");
+            }
+        }
+    }
+
     function startTimer() {
+        console.log("PAUSE START ", pauseStart);
         if (isRunning) return;
         window.electron.timerStart();
+        if (pauseStart) {
+            insertPause();
+        }
+
+        if (timerDone) {
+            setStartTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+            setTimerDone(false);
+            setIsRunning(true);
+            setErr("");
+            setDbSuccess("Submit");
+            execQuery(
+                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt, REV) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                ["", "", "", "", "", "", ""]
+            );
+            getBuildId();
+            return;
+        }
         setIsRunning(true);
-        setStartTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
         setErr("");
         setDbSuccess("Submit");
     }
 
     function pauseTimer() {
         window.electron.timerPause();
-        setEndTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+        const newDate = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        setPauseStart(newDate);
+        setEndTime(newDate);
         setIsRunning(false);
         setTimeout(() => {
             nav("/pause-reason-page");
@@ -82,8 +161,11 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
     function resetTimer() {
         if (displayTimer === "00:00:00") return;
         window.electron.timerPause();
-        setEndTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+        if (!timerDone) {
+            setEndTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+        }
         setIsRunning(false);
+        setDisableSubmit(false);
     }
 
     function calculateSeconds(timeString: string): number {
@@ -120,8 +202,12 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                 harnNumber: selectedHarn,
                 dateBuilt: new Date().toISOString().split("T")[0],
             };
-            const result = await writeTime(timeObject);
-            if (!result) return;
+            if (typeof currentBuildId == "number") {
+                const result = await writeTime(timeObject, currentBuildId);
+                if (!result) {
+                    return;
+                }
+            }
 
             // Refresh counts locally
             const updatedTimes = await fetchTimes(selectedHarn);
@@ -131,8 +217,10 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
 
             window.electron.timerReset();
             setRefreshTrigger((prev) => prev + 1); // ← triggers analytics to refresh
+            setTimerDone(true);
             setDbSuccess("Success✅");
             setErr("");
+            setPauseStart(null);
 
             if (harnBuilt + 1 >= harnTotal) {
                 setDbSuccess("ALL BUILT ✅");
@@ -160,6 +248,7 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                     id="start-button"
                     className={activeButton === "start" ? "pressed" : ""}
                     onClick={() => handleButtonClick("start")}
+                    disabled={disableButtons}
                 >
                     {isRunning ? "Running" : displayTimer === "00:00:00" ? "Start" : "Resume"}
                 </button>
@@ -167,14 +256,21 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                     id="pause-button"
                     className={activeButton === "pause" ? "pressed" : ""}
                     onClick={() => handleButtonClick("pause")}
-                    disabled={!isRunning}
+                    disabled={!isRunning || disableButtons}
                 >
                     Pause
                 </button>
                 <button
                     id="end-button"
                     className={activeButton === "end" ? "pressed" : ""}
-                    onClick={() => handleButtonClick("end")}
+                    onClick={() => {
+                        handleButtonClick("end");
+                        setDisabledButtons(true);
+                        setTimeout(() => {
+                            setDisabledButtons(false);
+                        }, 100);
+                    }}
+                    disabled={disableButtons}
                 >
                     End
                 </button>
@@ -183,6 +279,7 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                     id="submit-time-button"
                     className={activeButton === "submit" ? "pressed" : ""}
                     onClick={() => handleButtonClick("submit")}
+                    disabled={disableButtons || disableSubmit}
                 >
                     {dbSuccess}
                 </button>
@@ -192,7 +289,7 @@ function TimingPage({ activeButton, setActiveButton, err, setErr }: timingPagePr
                     <TimerButton />
                     <SettingsButton />
                     <ChooseHarnessButton />
-                    <ChooseKitButton/>
+                    <ChooseKitButton />
                 </div>
                 <p id="timer">{displayTimer}</p>
                 <div className="harn-build-info">

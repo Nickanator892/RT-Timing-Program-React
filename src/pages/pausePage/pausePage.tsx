@@ -1,18 +1,25 @@
 import "./pausePage.css";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import { useNavigate } from "react-router-dom";
+import { useSharedState } from "../../hooks/useSharedState";
 
 type pauseProps = {
     pauseReasons: PauseReason[];
-    setPauseReason: React.Dispatch<React.SetStateAction<PauseReason[]>>;
+    setPauseReason: React.Dispatch<React.SetStateAction<PauseReason | undefined>>;
     setErr: React.Dispatch<React.SetStateAction<string>>;
+    pauseStart: string | null;
+    setPauseStart: React.Dispatch<React.SetStateAction<string | null>>;
 };
 
-function PausePage({ pauseReasons, setPauseReason, setErr }: pauseProps) {
+function PausePage({ pauseReasons, setErr }: pauseProps) {
+    const [sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
+        "pauseReason",
+        undefined
+    );
     const nav = useNavigate();
 
     function selectPauseReason({ Id, name }: PauseReason) {
-        setPauseReason([{ Id, name }]);
+        setSharedPauseReason({ Id, name });
         setErr(name);
         nav("/timer");
     }

@@ -4,7 +4,7 @@ import { useSharedState } from "../../hooks/useSharedState";
 import type { User } from "../../assets/types/UserType";
 import AnalyticsChart from "../../common/analyticsChart/chart";
 import useTimes from "../../hooks/loggedTimesHook";
-import type { LoggedTime } from "../../hooks/loggedTimesHook";
+import type { LoggedTime, HarnCount } from "../../hooks/loggedTimesHook";
 import { useBuildKit } from "../../hooks/useBuildKit";
 
 interface analyticsPageProps {
@@ -23,9 +23,8 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     });
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
     const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
-    const [dbProgressValues, setDbProgressValues] = useState<{active: Boolean, max: number, current: number}>()
 
-    const { fetchTimes } = useTimes();
+    const { fetchTimes, fetchAllTimes } = useTimes();
     const { buildKit } = useBuildKit();
 
     const countsFetched = useRef(false);
@@ -90,24 +89,14 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
         if (!buildKit || countsFetched.current) return;
         countsFetched.current = true;
         async function loadCounts() {
+            const allTimes = await fetchAllTimes();
             const counts: Record<string, number> = {};
-            let index = 0
             for (const harness of buildKit!.harnesses) {
-                if (buildKit) {
-                    setDbProgressValues({active: true, max: buildKit?.harnesses.length, current: index})
-                }
-
-                const result = await fetchTimes(harness.partNum);
-                counts[harness.partNum] = Array.isArray(result) ? result.length : 0;
-                index += 1
-
-                if (buildKit) {
-                setDbProgressValues({active: true, max: buildKit.harnesses.length, current: index})
+                const match = allTimes.find((t: HarnCount) => t.harnNumber === harness.partNum);
+                counts[harness.partNum] = match ? match.count : 0;
             }
-            }
+            console.log("final counts:", counts);
             setHarnCounts(counts);
-            setDbProgressValues({active: false, max: 0, current: 0})
-
         }
         loadCounts();
     }, [buildKit, refreshTrigger]);
@@ -132,40 +121,24 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             return (
                 <div key={harness.partNum} className="harn-progress-item">
                     <span className="harn-part-num">{harness.partNum}:</span>
-                        <progress
-                            className="progress-bar"
-                            value={built}
-                            max={harness.buildNumber}
-                        />
-                    <span className="harn-count">{built}/{harness.buildNumber}</span>
+                    <progress className="progress-bar" value={built} max={harness.buildNumber} />
+                    <span className="harn-count">
+                        {built}/{harness.buildNumber}
+                    </span>
                 </div>
             );
         });
     }
 
-    function dbProgressBar() {
-        if (!dbProgressValues?.active) {
-            return
-        } else {
-            return (
-                <div className="db-progress">
-                    <h4>Fetching Times</h4>
-                    <progress max={dbProgressValues?.max} value={dbProgressValues?.current}></progress>
-                </div>
-            )
-        }
-
-    }
-
     return (
         <div className="analytics-root">
-            {dbProgressBar()}
-
             <div className="left-col">
                 <div className="progress-list">{getProgress()}</div>
                 <div className="harn-build-chart-info">
                     <p id="current-build-pn">Part #: {harn}</p>
-                    <p id="build-time-estimate">Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes</p>
+                    <p id="build-time-estimate">
+                        Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes
+                    </p>
                     {createInfoElement()}
                 </div>
             </div>
@@ -193,6 +166,6 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             </div>
         </div>
     );
-    }
+}
 
 export default AnalyticsPage;

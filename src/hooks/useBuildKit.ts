@@ -28,32 +28,8 @@ export function useBuildKit() {
     const [buildKit, setBuildKit] = useSharedState<BuildKit | null>("selectedBuildKit", null);
     const [buildKits, setBuildKits] = useSharedState<BuildKit[] | null>("AllBuildKits", null);
 
-    const execQuerySingle = async (
-        requestedQuery: string,
-        params: unknown[] = []
-    ): Promise<SQLBuildKitReturn | undefined> => {
-        console.log(requestedQuery);
-        try {
-            const response = await fetch("http://localhost:5000/api/query", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ query: requestedQuery, params }),
-            });
-            console.log(`RESPONSE: ${response}`);
-            const data = await response.json();
-
-            if (data.success === false) {
-                return;
-            }
-            const dataToReturn: SQLBuildKitReturn = data.result;
-            return dataToReturn;
-        } catch (err: any) {
-            console.log(err);
-        }
-    };
-
     async function fetchKit(rev: number): Promise<BuildKit | undefined> {
-        const result = await execQueryAll(
+        const result = await execQuery(
             `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf("%.2f",PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf("%.2f",PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf("%.2f",PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf("%.2f",PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID WHERE BKL.REV=(?) ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC;`,
             [rev]
         );
@@ -83,7 +59,7 @@ export function useBuildKit() {
         setBuildKit(formattedKit);
         return formattedKit; // ← Component receives this directly, no stale closure issue
     }
-    const execQueryAll = async (
+    const execQuery = async (
         requestedQuery: string,
         params: unknown[] = []
     ): Promise<SQLBuildKitReturn[] | undefined> => {
@@ -116,7 +92,7 @@ export function useBuildKit() {
     };
 
     async function fetchKits() {
-        const result: SQLBuildKitReturn[] | undefined = (await execQueryAll(
+        const result: SQLBuildKitReturn[] | undefined = (await execQuery(
             `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf("%.2f",PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf("%.2f",PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf("%.2f",PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf("%.2f",PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID ORDER BY BKL.REV`,
             []
         )) as SQLBuildKitReturn[] | undefined;
