@@ -19,7 +19,7 @@ function TimerLayout() {
     const navigate = useNavigate();
     const [err, setErr] = useState("");
     const { pauseReasons } = useSettings();
-    const [pauseReason, setPauseReason] = useState<PauseReason | undefined>();
+    const [_pauseReason, setPauseReason] = useState<PauseReason | undefined>();
     const [pauseStart, setPauseStart] = useState<string | null>(null);
 
     const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
