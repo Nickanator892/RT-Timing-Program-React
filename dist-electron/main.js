@@ -44,17 +44,20 @@ ipcMain.on("timer-start", () => {
   timerStart = Date.now() - timerElapsed;
   sharedTimerData.isRunning = true;
   broadcastToAll(sharedTimerData);
-  timerInterval = setInterval(() => {
+  function tick() {
     timerElapsed = Date.now() - timerStart;
     const formatted = formatTime(timerElapsed);
     sharedTimerData.displayTimer = formatted;
     sharedTimerData.elapsedTime = timerElapsed;
     broadcastToAll(sharedTimerData);
-  }, 1e3);
+    const drift = timerElapsed % 1e3;
+    timerInterval = setTimeout(tick, 1e3 - drift);
+  }
+  timerInterval = setTimeout(tick, 1e3);
 });
 ipcMain.on("timer-pause", () => {
   if (timerInterval) {
-    clearInterval(timerInterval);
+    clearTimeout(timerInterval);
     timerInterval = null;
   }
   sharedTimerData.isRunning = false;
@@ -62,7 +65,7 @@ ipcMain.on("timer-pause", () => {
 });
 ipcMain.on("timer-reset", () => {
   if (timerInterval) {
-    clearInterval(timerInterval);
+    clearTimeout(timerInterval);
     timerInterval = null;
   }
   timerElapsed = 0;
@@ -99,9 +102,16 @@ ipcMain.handle("get-window-type", (event) => {
   if (win === analyticsWindow) return "analytics";
   return "unknown";
 });
+let broadcastDebounceTimer = null;
+function broadcastNonTimer(data) {
+  if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
+  broadcastDebounceTimer = setTimeout(() => {
+    broadcastToAll(data);
+  }, 50);
+}
 ipcMain.on("update-shared-data", (event, newData) => {
   sharedTimerData = { ...sharedTimerData, ...newData };
-  broadcastToAll(sharedTimerData);
+  broadcastNonTimer(sharedTimerData);
 });
 ipcMain.on("add-session", (event, sessionData) => {
   sharedTimerData.sessions.push(sessionData);

@@ -56,9 +56,10 @@ export function useTimes() {
         }
     }
 
-    async function fetchAllTimes(): Promise<HarnCount[]> {
+    async function fetchAllTimes(REV: number | undefined): Promise<HarnCount[]> {
         const result = await execQuery(
-            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES GROUP BY harnNumber"
+            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES WHERE REV=? GROUP BY harnNumber",
+            [REV]
         );
         return Array.isArray(result)
             ? result.map((r: any) => ({
@@ -68,22 +69,25 @@ export function useTimes() {
             : [];
     }
 
-    async function writeTime(time: LoggedTime, buildId: number) {
+    async function writeTime(time: LoggedTime, buildId: number, userId: number | undefined) {
         try {
-            const result = await execQuery(
-                "UPDATE HARNBUILDTIMES SET startTime=?, endTime=?, seconds=?, formattedTime=?, harnNumber=?, dateBuilt=?, REV=? WHERE buildId=?",
-                [
-                    time.startTime,
-                    time.endTime,
-                    time.seconds,
-                    time.formattedTime,
-                    time.harnNumber,
-                    time.dateBuilt,
-                    buildKit?.REV,
-                    buildId,
-                ]
-            );
-            return result;
+            if (userId) {
+                const result = await execQuery(
+                    "UPDATE HARNBUILDTIMES SET startTime=?, endTime=?, seconds=?, formattedTime=?, harnNumber=?, dateBuilt=?, REV=?, builderId=? WHERE buildId=?",
+                    [
+                        time.startTime,
+                        time.endTime,
+                        time.seconds,
+                        time.formattedTime,
+                        time.harnNumber,
+                        time.dateBuilt,
+                        buildKit?.REV,
+                        userId,
+                        buildId,
+                    ]
+                );
+                return result;
+            }
         } catch (err: any) {
             console.log(err);
         }

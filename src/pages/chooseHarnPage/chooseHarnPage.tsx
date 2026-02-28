@@ -11,6 +11,7 @@ interface harnProps {
 function ChooseHarnPage({ setHarn }: harnProps) {
     const nav = useNavigate();
     const { buildKit } = useBuildKit();
+    const { fetchTimes } = useTimes();
 
     const [currentPage, setCurrentPage] = useState(0);
     const itemsPerPage = 4;
@@ -38,7 +39,7 @@ function ChooseHarnPage({ setHarn }: harnProps) {
                     nav("/timer");
                 }, 500);
                 handleOpenAnalytics();
-                useTimes().fetchTimes(selectedHarn);
+                fetchTimes(selectedHarn);
             }
         }
     }

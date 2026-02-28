@@ -9,6 +9,7 @@ import useTimes, { type LoggedTime } from "../../hooks/loggedTimesHook";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
+import type { User } from "../../assets/types/UserType";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -43,6 +44,10 @@ function TimingPage({
     const [currentBuildId, setCurrentBuildId] = useSharedState<number | boolean>(
         "currentBuildId",
         0
+    );
+    const [selectedUser, setSelectedUser] = useSharedState<User | undefined>(
+        "selectedUser",
+        undefined
     );
     const [sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
         "pauseReason",
@@ -102,7 +107,7 @@ function TimingPage({
     async function getBuildId() {
         const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDTIMES");
         console.log(data);
-        const buildId = Number(data["result"]["0"].maxId ?? 0) + 1;
+        const buildId = Number(data["result"]["0"].maxId ?? 0);
         setCurrentBuildId(buildId);
     }
 
@@ -121,7 +126,7 @@ function TimingPage({
         }
     }
 
-    function startTimer() {
+    async function startTimer() {
         console.log("PAUSE START ", pauseStart);
         if (isRunning) return;
         window.electron.timerStart();
@@ -135,9 +140,9 @@ function TimingPage({
             setIsRunning(true);
             setErr("");
             setDbSuccess("Submit");
-            execQuery(
-                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt, REV) VALUES(?, ?, ?, ?, ?, ?, ?)",
-                ["", "", "", "", "", "", ""]
+            await execQuery(
+                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt, REV, builderId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                ["", "", "", "", "", "", "", selectedUser?.Id]
             );
             getBuildId();
             return;
@@ -203,7 +208,8 @@ function TimingPage({
                 dateBuilt: new Date().toISOString().split("T")[0],
             };
             if (typeof currentBuildId == "number") {
-                const result = await writeTime(timeObject, currentBuildId);
+                console.log(selectedUser);
+                const result = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
                 if (!result) {
                     return;
                 }

@@ -1,9 +1,13 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
-import sqlite3 from "sqlite3";
-import { open, Database } from "sqlite";
 import cors from "cors";
+import { Worker } from "worker_threads";
+
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = 5000;
@@ -21,69 +25,52 @@ app.use(express.json());
 // Persistent config
 // --------------------
 const CONFIG_FILE = path.join(process.cwd(), "db-config.json");
+const WORKER_PATH = path.join(__dirname, "db.worker.cjs");
 
 let dbPath: string | null = null;
 
 // --------------------
 // Helpers
 // --------------------
-async function validateSQLitePath(candidate: string): Promise<void> {
+function validateSQLitePath(candidate: string): void {
     const stat = fs.statSync(candidate);
-
     if (!stat.isFile()) {
         throw new Error("Path is not a file");
     }
-
-    const db = await open({
-        filename: candidate,
-        driver: sqlite3.Database,
-        mode: sqlite3.OPEN_READWRITE,
-    });
-
-    await db.close();
+    // Validate it's a real SQLite file by checking the header magic bytes
+    const fd = fs.openSync(candidate, "r");
+    const buf = Buffer.alloc(16);
+    fs.readSync(fd, buf, 0, 16, 0);
+    fs.closeSync(fd);
+    if (buf.toString("utf8", 0, 6) !== "SQLite") {
+        throw new Error("File is not a valid SQLite database");
+    }
 }
 
 // --------------------
-// SQL Controller
+// Worker thread runner
 // --------------------
-class SQLController {
-    private dbPath: string | null;
-
-    constructor(dbPath: string | null) {
-        this.dbPath = dbPath;
-    }
-
-    async connectToDatabase(): Promise<Database<sqlite3.Database, sqlite3.Statement>> {
-        if (!this.dbPath) {
-            throw new Error("Database path not set");
-        }
-
-        return open({
-            filename: this.dbPath,
-            driver: sqlite3.Database,
-            mode: sqlite3.OPEN_READWRITE,
+function runQuery(query: string, params: any[] = []): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(WORKER_PATH, {
+            workerData: { dbPath, query, params },
         });
-    }
-
-    async exec(query: string, params: any[] = []) {
-        const db = await this.connectToDatabase();
-        try {
-            console.log(query, params);
-            if (query.trim().toUpperCase().startsWith("SELECT")) {
-                console.log(await db.all(query, params));
-                return await db.all(query, params);
-            } else {
-                const result = await db.run(query, params);
-                return result.changes;
-            }
-        } finally {
-            await db.close();
-        }
-    }
+        worker.on("message", (msg) => {
+            console.log("Worker result:", msg); // 👈 add this
+            resolve(msg);
+        });
+        worker.on("error", (err) => {
+            console.error("Worker error:", err); // 👈 and this
+            reject(err);
+        });
+        worker.on("exit", (code) => {
+            if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+        });
+    });
 }
 
 // --------------------
-// Load DB path on startup (VALIDATES EVERY LAUNCH)
+// Load DB path on startup
 // --------------------
 (async () => {
     if (!fs.existsSync(CONFIG_FILE)) return;
@@ -91,12 +78,10 @@ class SQLController {
     try {
         const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
         const config = JSON.parse(raw);
-
         if (!config.dbPath) return;
 
-        await validateSQLitePath(config.dbPath);
+        validateSQLitePath(config.dbPath);
         dbPath = config.dbPath;
-
         console.log("Loaded DB path:", dbPath);
     } catch (err) {
         console.warn("Saved DB path invalid, ignoring:", err);
@@ -108,83 +93,59 @@ class SQLController {
 // Routes
 // --------------------
 
-app.get("/api/db-status", async (_req, res) => {
-    console.log(dbPath);
+app.get("/api/db-status", (_req, res) => {
     if (!dbPath) {
-        return res.json({
-            ready: false,
-            error: "No database path configured",
-        });
+        return res.json({ ready: false, error: "No database path configured" });
     }
-
     try {
-        await validateSQLitePath(dbPath);
+        validateSQLitePath(dbPath);
         res.json({ ready: true });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        res.json({
-            ready: false,
-            error: message,
-        });
+        res.json({ ready: false, error: message });
     }
 });
 
-app.post("/api/set-db-path", async (req, res) => {
+app.post("/api/set-db-path", (req, res) => {
     const incomingPath = req.body?.path;
 
     if (!incomingPath) {
-        return res.status(400).json({
-            success: false,
-            error: "Path is required",
-        });
+        return res.status(400).json({ success: false, error: "Path is required" });
     }
 
     try {
-        await validateSQLitePath(incomingPath);
-
+        validateSQLitePath(incomingPath);
         dbPath = incomingPath;
-
         fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath }, null, 2), "utf-8");
-
         console.log("Database path saved:", dbPath);
-
         res.json({ success: true });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        res.status(400).json({
-            success: false,
-            error: message,
-        });
+        res.status(400).json({ success: false, error: message });
     }
 });
 
 app.post("/api/query", async (req, res) => {
-    console.log(req);
     if (!dbPath) {
-        return res.status(400).json({
-            success: false,
-            error: "Database not configured",
-        });
+        return res.status(400).json({ success: false, error: "Database not configured" });
     }
 
     const { query, params } = req.body;
 
     if (!query) {
-        return res.status(400).json({
-            success: false,
-            error: "Query is required",
-        });
+        return res.status(400).json({ success: false, error: "Query is required" });
     }
 
-    const sql = new SQLController(dbPath);
-
     try {
-        console.log(req);
-        const result = await sql.exec(query, params);
-        res.json({ success: true, result });
+        console.log(query, params);
+        const result = await runQuery(query, params ?? []);
+        if (!result.success) {
+            return res.status(500).json({ success: false, error: result.error });
+        }
+        res.json({ success: true, result: result.result });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.log(err);
+        console.error(err);
         res.status(500).json({ success: false, error: message });
     }
 });

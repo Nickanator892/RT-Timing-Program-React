@@ -56,23 +56,26 @@ ipcMain.on("timer-start", () => {
     if (timerInterval) return;
     timerStart = Date.now() - timerElapsed;
     sharedTimerData.isRunning = true;
-    broadcastToAll(sharedTimerData); // ← broadcast isRunning: true once here
+    broadcastToAll(sharedTimerData);
 
-    timerInterval = setInterval(() => {
+    function tick() {
         timerElapsed = Date.now() - timerStart;
         const formatted = formatTime(timerElapsed);
-
         sharedTimerData.displayTimer = formatted;
         sharedTimerData.elapsedTime = timerElapsed;
-        // ← removed isRunning: true from here
-
         broadcastToAll(sharedTimerData);
-    }, 1000);
+
+        // Schedule next tick corrected for drift
+        const drift = timerElapsed % 1000;
+        timerInterval = setTimeout(tick, 1000 - drift);
+    }
+
+    timerInterval = setTimeout(tick, 1000);
 });
 
 ipcMain.on("timer-pause", () => {
     if (timerInterval) {
-        clearInterval(timerInterval);
+        clearTimeout(timerInterval); // 👈 clearTimeout not clearInterval
         timerInterval = null;
     }
     sharedTimerData.isRunning = false;
@@ -81,7 +84,7 @@ ipcMain.on("timer-pause", () => {
 
 ipcMain.on("timer-reset", () => {
     if (timerInterval) {
-        clearInterval(timerInterval);
+        clearTimeout(timerInterval);
         timerInterval = null;
     }
     timerElapsed = 0;
@@ -125,9 +128,19 @@ ipcMain.handle("get-window-type", (event) => {
     return "unknown";
 });
 
+let broadcastDebounceTimer = null;
+
+function broadcastNonTimer(data) {
+    if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
+    broadcastDebounceTimer = setTimeout(() => {
+        broadcastToAll(data);
+    }, 50);
+}
+
 ipcMain.on("update-shared-data", (event, newData) => {
     sharedTimerData = { ...sharedTimerData, ...newData };
-    broadcastToAll(sharedTimerData);
+    // Use debounced broadcast for renderer-initiated updates
+    broadcastNonTimer(sharedTimerData);
 });
 
 ipcMain.on("add-session", (event, sessionData) => {

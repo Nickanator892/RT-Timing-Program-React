@@ -6,13 +6,14 @@ import AnalyticsChart from "../../common/analyticsChart/chart";
 import useTimes from "../../hooks/loggedTimesHook";
 import type { LoggedTime, HarnCount } from "../../hooks/loggedTimesHook";
 import { useBuildKit } from "../../hooks/useBuildKit";
+import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 
 interface analyticsPageProps {
     harn?: string;
 }
 
 function AnalyticsPage({ harn }: analyticsPageProps) {
-    const [displayTimer] = useSharedState<string>("displayTimer", "00:00:00");
+    const displayTimer = useSyncedTimer();
     const [isRunning] = useSharedState<boolean>("isRunning", false);
     const [selectedUser] = useSharedState<User | null>("selectedUser", null);
     const [selectedHarn] = useSharedState<string>("selectedHarn", "");
@@ -89,7 +90,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
         if (!buildKit || countsFetched.current) return;
         countsFetched.current = true;
         async function loadCounts() {
-            const allTimes = await fetchAllTimes();
+            const allTimes = await fetchAllTimes(buildKit?.REV);
             const counts: Record<string, number> = {};
             for (const harness of buildKit!.harnesses) {
                 const match = allTimes.find((t: HarnCount) => t.harnNumber === harness.partNum);

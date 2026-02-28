@@ -1,0 +1,16 @@
+#reasons-list div {
+    height: 5vw;
+}
+
+#reasons-list div p {
+    padding-top: 2.5%;
+}
+
+#reasons-list button {
+    height: 4vw;
+}
+
+#reasons-list {
+    display: flex;
+    flex-direction: column;
+}

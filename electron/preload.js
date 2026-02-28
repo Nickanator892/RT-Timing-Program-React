@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("electron", {
         ipcRenderer.on("shared-data-changed", subscription);
         return () => {
             ipcRenderer.removeListener("shared-data-changed", subscription);
+            ipcRenderer.setMaxListeners(50);
         };
     },
 
@@ -28,7 +29,11 @@ contextBridge.exposeInMainWorld("electron", {
 
     // Navigation
     onNavigateTo: (callback) => {
-        ipcRenderer.on("navigate-to", (event, route) => callback(route));
+        const subscription = (event, route) => callback(route);
+        ipcRenderer.on("navigate-to", subscription);
+        return () => {
+            ipcRenderer.removeListener("navigate-to", subscription);
+        };
     },
 });
 
