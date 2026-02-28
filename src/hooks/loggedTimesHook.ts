@@ -26,7 +26,6 @@ export function useTimes() {
         requestedQuery: string,
         params: unknown[] = []
     ): Promise<LoggedTime[] | unknown> => {
-        console.log(requestedQuery, " ", params);
         try {
             const response = await fetch("http://localhost:5000/api/query", {
                 method: "POST",

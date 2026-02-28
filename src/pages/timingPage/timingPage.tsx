@@ -10,6 +10,7 @@ import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
+import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -34,7 +35,7 @@ function TimingPage({
     const [harnTotal, setHarnTotal] = useState(0);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
     const [timerDone, setTimerDone] = useSharedState<boolean>("timerDone", true);
-    const [displayTimer] = useSharedState<string>("displayTimer", "00:00:00");
+    const displayTimer = useSyncedTimer();
     const [startTime, setStartTime] = useSharedState<string>("startTime", "");
     const [endTime, setEndTime] = useSharedState<string>("endTime", "");
     const [selectedHarn] = useSharedState<string>("selectedHarn", "");
@@ -106,7 +107,6 @@ function TimingPage({
 
     async function getBuildId() {
         const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDTIMES");
-        console.log(data);
         const buildId = Number(data["result"]["0"].maxId ?? 0);
         setCurrentBuildId(buildId);
     }
@@ -119,7 +119,6 @@ function TimingPage({
                     "INSERT INTO HARNBUILDPAUSEHISTORY (buildId, pauseId, pauseStart, pauseEnd) VALUES(?, ?, ?, ?)",
                     [currentBuildId, sharedPauseReason.Id, pauseStart, pauseEnd]
                 );
-                console.log(`${currentBuildId} ${sharedPauseReason.Id} ${pauseStart} ${pauseEnd}`);
             } catch (err: unknown) {
                 throw new Error("Error");
             }
@@ -127,7 +126,6 @@ function TimingPage({
     }
 
     async function startTimer() {
-        console.log("PAUSE START ", pauseStart);
         if (isRunning) return;
         window.electron.timerStart();
         if (pauseStart) {
@@ -208,7 +206,6 @@ function TimingPage({
                 dateBuilt: new Date().toISOString().split("T")[0],
             };
             if (typeof currentBuildId == "number") {
-                console.log(selectedUser);
                 const result = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
                 if (!result) {
                     return;

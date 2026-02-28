@@ -28,7 +28,6 @@ function ChooseKitPage() {
 
     async function selectKit(rev: number) {
         const kit = await fetchKit(rev);
-        console.log(kit);
         if (kit) {
             nav("/choose-harn");
         }

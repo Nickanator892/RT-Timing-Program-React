@@ -33,7 +33,6 @@ function ChooseHarnPage({ setHarn }: harnProps) {
                 }
             });
             if (selectedHarn != undefined) {
-                console.log(selectedHarn);
                 setHarn(selectedHarn);
                 setTimeout(() => {
                     nav("/timer");

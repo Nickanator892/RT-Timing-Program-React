@@ -55,7 +55,6 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
             });
 
             const data = await response.json();
-            console.log("Query result:", data);
         } catch (err) {
             console.error("Query error:", err);
         }

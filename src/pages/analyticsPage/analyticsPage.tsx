@@ -96,7 +96,6 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                 const match = allTimes.find((t: HarnCount) => t.harnNumber === harness.partNum);
                 counts[harness.partNum] = match ? match.count : 0;
             }
-            console.log("final counts:", counts);
             setHarnCounts(counts);
         }
         loadCounts();

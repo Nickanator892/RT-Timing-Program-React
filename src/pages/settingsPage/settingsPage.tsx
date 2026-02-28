@@ -25,7 +25,6 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = users.length > endIndex;
     const hasPreviousPage = currentPage > 0;
-    console.log(selectedUser);
 
     if (loading) return <p>Loading...</p>;
 
@@ -48,7 +47,6 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     }
 
     function removeUser(id: number) {
-        console.log(`comparing ${id} to ${selectedUser?.Id}`);
         if (id == selectedUser?.Id) {
             setErr("Cannot delete current user");
             return;
@@ -101,8 +99,8 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             <div id="nav-buttons">
                 <TimerButton />
                 <SettingsButton />
-                <ChooseHarnessButton/>
-                <ChooseKitButton/>
+                <ChooseHarnessButton />
+                <ChooseKitButton />
             </div>
 
             <div className="pause-reasons">
