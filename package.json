@@ -14,7 +14,8 @@
         "build": "vite build",
         "electron:build": "npm run build && electron .",
         "pack": "npm run build && electron-builder --dir",
-        "dist": "npm run build && electron-builder"
+        "dist": "npm run build && electron-builder",
+        "application": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\""
     },
     "build": {
         "appId": "com.yourcompany.rt-timing",

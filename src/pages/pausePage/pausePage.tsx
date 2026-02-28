@@ -12,7 +12,7 @@ type pauseProps = {
 };
 
 function PausePage({ pauseReasons, setErr }: pauseProps) {
-    const [sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
+    const [_sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
         "pauseReason",
         undefined
     );
@@ -25,21 +25,27 @@ function PausePage({ pauseReasons, setErr }: pauseProps) {
     }
 
     return (
-        <div id="reasons-list">
-            {pauseReasons.map((reason) => (
-                <div key={reason.Id}>
-                    <p>{reason.name}</p>
-                    <button
-                        key={reason.Id}
-                        type="button"
-                        id="choose-reason-button"
-                        onClick={() => selectPauseReason({ Id: reason.Id, name: reason.name })}
-                    >
-                        Choose Reason
-                    </button>
-                </div>
-            ))}
-        </div>
+        <>
+            <div id="RT-logo">
+                <p id="RT-part-one">RT </p>
+                <p id="RT-part-two">Technologies</p>
+            </div>
+            <div id="reasons-list">
+                {pauseReasons.map((reason) => (
+                    <div key={reason.Id}>
+                        <p>{reason.name}</p>
+                        <button
+                            key={reason.Id}
+                            type="button"
+                            id="choose-reason-button"
+                            onClick={() => selectPauseReason({ Id: reason.Id, name: reason.name })}
+                        >
+                            Choose Reason
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </>
     );
 }
 

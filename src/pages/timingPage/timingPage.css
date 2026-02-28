@@ -2,12 +2,16 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
+    overflow: hidden;
 }
+
 .timing-page {
     display: flex;
     flex-direction: row;
 }
 #timer {
+    margin-left: -3.8%;
+    padding-top: 2%;
     width: 8ch;
     font-size: 90px;
     font-family: "Orbitron";
@@ -176,18 +180,18 @@ hr {
     flex-direction: row;
     position: absolute;
     top: 0px;
-    right: 40px;
+    right: 30px;
 }
 
 #RT-part-one {
-    font-size: 50px;
+    font-size: 60px;
     font-family: "RT-Text";
     padding-right: 2%;
 }
 
 #RT-part-two {
     padding-top: 20%;
-    font-size: 25px;
+    font-size: 35px;
     font-family: "RT-Text";
 }
 
@@ -199,11 +203,12 @@ hr {
     border-top: 2px solid white;
     border-bottom: 2px solid white;
     border-left: 2px solid white;
-    width: 70%;
-    margin-right: 30%;
+    width: 84%;
+    margin-right: 0%;
     padding-left: 2%;
-    margin-bottom: 9%;
-    margin-top: -10%;
+    margin-bottom: -3%;
+    margin-top: -15%;
+    margin-left: -4.2%;
 }
 
 .harn-build-info p {
@@ -216,4 +221,16 @@ hr {
     display: flex;
     padding-top: 2%;
     gap: 1.5em;
+}
+.close-button {
+    width: 38.6vw !important;
+    height: 5vw !important;
+    font-size: 3.5ch !important;
+    margin-left: -4.2%;
+}
+
+.harn-info-and-close-button {
+    display: flex;
+    flex-direction: column;
+    gap: 2em;
 }

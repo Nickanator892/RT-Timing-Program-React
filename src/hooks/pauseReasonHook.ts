@@ -8,6 +8,8 @@ interface PauseReason {
 interface User {
     Id: number;
     name: string;
+    password?: string;
+    privLevel?: number;
 }
 
 interface Settings {
@@ -48,6 +50,8 @@ export function useSettings() {
                 const users: User[] = userRows.map((row: any) => ({
                     Id: row["Id"],
                     name: row["userName"],
+                    password: row["password"],
+                    privLevel: row["privLevel"],
                 }));
                 setSettings({ pauseReasons, users });
             }
@@ -91,13 +95,19 @@ export function useSettings() {
         });
     };
 
-    const addUser = async (name: string) => {
+    const addUser = async (name: string, privLevel: number, password: string) => {
         if (!settings) return;
         if (settings.users.some((u) => u.name === name)) return;
+        if (!password || password.trim() == "") {
+            password = "";
+        }
 
-        const result = await execQuery("INSERT INTO HARNBUILDERS (userName) VALUES (?)", [name]);
+        const result = await execQuery(
+            "INSERT INTO HARNBUILDERS (userName, password, privLevel) VALUES (?, ?, ?)",
+            [name, password, privLevel]
+        );
         if (result !== undefined) {
-            const newUser: User = { Id: result.lastID, name };
+            const newUser: User = { Id: result.lastID, name, password: "", privLevel: 3 };
             setSettings({ ...settings, users: [...settings.users, newUser] });
         }
     };

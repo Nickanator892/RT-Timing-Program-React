@@ -152,10 +152,10 @@
     font-family: "Orbitron", monospace;
 }
 #RT-part-one {
-    font-size: clamp(26px, 2.8vw, 56px);
+    font-size: clamp(26px, 2.8vw, 60px);
 }
 #RT-part-two {
-    font-size: clamp(15px, 1.1vw, 22px);
+    font-size: clamp(15px, 1.1vw, 35px);
 }
 
 .chart-area {

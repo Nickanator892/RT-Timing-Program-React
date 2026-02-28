@@ -31,8 +31,29 @@
 
 .login-header {
     position: absolute;
-    top: 40px;
+    top: 0px;
     right: 480px;
     font-size: 50px;
     text-decoration: underline;
+}
+
+.error-p {
+    font-size: 20px;
+}
+
+#pw-entry {
+    min-height: 3em;
+    margin-right: 1%;
+    width: 10em;
+}
+
+.password-entry {
+    padding-top: 2%;
+    width: 110%;
+}
+
+#pw-login-button {
+    font-size: 22px !important;
+    min-width: 10em !important;
+    min-height: 3.1em;
 }

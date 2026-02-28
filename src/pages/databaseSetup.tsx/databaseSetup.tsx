@@ -36,6 +36,12 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
         } catch (err: any) {
             if (err.message === "Failed to fetch") {
                 setError("Server not running");
+                setTimeout(() => {
+                    setError("Restart Program");
+                }, 3000);
+                setTimeout(() => {
+                    setError("If still unresponsive after restart get Randy");
+                }, 6000);
                 return;
             } else {
                 setError(err.message);
@@ -68,17 +74,23 @@ export default function DatabaseSetup({ onDbSet }: DatabaseSetupProps) {
 
             {!dbSet && showInput && (
                 <div id="input-div">
-                    <p id="db-not-found">Database not found. Enter path to SQLite DB:</p>
+                    <p id="db-not-found">DATABASE NOT FOUND!</p>
+                    <p>Consult Randy and enter path</p>
                     <input
                         id="database-path-input"
                         type="text"
                         value={inputPath}
                         onChange={(e) => setInputPath(e.target.value)}
                         placeholder="C:/path/to/database.db"
-                        //style={{ width: "320px", marginRight: 10 }}
                     />
-                    <button id="set-path-button" onClick={() => setDbPath(inputPath)}>
-                        Submit
+                    <button
+                        id="set-path-button"
+                        onClick={() => {
+                            setDbPath(inputPath);
+                            setError("Retrying connection");
+                        }}
+                    >
+                        Test Connection
                     </button>
                 </div>
             )}

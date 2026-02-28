@@ -1,7 +1,8 @@
-import { ipcMain, BrowserWindow, app } from "electron";
+import { ipcMain, BrowserWindow, screen, app } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import { spawn } from "child_process";
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = path.dirname(__filename$1);
 const isDev = process.env.VITE_DEV_SERVER_URL !== void 0;
@@ -10,6 +11,7 @@ const settingsPath = path.join(__dirname$1, "settings.json");
 let windows = [];
 let mainWindow = null;
 let analyticsWindow = null;
+let serverProcess = null;
 let timerInterval = null;
 let timerStart = null;
 let timerElapsed = 0;
@@ -23,12 +25,38 @@ let sharedTimerData = {
   currentSessionStart: null,
   sessions: []
 };
+function startServer() {
+  serverProcess = spawn("npx", ["ts-node", "src/backend/server.ts"], {
+    shell: true,
+    stdio: "ignore",
+    windowsHide: true,
+    detached: false
+  });
+  serverProcess.on("error", (err) => console.error("Failed to start server:", err));
+  serverProcess.on("exit", (code) => {
+    console.log(`Server exited with code ${code}`);
+    serverProcess = null;
+  });
+}
+function stopServer() {
+  if (serverProcess) {
+    serverProcess.kill("SIGTERM");
+    serverProcess = null;
+  }
+}
 function broadcastToAll(data) {
   windows.forEach((win) => {
     if (!win.isDestroyed()) {
       win.webContents.send("shared-data-changed", data);
     }
   });
+}
+let broadcastDebounceTimer = null;
+function broadcastNonTimer(data) {
+  if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
+  broadcastDebounceTimer = setTimeout(() => {
+    broadcastToAll(data);
+  }, 100);
 }
 function formatTime(ms) {
   const totalSeconds = Math.floor(ms / 1e3);
@@ -102,13 +130,6 @@ ipcMain.handle("get-window-type", (event) => {
   if (win === analyticsWindow) return "analytics";
   return "unknown";
 });
-let broadcastDebounceTimer = null;
-function broadcastNonTimer(data) {
-  if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
-  broadcastDebounceTimer = setTimeout(() => {
-    broadcastToAll(data);
-  }, 50);
-}
 ipcMain.on("update-shared-data", (event, newData) => {
   sharedTimerData = { ...sharedTimerData, ...newData };
   broadcastNonTimer(sharedTimerData);
@@ -121,9 +142,14 @@ ipcMain.on("open-analytics-window", () => {
   createAnalyticsWindow();
 });
 function createMainWindow() {
+  const displays = screen.getAllDisplays();
+  const targetDisplay = displays[0];
+  const { x, y } = targetDisplay.bounds;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
+    x,
+    y,
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -148,6 +174,9 @@ function createMainWindow() {
   return mainWindow;
 }
 function createAnalyticsWindow() {
+  const displays = screen.getAllDisplays();
+  const targetDisplay = displays[0];
+  const { x, y } = targetDisplay.bounds;
   if (analyticsWindow && !analyticsWindow.isDestroyed()) {
     analyticsWindow.focus();
     return analyticsWindow;
@@ -155,6 +184,9 @@ function createAnalyticsWindow() {
   analyticsWindow = new BrowserWindow({
     width: 1920,
     height: 1080,
+    x,
+    y,
+    fullscreen: true,
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -170,7 +202,6 @@ function createAnalyticsWindow() {
   });
   if (process.env.VITE_DEV_SERVER_URL) {
     analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
-    analyticsWindow.webContents.openDevTools();
   } else {
     analyticsWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
     analyticsWindow.webContents.on("did-finish-load", () => {
@@ -179,7 +210,19 @@ function createAnalyticsWindow() {
   }
   return analyticsWindow;
 }
-app.whenReady().then(createMainWindow);
+ipcMain.on("quit-app", () => {
+  app.quit();
+});
+app.whenReady().then(() => {
+  startServer();
+  createMainWindow();
+});
+app.on("before-quit", () => {
+  stopServer();
+});
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+app.on("will-quit", () => {
+  stopServer();
 });

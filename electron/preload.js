@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("electron", {
 
     // Window management
     openAnalyticsWindow: () => ipcRenderer.send("open-analytics-window"),
+    quitApp: () => ipcRenderer.send("quit-app"),
 
     // Navigation
     onNavigateTo: (callback) => {

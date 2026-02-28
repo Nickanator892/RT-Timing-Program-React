@@ -7,6 +7,8 @@ import { useState } from "react";
 interface User {
     Id: number;
     name: string;
+    password?: string;
+    privLevel?: number;
 }
 
 interface loginProps {
@@ -16,6 +18,10 @@ interface loginProps {
 
 function LoginPage({ setUser }: loginProps) {
     const { users } = useSettings();
+    const [password, setPassword] = useState<string>();
+    const [disablePassword, setDisablePassword] = useState<boolean>(true);
+    const [localSelectedUser, setLocalSelectedUser] = useState<User>();
+    const [err, setErr] = useState<string | undefined>();
     const nav = useNavigate();
 
     const [currentPage, setCurrentPage] = useState(0);
@@ -36,19 +42,32 @@ function LoginPage({ setUser }: loginProps) {
         ));
     }
 
-    function selectUser(Id: number) {
-        let selectedUser = undefined;
-        users.map((user) => {
-            if (user.Id == Id) {
-                selectedUser = user;
-            }
-        });
-        if (selectedUser != undefined) {
-            setUser(selectedUser);
+    function selectPasswordProtected() {
+        if (password == localSelectedUser?.password) {
+            setUser(localSelectedUser);
             setTimeout(() => {
                 nav("/choose-kit");
             }, 500);
+        } else {
+            setErr("Incorrect password");
         }
+    }
+
+    function selectUser(Id: number) {
+        const found = users.find((user) => user.Id === Id);
+        if (!found) return;
+
+        setLocalSelectedUser(found);
+
+        if (found.password) {
+            setDisablePassword(false);
+            return;
+        }
+
+        setUser(found);
+        setTimeout(() => {
+            nav("/choose-kit");
+        }, 500);
     }
 
     function nextPage() {
@@ -67,6 +86,24 @@ function LoginPage({ setUser }: loginProps) {
         <div>
             <h2 className="login-header">Select Builder</h2>
             <div id="users-list">{populateUserList()}</div>
+            <div hidden={disablePassword} className="password-entry">
+                <input
+                    type="text"
+                    name="pwentry"
+                    id="pw-entry"
+                    placeholder="Password"
+                    onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                    style={{ fontSize: "15px", maxWidth: "6em", maxHeight: "2em" }}
+                    type="button"
+                    id="pw-login-button"
+                    onClick={selectPasswordProtected}
+                >
+                    Login
+                </button>
+                <p className="error-p">{err}</p>
+            </div>
             <div className="pagination-buttons">
                 <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
                     Previous

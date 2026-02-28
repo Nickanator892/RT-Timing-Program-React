@@ -31,8 +31,16 @@ export function useSyncedTimer() {
     useEffect(() => {
         if (!isRunning) {
             if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            setLocalDisplay(displayTimer); // 👈 sync display when stopped
             return;
         }
+
+        if (elapsedTime === 0 && displayTimer === "00:00:00") return;
+
+        // Immediately set the correct time before starting RAF
+        baseTimeRef.current = Date.now();
+        baseElapsedRef.current = elapsedTime;
+        setLocalDisplay(displayTimer); // 👈 set correct time instantly
 
         function tick() {
             const now = Date.now();
@@ -45,7 +53,7 @@ export function useSyncedTimer() {
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current);
         };
-    }, [isRunning]);
+    }, [isRunning, elapsedTime]);
 
     return localDisplay;
 }

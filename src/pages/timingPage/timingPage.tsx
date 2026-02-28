@@ -11,6 +11,7 @@ import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButto
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
+import CloseButton from "../../common/buttons/closeButton/closeButton";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -46,11 +47,11 @@ function TimingPage({
         "currentBuildId",
         0
     );
-    const [selectedUser, setSelectedUser] = useSharedState<User | undefined>(
+    const [selectedUser, _setSelectedUser] = useSharedState<User | undefined>(
         "selectedUser",
         undefined
     );
-    const [sharedPauseReason, setSharedPauseReason] = useSharedState<PauseReason | undefined>(
+    const [sharedPauseReason, _setSharedPauseReason] = useSharedState<PauseReason | undefined>(
         "pauseReason",
         undefined
     );
@@ -295,12 +296,17 @@ function TimingPage({
                     <ChooseKitButton />
                 </div>
                 <p id="timer">{displayTimer}</p>
-                <div className="harn-build-info">
-                    <p id="current-build-pn">Part #: {selectedHarn}</p>
-                    <p id="to-build-number">{harnLeft} Left</p>
-                    <p id="harn-build">{harnBuilt} Built</p>
-                    <p id="total-build">Total: {harnTotal}</p>
+
+                <div className="harn-info-and-close-button">
+                    <div className="harn-build-info">
+                        <p id="current-build-pn">Part #: {selectedHarn}</p>
+                        <p id="to-build-number">{harnLeft} Left</p>
+                        <p id="harn-build">{harnBuilt} Built</p>
+                        <p id="total-build">Total: {harnTotal}</p>
+                    </div>
+                    <CloseButton />
                 </div>
+
                 <p id="error-message">{err}</p>
                 <div id="RT-logo">
                     <p id="RT-part-one">RT </p>

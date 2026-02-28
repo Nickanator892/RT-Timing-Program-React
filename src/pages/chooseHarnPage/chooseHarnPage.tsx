@@ -80,6 +80,10 @@ function ChooseHarnPage({ setHarn }: harnProps) {
                     Next
                 </button>
             </div>
+            <div id="RT-logo">
+                <p id="RT-part-one">RT </p>
+                <p id="RT-part-two">Technologies</p>
+            </div>
         </div>
     );
 }

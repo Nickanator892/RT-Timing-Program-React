@@ -30,6 +30,7 @@ declare global {
             timerStart: () => void;
             timerPause: () => void;
             timerReset: () => void;
+            quitApp: () => void;
         };
     }
 }

@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, screen } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import { spawn } from "child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,7 @@ const settingsPath = path.join(__dirname, "settings.json");
 let windows = [];
 let mainWindow = null;
 let analyticsWindow = null;
+let serverProcess = null;
 
 // Timer state owned by main process
 let timerInterval = null;
@@ -33,12 +35,48 @@ let sharedTimerData = {
     sessions: [],
 };
 
+// --------------------
+// Server management
+// --------------------
+function startServer() {
+    serverProcess = spawn("npx", ["ts-node", "src/backend/server.ts"], {
+        shell: true,
+        stdio: "ignore",
+        windowsHide: true,
+        detached: false,
+    });
+
+    serverProcess.on("error", (err) => console.error("Failed to start server:", err));
+    serverProcess.on("exit", (code) => {
+        console.log(`Server exited with code ${code}`);
+        serverProcess = null;
+    });
+}
+
+function stopServer() {
+    if (serverProcess) {
+        serverProcess.kill("SIGTERM");
+        serverProcess = null;
+    }
+}
+
+// --------------------
+// Broadcast helpers
+// --------------------
 function broadcastToAll(data) {
     windows.forEach((win) => {
         if (!win.isDestroyed()) {
             win.webContents.send("shared-data-changed", data);
         }
     });
+}
+
+let broadcastDebounceTimer = null;
+function broadcastNonTimer(data) {
+    if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
+    broadcastDebounceTimer = setTimeout(() => {
+        broadcastToAll(data);
+    }, 100);
 }
 
 function formatTime(ms) {
@@ -51,7 +89,9 @@ function formatTime(ms) {
     ).padStart(2, "0")}`;
 }
 
+// --------------------
 // Timer IPC handlers
+// --------------------
 ipcMain.on("timer-start", () => {
     if (timerInterval) return;
     timerStart = Date.now() - timerElapsed;
@@ -65,7 +105,6 @@ ipcMain.on("timer-start", () => {
         sharedTimerData.elapsedTime = timerElapsed;
         broadcastToAll(sharedTimerData);
 
-        // Schedule next tick corrected for drift
         const drift = timerElapsed % 1000;
         timerInterval = setTimeout(tick, 1000 - drift);
     }
@@ -75,7 +114,7 @@ ipcMain.on("timer-start", () => {
 
 ipcMain.on("timer-pause", () => {
     if (timerInterval) {
-        clearTimeout(timerInterval); // 👈 clearTimeout not clearInterval
+        clearTimeout(timerInterval);
         timerInterval = null;
     }
     sharedTimerData.isRunning = false;
@@ -95,7 +134,9 @@ ipcMain.on("timer-reset", () => {
     broadcastToAll(sharedTimerData);
 });
 
+// --------------------
 // Settings IPC handlers
+// --------------------
 ipcMain.handle("read-settings", async () => {
     try {
         const data = fs.readFileSync(settingsPath, "utf-8");
@@ -116,7 +157,9 @@ ipcMain.handle("write-settings", async (event, settings) => {
     }
 });
 
+// --------------------
 // Shared data IPC handlers
+// --------------------
 ipcMain.handle("get-shared-data", () => {
     return sharedTimerData;
 });
@@ -128,18 +171,8 @@ ipcMain.handle("get-window-type", (event) => {
     return "unknown";
 });
 
-let broadcastDebounceTimer = null;
-
-function broadcastNonTimer(data) {
-    if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
-    broadcastDebounceTimer = setTimeout(() => {
-        broadcastToAll(data);
-    }, 50);
-}
-
 ipcMain.on("update-shared-data", (event, newData) => {
     sharedTimerData = { ...sharedTimerData, ...newData };
-    // Use debounced broadcast for renderer-initiated updates
     broadcastNonTimer(sharedTimerData);
 });
 
@@ -152,10 +185,18 @@ ipcMain.on("open-analytics-window", () => {
     createAnalyticsWindow();
 });
 
+// --------------------
+// Window management
+// --------------------
 function createMainWindow() {
+    const displays = screen.getAllDisplays();
+    const targetDisplay = displays[0];
+    const { x, y } = targetDisplay.bounds;
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 720,
+        x: x,
+        y: y,
         autoHideMenuBar: true,
         webPreferences: {
             preload: preloadPath,
@@ -185,6 +226,9 @@ function createMainWindow() {
 }
 
 function createAnalyticsWindow() {
+    const displays = screen.getAllDisplays();
+    const targetDisplay = displays[0];
+    const { x, y } = targetDisplay.bounds;
     if (analyticsWindow && !analyticsWindow.isDestroyed()) {
         analyticsWindow.focus();
         return analyticsWindow;
@@ -193,6 +237,9 @@ function createAnalyticsWindow() {
     analyticsWindow = new BrowserWindow({
         width: 1920,
         height: 1080,
+        x: x,
+        y: y,
+        fullscreen: true,
         autoHideMenuBar: true,
         webPreferences: {
             preload: preloadPath,
@@ -211,7 +258,7 @@ function createAnalyticsWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
-        analyticsWindow.webContents.openDevTools();
+        //analyticsWindow.webContents.openDevTools();
     } else {
         analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"));
         analyticsWindow.webContents.on("did-finish-load", () => {
@@ -222,8 +269,27 @@ function createAnalyticsWindow() {
     return analyticsWindow;
 }
 
-app.whenReady().then(createMainWindow);
+// --------------------
+// App lifecycle
+// --------------------
+
+ipcMain.on("quit-app", () => {
+    app.quit();
+});
+
+app.whenReady().then(() => {
+    startServer();
+    createMainWindow();
+});
+
+app.on("before-quit", () => {
+    stopServer();
+});
 
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+});
+
+app.on("will-quit", () => {
+    stopServer();
 });

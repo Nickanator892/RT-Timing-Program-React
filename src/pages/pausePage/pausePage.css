@@ -1,8 +1,8 @@
-#reasons-list div {
+#reasons-list div:not(#RT-logo) {
     height: 5vw;
 }
 
-#reasons-list div p {
+#reasons-list div p:not(#RT-logo p) {
     padding-top: 2.5%;
 }
 
@@ -13,4 +13,24 @@
 #reasons-list {
     display: flex;
     flex-direction: column;
+}
+
+#RT-logo {
+    display: flex;
+    flex-direction: row;
+    position: absolute;
+    top: 0px;
+    right: 30px;
+}
+
+#RT-part-one {
+    font-size: 60px;
+    font-family: "RT-Text";
+    padding-right: 2%;
+}
+
+#RT-part-two {
+    padding-top: 20%;
+    font-size: 35px;
+    font-family: "RT-Text";
 }
