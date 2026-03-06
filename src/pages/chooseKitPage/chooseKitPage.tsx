@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import type { BuildKit } from "../../hooks/useBuildKit";
 import { useNavigate } from "react-router-dom";
+import RTLogo from "../../components/RTLogo/RTLogo";
 
 function ChooseKitPage() {
     const nav = useNavigate();
@@ -123,10 +124,7 @@ function ChooseKitPage() {
                 <button type="button" onClick={nextPage} disabled={!hasNextPage}>
                     Next
                 </button>
-            </div>
-            <div id="RT-logo">
-                <p id="RT-part-one">RT </p>
-                <p id="RT-part-two">Technologies</p>
+                <RTLogo />
             </div>
         </div>
     );

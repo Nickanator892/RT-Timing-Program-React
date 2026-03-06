@@ -178,7 +178,6 @@ function createAnalyticsWindow() {
   const targetDisplay = displays[0];
   const { x, y } = targetDisplay.bounds;
   if (analyticsWindow && !analyticsWindow.isDestroyed()) {
-    analyticsWindow.focus();
     return analyticsWindow;
   }
   analyticsWindow = new BrowserWindow({

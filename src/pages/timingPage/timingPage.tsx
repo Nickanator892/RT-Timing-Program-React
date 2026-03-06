@@ -5,7 +5,7 @@ import TimerButton from "../../common/buttons/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
 import { useSharedState } from "../../hooks/useSharedState";
 import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
-import useTimes, { type LoggedTime } from "../../hooks/loggedTimesHook";
+import useTimes, { type LoggedTime } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import type { PauseReason } from "../../assets/types/pauseReasonType";

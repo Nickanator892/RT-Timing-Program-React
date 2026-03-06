@@ -2,6 +2,7 @@ import "./pausePage.css";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import { useNavigate } from "react-router-dom";
 import { useSharedState } from "../../hooks/useSharedState";
+import RTLogo from "../../components/RTLogo/RTLogo";
 
 type pauseProps = {
     pauseReasons: PauseReason[];
@@ -26,10 +27,7 @@ function PausePage({ pauseReasons, setErr }: pauseProps) {
 
     return (
         <>
-            <div id="RT-logo">
-                <p id="RT-part-one">RT </p>
-                <p id="RT-part-two">Technologies</p>
-            </div>
+            <RTLogo />
             <div id="reasons-list">
                 {pauseReasons.map((reason) => (
                     <div key={reason.Id}>

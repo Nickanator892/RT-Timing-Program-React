@@ -1,4 +1,4 @@
-#RT-logo {
+#RT-logo-static {
     display: flex;
     flex-direction: row;
     position: absolute;
@@ -6,13 +6,13 @@
     right: 25px;
 }
 
-#RT-part-one {
+#RT-part-one-static {
     font-size: 35px;
     font-family: "RT-Text";
     padding-right: 2%;
 }
 
-#RT-part-two {
+#RT-part-two-static {
     padding-top: 10%;
     font-size: 20px;
     font-family: "RT-Text";

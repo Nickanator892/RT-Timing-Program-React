@@ -1,11 +1,13 @@
 import { useState } from "react";
-import useSettings from "../../hooks/pauseReasonHook";
+import useSettings from "../../hooks/useSettings";
 import "./settingsPage.css";
 import TimerButton from "../../common/buttons/timerButton/timerButton";
 import SettingsButton from "../../common/buttons/settingsButton/settingsButton";
 import type { User } from "../../assets/types/UserType";
 import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
+import RTLogo from "../../components/RTLogo/RTLogo";
+import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
@@ -14,23 +16,37 @@ interface settingsPageProps {
 //FIX PRIV VALIDATION ISSUE
 
 function SettingsPage({ selectedUser }: settingsPageProps) {
-    const { users, pauseReasons, loading, addPauseReason, removePauseReason, addUser, deleteUser } =
-        useSettings();
+    const {
+        users,
+        allPauseReasons,
+        allUsers,
+        loading,
+        addPauseReason,
+        reActivatePauseReason,
+        deActivatePauseReason,
+        addUser,
+        deActivateUser,
+        activateUser,
+    } = useSettings();
     const [inputValue, setInputValue] = useState("");
     const [userInput, setUserInput] = useState("");
     const [err, setErr] = useState("");
     const [showDeleteModal, setShowDeleteModal] = useState(false);
-    const [userToDelete, setUserToDelete] = useState<{ id: number; name: string } | null>(null);
+    const [userToDelete, setUserToDelete] = useState<{ id: number } | null>(null);
     const [currentPage, setCurrentPage] = useState(0);
     const [privLevelSelect, setPrivLevelSelect] = useState<number>(3);
     const [password, setPassword] = useState<string>("");
-    const itemsPerPage = 5;
+    const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
-    const hasNextPage = users.length > endIndex;
+    const hasNextPage = allUsers.length > endIndex;
     const hasPreviousPage = currentPage > 0;
 
+    console.log(allPauseReasons);
+
     if (loading) return <p>Loading...</p>;
+
+    console.log(allUsers);
 
     function validatePriv(requiredLevel: number) {
         if (selectedUser) {
@@ -49,6 +65,9 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             if (selectedUser.privLevel) {
                 if (selectedUser?.privLevel > requiredLevel) {
                     setErr("Insufficient Privileges");
+                    setTimeout(() => {
+                        setErr("");
+                    }, 2000);
                     return false;
                 } else if (selectedUser?.privLevel <= requiredLevel) {
                     setErr("");
@@ -89,7 +108,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
         }
     }
 
-    function removeUser(id: number, name: string) {
+    function removeUser(id: number) {
         if (selectedUser) {
             const validated = validatePriv(1);
             if (!validated) {
@@ -100,16 +119,26 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             setErr("Cannot delete current user");
             return;
         }
-        setUserToDelete({ id, name });
+        setUserToDelete({ id: id });
         setShowDeleteModal(true);
     }
 
     function confirmDelete() {
         if (userToDelete !== null) {
-            deleteUser(userToDelete.name, userToDelete.id);
+            deActivateUser(userToDelete.id);
             setShowDeleteModal(false);
             setUserToDelete(null);
         }
+    }
+
+    function reActivateUser(id: number) {
+        if (selectedUser) {
+            const validated = validatePriv(2);
+            if (!validated) {
+                return;
+            }
+        }
+        activateUser(id);
     }
 
     function cancelDelete() {
@@ -135,23 +164,21 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             {showDeleteModal && (
                 <div className="modal-overlay">
                     <div className="modal">
-                        <h3>Confirm Delete</h3>
-                        <p>Are you sure you want to delete this user?</p>
+                        <h3>Confirm Deactivation</h3>
+                        <p>Are you sure you want to deactivate this user?</p>
                         <div className="modal-buttons">
-                            <button onClick={confirmDelete}>Yes, Delete</button>
+                            <button onClick={confirmDelete}>Yes, Deactivate</button>
                             <button onClick={cancelDelete}>Cancel</button>
                         </div>
                     </div>
                 </div>
             )}
-
             <div id="nav-buttons">
                 <TimerButton />
                 <SettingsButton />
                 <ChooseHarnessButton />
                 <ChooseKitButton />
             </div>
-
             <div className="pause-reasons">
                 <div className="add-pause-reason-form">
                     <h2>Pause Reasons</h2>
@@ -177,26 +204,43 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                     </button>
                 </div>
                 <div id="reasons-list">
-                    {pauseReasons.map((reason) => (
+                    {allPauseReasons.map((reason) => (
                         <div key={reason.Id}>
-                            <p>{reason.name}</p>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    const validated = validatePriv(2);
-                                    if (!validated) {
-                                        return;
-                                    }
-                                    removePauseReason(reason.Id);
-                                }}
-                            >
-                                Remove Reason
-                            </button>
+                            <div className="reason-object">
+                                <p>{reason.name}</p>
+                                <p id="reason-status">
+                                    {reason.active == 1 ? <ListCheck /> : <ListX />}
+                                </p>
+                            </div>
+                            {reason.active == 1 ? (
+                                <button
+                                    className="pause-reason-buttons"
+                                    type="button"
+                                    onClick={() => {
+                                        const validated = validatePriv(2);
+                                        if (!validated) return;
+                                        deActivatePauseReason(reason.Id);
+                                    }}
+                                >
+                                    Deactivate Reason
+                                </button>
+                            ) : (
+                                <button
+                                    className="pause-reason-buttons"
+                                    type="button"
+                                    onClick={() => {
+                                        const validated = validatePriv(2);
+                                        if (!validated) return;
+                                        reActivatePauseReason(reason.Id);
+                                    }}
+                                >
+                                    Activate Reason
+                                </button>
+                            )}
                         </div>
                     ))}
                 </div>
             </div>
-
             <div className="user-selection">
                 <div className="add-user-form">
                     <h2>User Management</h2>
@@ -229,12 +273,36 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                     </button>
                 </div>
                 <div id="users-list">
-                    {users.slice(startIndex, endIndex).map((user) => (
+                    {allUsers.slice(startIndex, endIndex).map((user) => (
                         <div key={user.Id}>
-                            <p>{user.name}</p>
-                            <button type="button" onClick={() => removeUser(user.Id, user.name)}>
-                                Remove User
-                            </button>
+                            <div className="account-object">
+                                <p className="user-name">
+                                    {user.name}{" "}
+                                    {user.active == 1 ? (
+                                        <UserRoundCheck className="account-status" />
+                                    ) : (
+                                        <UserRoundX className="account-status" />
+                                    )}
+                                </p>
+                                <p id="account-status"></p>
+                            </div>
+                            {user.active == 1 ? (
+                                <button
+                                    type="button"
+                                    className="user-control-button"
+                                    onClick={() => removeUser(user.Id)}
+                                >
+                                    Deactivate User
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    className="user-control-button"
+                                    onClick={() => reActivateUser(user.Id)}
+                                >
+                                    Activate User
+                                </button>
+                            )}
                         </div>
                     ))}
                 </div>
@@ -247,11 +315,8 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                     </button>
                 </div>
             </div>
-
             <p id="error-message">{err}</p>
-            <div id="RT-logo">
-                <p id="RT-part-one">RT </p> <p id="RT-part-two">Technologies</p>
-            </div>
+            <RTLogo />{" "}
         </div>
     );
 }

@@ -145,6 +145,19 @@
     animation: pauseDivAnimation 0.5s infinite;
 }
 
+#RT-logo {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4vw;
+    font-family: "Orbitron", monospace;
+}
+#RT-part-one {
+    font-size: clamp(26px, 2.8vw, 60px);
+}
+#RT-part-two {
+    font-size: clamp(15px, 1.1vw, 35px);
+}
+
 .chart-area {
     position: absolute;
     bottom: 1vh;

@@ -1,50 +1,32 @@
-#users-list-login {
-    display: grid;
-    grid-template-columns: 20em 20em 20em;
-    margin-top: 10%;
-    gap: 1em;
-    padding-top: 2%;
-    padding-bottom: 5%;
+.user-list-object #user-list-button {
+    min-width: 10em;
+    min-height: 3.85em;
+    margin-left: -60%;
+    font-size: 20px;
 }
 
-#users-list-login div {
-    display: flex;
-    flex-direction: row;
-    border: 2px solid white;
-    width: 100%;
-    margin-top: 1%;
-}
-
-#users-list-login p {
-    width: 100%;
-    font-size: 30px;
-    margin-bottom: 1%;
-    margin-top: 1%;
-    padding-right: 2%;
-}
-
-#users-list-login button {
-    margin-top: 1%;
-    width: 15em;
-    height: 5em;
+.login-page {
+    padding-left: 18%;
 }
 
 .login-header {
     position: absolute;
-    top: 0px;
-    right: 480px;
+    top: -10px;
+    right: 450px;
     font-size: 50px;
     text-decoration: underline;
+    font-family: "Orbitron";
 }
 
 .error-p {
+    padding-left: 23%;
     font-size: 20px;
 }
 
 .password-entry {
     display: flex;
     flex-direction: row;
-    padding-top: 4%;
+    padding-top: 2%;
     width: 110%;
 }
 
@@ -62,4 +44,20 @@
     margin-right: 1%;
     width: 6em;
     height: 1em;
+}
+
+.user-list-object {
+    border: 2px solid white;
+}
+
+.user-name-p {
+    padding-top: 0.7em;
+    padding-left: 0.2em;
+    font-family: "Orbitron";
+    font-size: 25px !important;
+    width: 20em;
+}
+
+.pagination-buttons {
+    padding-left: 3em;
 }

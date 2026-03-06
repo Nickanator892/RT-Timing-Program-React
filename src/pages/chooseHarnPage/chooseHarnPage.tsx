@@ -1,8 +1,9 @@
 import "./chooseHarnPage.css";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import useTimes from "../../hooks/loggedTimesHook";
+import useTimes from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
+import RTLogo from "../../components/RTLogo/RTLogo";
 
 interface harnProps {
     setHarn: React.Dispatch<React.SetStateAction<string>>;
@@ -80,10 +81,7 @@ function ChooseHarnPage({ setHarn }: harnProps) {
                     Next
                 </button>
             </div>
-            <div id="RT-logo">
-                <p id="RT-part-one">RT </p>
-                <p id="RT-part-two">Technologies</p>
-            </div>
+            <RTLogo />
         </div>
     );
 }

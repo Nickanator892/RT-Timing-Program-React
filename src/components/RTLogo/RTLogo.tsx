@@ -2,9 +2,9 @@ import "./RTLogo.css";
 
 function RTLogo() {
     return (
-        <div id="RT-logo">
-            <span id="RT-part-one">RT </span>
-            <span id="RT-part-two">Technologies</span>
+        <div id="RT-logo-static">
+            <span id="RT-part-one-static">RT </span>
+            <span id="RT-part-two-static">Technologies</span>
         </div>
     );
 }

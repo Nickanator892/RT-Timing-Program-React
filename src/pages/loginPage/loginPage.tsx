@@ -1,8 +1,9 @@
-import type React from "react";
-import useSettings from "../../hooks/pauseReasonHook";
 import "./loginPage.css";
+import type React from "react";
+import useSettings from "../../hooks/useSettings";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
+import RTLogo from "../../components/RTLogo/RTLogo";
 
 interface User {
     Id: number;
@@ -25,7 +26,7 @@ function LoginPage({ setUser }: loginProps) {
     const nav = useNavigate();
 
     const [currentPage, setCurrentPage] = useState(0);
-    const itemsPerPage = 5;
+    const itemsPerPage = 3;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = users.length > endIndex;
@@ -33,9 +34,9 @@ function LoginPage({ setUser }: loginProps) {
 
     function populateUserList() {
         return users.slice(startIndex, endIndex).map((user) => (
-            <div key={user.Id}>
-                <p>{user.name}</p>
-                <button type="button" onClick={() => selectUser(user.Id)}>
+            <div key={user.Id} className="user-list-object">
+                <p className="user-name-p">{user.name}</p>
+                <button type="button" id="user-list-button" onClick={() => selectUser(user.Id)}>
                     Login
                 </button>
             </div>
@@ -50,6 +51,9 @@ function LoginPage({ setUser }: loginProps) {
             }, 500);
         } else {
             setErr("Incorrect password");
+            setTimeout(() => {
+                setErr("");
+            }, 2000);
         }
     }
 
@@ -83,8 +87,9 @@ function LoginPage({ setUser }: loginProps) {
     }
 
     return (
-        <div>
+        <div className="login-page">
             <h2 className="login-header">Select Builder</h2>
+            <RTLogo />
             <div id="users-list">{populateUserList()}</div>
             {!disablePassword && (
                 <div className="password-entry">
@@ -101,11 +106,11 @@ function LoginPage({ setUser }: loginProps) {
                         id="pw-login-button"
                         onClick={selectPasswordProtected}
                     >
-                        Login
+                        Login {localSelectedUser?.name.slice(0, 6)}...
                     </button>
-                    <p className="error-p">{err}</p>
                 </div>
             )}
+            <p className="error-p">{err}</p>
             <div className="pagination-buttons">
                 <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
                     Previous

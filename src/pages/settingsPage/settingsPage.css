@@ -31,6 +31,9 @@ button {
 }
 
 #reasons-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
     padding-top: 2%;
     padding-bottom: 5%;
 }
@@ -38,9 +41,13 @@ button {
 #reasons-list div {
     display: flex;
     flex-direction: row;
-    border: 2px solid white;
     width: 100%;
     margin-top: 1%;
+    min-height: 2em;
+}
+
+#reasons-list .reason-object {
+    border: 2px solid white;
 }
 
 #reasons-list p {
@@ -54,7 +61,7 @@ button {
 #reasons-list button {
     margin-top: 1%;
     width: 15em;
-    height: 1.5em;
+    min-height: 4.25em;
 }
 
 .add-pause-reason-form h2 {
@@ -71,6 +78,9 @@ button {
     padding-left: 15px;
     padding-right: 17px;
     border-radius: 8px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    max-height: 500px;
 }
 
 .user-selection {
@@ -96,7 +106,7 @@ input {
 }
 
 .add-user-form h2 {
-    padding-left: 4em;
+    padding-left: 5.4em;
     text-decoration: underline;
     font-family: "Orbitron";
 }
@@ -104,17 +114,23 @@ input {
 #users-list div {
     display: flex;
     flex-direction: row;
-    border: 2px solid white;
-    width: 95%;
+    gap: 6em;
+    min-width: 70%;
+    max-width: 70%;
+    min-height: 3em;
     margin-top: 1%;
 }
 
 #users-list p {
-    width: 70%;
+    min-width: 100%;
     font-size: 20px;
     margin-bottom: 1%;
     margin-top: 1%;
     padding-right: 1%;
+}
+
+.account-object {
+    border: 2px solid white;
 }
 
 #users-list button {
@@ -191,4 +207,36 @@ input {
     min-height: 3em;
     font-size: 14px;
     margin-left: 1%;
+}
+
+.account-object {
+    display: flex;
+    flex-direction: row;
+}
+
+.account-status {
+    padding-top: 0.3em;
+}
+
+.reason-object {
+    display: flex;
+    flex-direction: row;
+    margin-right: 1em;
+}
+
+.reason-object p {
+    min-width: 80%;
+}
+
+#reason-status {
+    padding-top: 1.5%;
+}
+
+.user-control-button {
+    margin-bottom: -2em;
+    margin-left: -5em;
+    min-width: 13em;
+    min-height: 3.2em;
+    max-width: 5em;
+    border-radius: 0;
 }

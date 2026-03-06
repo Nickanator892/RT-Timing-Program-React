@@ -3,8 +3,8 @@ import { useEffect, useState, useRef } from "react";
 import { useSharedState } from "../../hooks/useSharedState";
 import type { User } from "../../assets/types/UserType";
 import AnalyticsChart from "../../common/analyticsChart/chart";
-import useTimes from "../../hooks/loggedTimesHook";
-import type { LoggedTime, HarnCount } from "../../hooks/loggedTimesHook";
+import useTimes from "../../hooks/useTimes";
+import type { LoggedTime, HarnCount } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 
