@@ -16,99 +16,96 @@ import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 const API_BASE = "http://localhost:5000";
 
 function TimerLayout() {
-    const navigate = useNavigate();
-    const [err, setErr] = useState("");
-    const { pauseReasons } = useSettings();
-    const [_pauseReason, setPauseReason] = useState<PauseReason | undefined>();
-    const [pauseStart, setPauseStart] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const [err, setErr] = useState("");
+  const { pauseReasons } = useSettings();
+  const [_pauseReason, setPauseReason] = useState<PauseReason | undefined>();
+  const [pauseStart, setPauseStart] = useState<string | null>(null);
 
-    const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
-        null
-    );
+  const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
+    null
+  );
 
-    const [selectedUser, setSelectedUser] = useSharedState<User | undefined>(
-        "selectedUser",
-        undefined
-    );
-    const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "");
+  const [selectedUser, setSelectedUser] = useSharedState<User | undefined>(
+    "selectedUser",
+    undefined
+  );
+  const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "");
 
-    useEffect(() => {
-        window.electron.getWindowType().then((type) => {
-            if (type === "analytics") {
-                navigate("/analytics");
-            }
-        });
+  useEffect(() => {
+    window.electron.getWindowType().then((type) => {
+      if (type === "analytics") {
+        navigate("/analytics");
+      }
+    });
 
-        const unsubscribe = window.electron.onNavigateTo?.((route: string) => {
-            navigate(route);
-        });
+    const unsubscribe = window.electron.onNavigateTo?.((route: string) => {
+      navigate(route);
+    });
 
-        return unsubscribe;
-    }, [navigate]);
+    return unsubscribe;
+  }, [navigate]);
 
-    return (
-        <>
-            <Routes>
-                <Route
-                    path="/"
-                    element={<LoginPage user={selectedUser} setUser={setSelectedUser} />}
-                />
-                <Route
-                    path="/timer"
-                    element={
-                        <TimingPage
-                            activeButton={activeButton}
-                            setActiveButton={setActiveButton}
-                            err={err}
-                            setErr={setErr}
-                            pauseStart={pauseStart}
-                            setPauseStart={setPauseStart}
-                        />
-                    }
-                />
-                <Route path="/settings" element={<SettingsPage selectedUser={selectedUser} />} />
-                <Route
-                    path="/pause-reason-page"
-                    element={
-                        <PausePage
-                            pauseReasons={pauseReasons}
-                            setPauseReason={setPauseReason}
-                            setErr={setErr}
-                            pauseStart={pauseStart}
-                            setPauseStart={setPauseStart}
-                        />
-                    }
-                />
-                <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
-                <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
-                <Route path="/choose-kit" element={<ChooseKitPage />} />
-            </Routes>
-        </>
-    );
+  return (
+    <>
+      <Routes>
+        <Route path="/" element={<LoginPage user={selectedUser} setUser={setSelectedUser} />} />
+        <Route
+          path="/timer"
+          element={
+            <TimingPage
+              activeButton={activeButton}
+              setActiveButton={setActiveButton}
+              err={err}
+              setErr={setErr}
+              pauseStart={pauseStart}
+              setPauseStart={setPauseStart}
+            />
+          }
+        />
+        <Route path="/settings" element={<SettingsPage selectedUser={selectedUser} />} />
+        <Route
+          path="/pause-reason-page"
+          element={
+            <PausePage
+              pauseReasons={pauseReasons}
+              setPauseReason={setPauseReason}
+              setErr={setErr}
+              pauseStart={pauseStart}
+              setPauseStart={setPauseStart}
+            />
+          }
+        />
+        <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
+        <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
+        <Route path="/choose-kit" element={<ChooseKitPage />} />
+      </Routes>
+    </>
+  );
 }
 
 function App() {
-    const [dbReady, setDbReady] = useState<boolean | null>(null);
+  const [dbReady, setDbReady] = useState<boolean | null>(null);
 
-    const checkDbStatus = useCallback(() => {
-        fetch(`${API_BASE}/api/db-status`)
-            .then((res) => res.json())
-            .then((data) => {
-                setDbReady(data.ready === true);
-            })
-            .catch(() => {
-                setDbReady(false);
-            });
-    }, []);
+  const checkDbStatus = useCallback(() => {
+    fetch(`${API_BASE}/api/db-status`)
+      .then((res) => res.json())
+      .then((data) => {
+        setDbReady(data.ready === true);
+      })
+      .catch(() => {
+        setDbReady(false);
+      });
+  }, []);
 
-    useEffect(() => {
-        checkDbStatus();
-    }, [checkDbStatus]);
+  useEffect(() => {
+    checkDbStatus();
+  }, [checkDbStatus]);
 
-    if (dbReady === null) return <p>Checking database...</p>;
-    if (!dbReady) return <DatabaseSetup onDbSet={checkDbStatus} />;
+  if (dbReady === null) return <p>Checking database...</p>;
+  if (!dbReady) return <DatabaseSetup onDbSet={checkDbStatus} />;
 
-    return <TimerLayout />;
+  return <TimerLayout />;
 }
 
 export default App;

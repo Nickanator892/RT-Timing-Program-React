@@ -12,6 +12,7 @@ import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import CloseButton from "../../common/buttons/closeButton/closeButton";
+import RTLogo from "../../components/RTLogo/RTLogo";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -308,10 +309,7 @@ function TimingPage({
                 </div>
 
                 <p id="error-message">{err}</p>
-                <div id="RT-logo">
-                    <p id="RT-part-one">RT </p>
-                    <p id="RT-part-two">Technologies</p>
-                </div>
+                <RTLogo />
             </div>
         </div>
     );

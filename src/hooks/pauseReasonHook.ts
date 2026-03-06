@@ -112,9 +112,10 @@ export function useSettings() {
         }
     };
 
-    const deleteUser = async (id: number) => {
+    const deleteUser = async (name: string, id: number) => {
         if (!settings) return;
-        await execQuery("DELETE FROM HARNBUILDERS WHERE Id = ?", [id]);
+        const deprecatedUserName = "Inactive-" + name
+        await execQuery("UPDATE HARNBUILDERS SET userName=? WHERE Id = ?", [deprecatedUserName, id]);
         setSettings({
             ...settings,
             users: settings.users.filter((u) => u.Id !== id),

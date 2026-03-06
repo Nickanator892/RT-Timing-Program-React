@@ -41,19 +41,25 @@
     font-size: 20px;
 }
 
-#pw-entry {
-    min-height: 3em;
-    margin-right: 1%;
-    width: 10em;
+.password-entry {
+    display: flex;
+    flex-direction: row;
+    padding-top: 4%;
+    width: 110%;
 }
 
-.password-entry {
-    padding-top: 2%;
-    width: 110%;
+#pw-entry {
+    font-size: 50px;
 }
 
 #pw-login-button {
     font-size: 22px !important;
     min-width: 10em !important;
-    min-height: 3.1em;
+    min-height: 2.75em;
+}
+
+#pw-entry {
+    margin-right: 1%;
+    width: 6em;
+    height: 1em;
 }

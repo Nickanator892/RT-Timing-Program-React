@@ -47,10 +47,10 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                 } else return true;
             }
             if (selectedUser.privLevel) {
-                if (selectedUser?.privLevel < requiredLevel) {
+                if (selectedUser?.privLevel > requiredLevel) {
                     setErr("Insufficient Privileges");
                     return false;
-                } else if (selectedUser?.privLevel >= requiredLevel) {
+                } else if (selectedUser?.privLevel <= requiredLevel) {
                     setErr("");
                     return true;
                 }
@@ -76,6 +76,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
 
     function saveUser() {
         const validated = validatePriv(2);
+        console.log(validated);
         if (!validated) {
             return;
         }

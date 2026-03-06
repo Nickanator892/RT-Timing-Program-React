@@ -86,24 +86,26 @@ function LoginPage({ setUser }: loginProps) {
         <div>
             <h2 className="login-header">Select Builder</h2>
             <div id="users-list">{populateUserList()}</div>
-            <div hidden={disablePassword} className="password-entry">
-                <input
-                    type="text"
-                    name="pwentry"
-                    id="pw-entry"
-                    placeholder="Password"
-                    onChange={(e) => setPassword(e.target.value)}
-                />
-                <button
-                    style={{ fontSize: "15px", maxWidth: "6em", maxHeight: "2em" }}
-                    type="button"
-                    id="pw-login-button"
-                    onClick={selectPasswordProtected}
-                >
-                    Login
-                </button>
-                <p className="error-p">{err}</p>
-            </div>
+            {!disablePassword && (
+                <div className="password-entry">
+                    <input
+                        type="password"
+                        name="pwentry"
+                        id="pw-entry"
+                        placeholder="Password"
+                        onChange={(e) => setPassword(e.target.value)}
+                    />
+                    <button
+                        style={{ fontSize: "15px", maxWidth: "6em", maxHeight: "2em" }}
+                        type="button"
+                        id="pw-login-button"
+                        onClick={selectPasswordProtected}
+                    >
+                        Login
+                    </button>
+                    <p className="error-p">{err}</p>
+                </div>
+            )}
             <div className="pagination-buttons">
                 <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
                     Previous

@@ -14,23 +14,3 @@
     display: flex;
     flex-direction: column;
 }
-
-#RT-logo {
-    display: flex;
-    flex-direction: row;
-    position: absolute;
-    top: 0px;
-    right: 30px;
-}
-
-#RT-part-one {
-    font-size: 60px;
-    font-family: "RT-Text";
-    padding-right: 2%;
-}
-
-#RT-part-two {
-    padding-top: 20%;
-    font-size: 35px;
-    font-family: "RT-Text";
-}
