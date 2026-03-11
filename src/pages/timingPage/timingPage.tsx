@@ -8,6 +8,10 @@ import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/choose
 import useTimes, { type LoggedTime } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
+import TimerModeDropdown from "../../common/timerModeDropdown/timerModeDropdown";
+import TimeSetupButton from "../../common/buttons/timeSetupButton/timeSetupButton";
+import TimeTeardownButton from "../../common/buttons/timeTeardownButton/timeTeardownButton";
+import TimeBuildButton from "../../common/buttons/timeBuildButton/timeBuildButton";
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
@@ -56,11 +60,75 @@ function TimingPage({
         "pauseReason",
         undefined
     );
+    const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
+    const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
+    const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
 
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
+
+    const isFirstRender = useRef(true);
+const prevSecondaryBuilders = useRef(secondaryBuilders);
+
+useEffect(() => {
+    // Skip on first render or if timer isn't running
+    if (isFirstRender.current) {
+        isFirstRender.current = false;
+        prevSecondaryBuilders.current = secondaryBuilders;
+        return;
+    }
+
+    // Only react if builders actually changed and a build is in progress
+    if (timerDone) return;
+    if (secondaryBuilders.length === prevSecondaryBuilders.current.length) return;
+    prevSecondaryBuilders.current = secondaryBuilders;
+
+    // handleBuilderChange - use HARNBUILDSEGMENTS instead of HARNBUILDTIMES
+    async function handleBuilderChange() {
+        window.electron.timerPause();
+        setIsRunning(false);
+
+        const segmentEnd = formatTimestamp(new Date().toISOString());
+
+        // Close current segment
+        await execQuery(
+            "UPDATE HARNBUILDSEGMENTS SET endTime=? WHERE buildId=? AND startTime=?",
+            [segmentEnd, currentBuildId, currentSegmentStart]
+        );
+
+        // Open new segment
+        const newSegmentStart = formatTimestamp(new Date().toISOString());
+        setCurrentSegmentStart(newSegmentStart);
+        await execQuery(
+            "INSERT INTO HARNBUILDSEGMENTS (buildId, startTime, endTime, numberOfBuilders) VALUES(?, ?, ?, ?)",
+            [currentBuildId, newSegmentStart, "", secondaryBuilders.length + 1]
+        );
+
+        // Update HARNBUILDTIMES numberOfBuilders to reflect current count
+        await execQuery(
+            "UPDATE HARNBUILDTIMES SET numberOfBuilders=? WHERE buildId=?",
+            [secondaryBuilders.length + 1, currentBuildId]
+        );
+
+        // Refresh secondary builders
+        await execQuery("DELETE FROM SECONDARYBUILDERS WHERE buildId=?", [currentBuildId]);
+        if (secondaryBuilders.length > 0) {
+            for (const builder of secondaryBuilders) {
+                await execQuery(
+                    "INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)",
+                    [currentBuildId, builder.Id]
+                );
+            }
+        }
+
+        window.electron.timerStart();
+        setIsRunning(true);
+    }
+
+    handleBuilderChange();
+}, [secondaryBuilders, currentBuildId, currentSegmentStart, selectedHarn, buildKit, selectedUser, timerMode, timerDone]);
 
     useEffect(() => {
         if (selectedHarn !== lastSelectedHarn.current) {
@@ -108,9 +176,10 @@ function TimingPage({
     };
 
     async function getBuildId() {
-        const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDTIMES");
+        const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDS");
         const buildId = Number(data["result"]["0"].maxId ?? 0);
         setCurrentBuildId(buildId);
+        return buildId
     }
 
     async function insertPause() {
@@ -118,13 +187,24 @@ function TimingPage({
         if (sharedPauseReason) {
             try {
                 await execQuery(
-                    "INSERT INTO HARNBUILDPAUSEHISTORY (buildId, pauseId, pauseStart, pauseEnd) VALUES(?, ?, ?, ?)",
-                    [currentBuildId, sharedPauseReason.Id, pauseStart, pauseEnd]
+                    "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id]
                 );
             } catch (err: unknown) {
                 throw new Error("Error");
             }
         }
+    }
+
+    function formatTimestamp(iso: string): string {
+    const d = new Date(iso);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    const HH = String(d.getHours()).padStart(2, '0');
+    const MM = String(d.getMinutes()).padStart(2, '0');
+    const SS = String(d.getSeconds()).padStart(2, '0');
+    return `${dd}/${mm}/${yyyy}-${HH}:${MM}:${SS}`;
     }
 
     async function startTimer() {
@@ -135,16 +215,37 @@ function TimingPage({
         }
 
         if (timerDone) {
-            setStartTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+            const startTime = formatTimestamp(new Date().toISOString());
+            setStartTime(startTime);
+            setCurrentSegmentStart(startTime);
             setTimerDone(false);
             setIsRunning(true);
             setErr("");
             setDbSuccess("Submit");
+
+            await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
+            const buildId = await getBuildId();
+
+            // One row in HARNBUILDTIMES — no startTime/endTime here anymore
             await execQuery(
-                "INSERT INTO HARNBUILDTIMES (startTime, endTime, seconds, formattedTime, harnNumber, dateBuilt, REV, builderId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                ["", "", "", "", "", "", "", selectedUser?.Id]
+                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
+                [buildId, selectedHarn, buildKit?.REV, selectedUser?.Id, timerMode.id, secondaryBuilders.length + 1]
             );
-            getBuildId();
+
+            // First segment
+            await execQuery(
+                "INSERT INTO HARNBUILDSEGMENTS (buildId, startTime, endTime, numberOfBuilders) VALUES(?, ?, ?, ?)",
+                [buildId, startTime, "", secondaryBuilders.length + 1]
+            );
+
+            if (secondaryBuilders.length > 0) {
+                for (const builder of secondaryBuilders) {
+                    await execQuery(
+                        "INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)",
+                        [buildId, builder.Id]
+                    );
+                }
+            }
             return;
         }
         setIsRunning(true);
@@ -154,9 +255,9 @@ function TimingPage({
 
     function pauseTimer() {
         window.electron.timerPause();
-        const newDate = new Date().toLocaleTimeString("en-GB", { hour12: false });
-        setPauseStart(newDate);
-        setEndTime(newDate);
+        const pauseStartTime = formatTimestamp(new Date().toISOString())
+        setPauseStart(pauseStartTime);
+        setEndTime(new Date().toISOString());
         setIsRunning(false);
         setTimeout(() => {
             nav("/pause-reason-page");
@@ -167,21 +268,11 @@ function TimingPage({
         if (displayTimer === "00:00:00") return;
         window.electron.timerPause();
         if (!timerDone) {
-            setEndTime(new Date().toLocaleTimeString("en-GB", { hour12: false }));
+            const localEndTime = formatTimestamp(new Date().toISOString())
+            setEndTime(localEndTime);
         }
         setIsRunning(false);
         setDisableSubmit(false);
-    }
-
-    function calculateSeconds(timeString: string): number {
-        if (!timeString || typeof timeString !== "string") return 0;
-        try {
-            const [hours, minutes, seconds] = timeString.split(":").map(Number);
-            return hours * 3600 + minutes * 60 + seconds;
-        } catch (error) {
-            console.error("Error parsing time string:", timeString, error);
-            return 0;
-        }
     }
 
     async function submitTime() {
@@ -199,13 +290,10 @@ function TimingPage({
         }
         setDbSuccess("Fetching...");
         try {
-            const timeObject: LoggedTime = {
+            const timeObject: Partial<LoggedTime> = {
                 startTime: startTime,
                 endTime: endTime,
-                seconds: calculateSeconds(currentTime),
-                formattedTime: currentTime,
                 harnNumber: selectedHarn,
-                dateBuilt: new Date().toISOString().split("T")[0],
             };
             if (typeof currentBuildId == "number") {
                 const result = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
@@ -214,7 +302,6 @@ function TimingPage({
                 }
             }
 
-            // Refresh counts locally
             const updatedTimes = await fetchTimes(selectedHarn);
             if (Array.isArray(updatedTimes)) {
                 setHarnBuilt(updatedTimes.length);
@@ -244,7 +331,6 @@ function TimingPage({
         if (button === "submit") submitTime();
     };
 
-    const harnLeft = harnTotal - harnBuilt;
 
     return (
         <div className="timing-page">
@@ -301,10 +387,9 @@ function TimingPage({
                 <div className="harn-info-and-close-button">
                     <div className="harn-build-info">
                         <p id="current-build-pn">Part #: {selectedHarn}</p>
-                        <p id="to-build-number">{harnLeft} Left</p>
-                        <p id="harn-build">{harnBuilt} Built</p>
-                        <p id="total-build">Total: {harnTotal}</p>
+                        <p id="timer-mode">Timer Mode: {timerMode.header}</p>
                     </div>
+                    <TimerModeDropdown/>
                     <CloseButton />
                 </div>
 

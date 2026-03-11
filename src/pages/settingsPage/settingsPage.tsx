@@ -7,7 +7,8 @@ import type { User } from "../../assets/types/UserType";
 import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
-import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
+import { UserRoundCheck, UserRoundX, ListCheck, ListX, UsersRound } from "lucide-react";
+import { useSharedState } from "../../hooks/useSharedState";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
@@ -36,6 +37,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     const [currentPage, setCurrentPage] = useState(0);
     const [privLevelSelect, setPrivLevelSelect] = useState<number>(3);
     const [password, setPassword] = useState<string>("");
+    const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
@@ -272,40 +274,63 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                         Add User
                     </button>
                 </div>
-                <div id="users-list">
-                    {allUsers.slice(startIndex, endIndex).map((user) => (
-                        <div key={user.Id}>
-                            <div className="account-object">
-                                <p className="user-name">
-                                    {user.name}{" "}
-                                    {user.active == 1 ? (
-                                        <UserRoundCheck className="account-status" />
-                                    ) : (
-                                        <UserRoundX className="account-status" />
-                                    )}
-                                </p>
-                                <p id="account-status"></p>
-                            </div>
-                            {user.active == 1 ? (
+                    <div id="users-list">
+                        {allUsers.slice(startIndex, endIndex).map((user) => (
+                            <div key={user.Id}>
+                                <div className="account-object">
+                                    <p className="user-name">
+                                        {user.name}{" "}
+                                        {user.active == 1 ? (
+                                            <UserRoundCheck className="account-status" />
+                                        ) : (
+                                            <UserRoundX className="account-status" />
+                                        )}
+                                    </p>
+                                    <p id="account-status"></p>
+                                </div>
+                                {user.active == 1 ? (
+                <div>
+                    {selectedUser?.Id != user.Id ? (
+                        <>  {/* fragment to wrap multiple elements */}
+                            <button
+                                type="button"
+                                className="user-control-button-active"
+                                onClick={() => removeUser(user.Id)}
+                            >
+                                Deactivate User
+                            </button>
+                            {!secondaryBuilders.some((u) => u.Id === user.Id) ? (
                                 <button
                                     type="button"
-                                    className="user-control-button"
-                                    onClick={() => removeUser(user.Id)}
+                                    className="user-control-button-active"
+                                    onClick={() => setSecondaryBuilders((prev) => [...prev, {Id: user.Id, name: user.name}])}
                                 >
-                                    Deactivate User
+                                    Set Secondary
                                 </button>
                             ) : (
                                 <button
                                     type="button"
-                                    className="user-control-button"
-                                    onClick={() => reActivateUser(user.Id)}
+                                    className="user-control-button-active"
+                                    onClick={() => setSecondaryBuilders((prev) => prev.filter((u) => u.Id != user.Id))}
                                 >
-                                    Activate User
+                                    Remove Secondary
                                 </button>
                             )}
-                        </div>
-                    ))}
+                        </>
+                    ) : null}  {/* missing else branch */}
                 </div>
+            ) : (
+                <button
+                    type="button"
+                    className="user-control-button"
+                    onClick={() => reActivateUser(user.Id)}
+                >
+                    Activate User
+                </button>
+            )}
+        </div>
+    ))}
+</div>
                 <div className="pagination-buttons">
                     <button type="button" onClick={previousPage} disabled={!hasPreviousPage}>
                         Previous

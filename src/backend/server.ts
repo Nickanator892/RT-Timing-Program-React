@@ -83,6 +83,17 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     validateSQLitePath(config.dbPath);
     dbPath = config.dbPath;
     console.log("Loaded DB path:", dbPath);
+
+    await runQuery(`
+      CREATE VIEW IF NOT EXISTS HARNBUILDTIMES_VIEW AS
+      SELECT 
+          h.*,
+          MIN(s.startTime) as startTime,
+          MAX(s.endTime) as endTime
+      FROM HARNBUILDTIMES h
+      LEFT JOIN HARNBUILDSEGMENTS s ON h.buildId = s.buildId
+      GROUP BY h.buildId
+    `)
   } catch (err) {
     console.warn("Saved DB path invalid, ignoring:", err);
     dbPath = null;

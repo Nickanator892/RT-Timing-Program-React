@@ -24,6 +24,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     });
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
     const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
+    const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
 
     const { fetchTimes, fetchAllTimes } = useTimes();
     const { buildKit } = useBuildKit();
@@ -68,6 +69,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     }, [buildKit, harn]);
 
     // Load chart times for selected harness
+// Load chart times for selected harness
     useEffect(() => {
         if (!selectedHarn || timesFetched.current) return;
         timesFetched.current = true;
@@ -75,10 +77,16 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             const result = await fetchTimes(selectedHarn);
             if (Array.isArray(result)) {
                 setTimes(
-                    result.map((t: LoggedTime) => ({
-                        seconds: t.seconds,
-                        formattedTime: t.formattedTime,
-                    }))
+                    result.map((t: LoggedTime) => {
+                        const seconds = Math.round(
+                            (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 1000
+                        );
+                        const h = Math.floor(seconds / 3600);
+                        const m = Math.floor((seconds % 3600) / 60);
+                        const s = seconds % 60;
+                        const formattedTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+                        return { seconds, formattedTime };
+                    })
                 );
             }
         }
@@ -102,7 +110,13 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     }, [buildKit, refreshTrigger]);
 
     function createInfoElement() {
-        if (selectedUser) return <p>User: {selectedUser.name}</p>;
+        if (selectedUser) return (
+            <div>
+                <p>Primary: {selectedUser.name}</p>
+                <p>Secondaries: {secondaryBuilders.map((builder) => {return (<li>{builder.name}</li>)})}</p>
+            </div>
+
+    );
         return null;
     }
 

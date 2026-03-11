@@ -69,11 +69,11 @@
     border-left: 2px solid white;
     padding: 0.5vh 0.5vw;
     box-sizing: border-box;
-    height: 10vw;
+    height: 20vw;
 }
 
 .harn-build-chart-info p {
-    font-family: "RobotoMono", monospace;
+    font-family: "Orbitron";
     font-size: clamp(11px, 0.9vw, 18px);
     margin: 0.3vh 0;
 }
