@@ -8,6 +8,7 @@ const timerModes = [
     { header: "Timing Overmold", id: 5, label: "Timer Mode: Overmold" },
     { header: "Timing Prebuild", id: 6, label: "Timer Mode: Prebuild" },
     { header: "Timing Strip & Crimp", id: 7, label: "Timer Mode: Strip & Crimp" },
+    { header: "Timing Braid", id: 8, label: "Timer Mode: Braid" }
 ];
 
 function TimerModeDropdown() {
