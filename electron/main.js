@@ -221,7 +221,7 @@ function createMainWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-        //mainWindow.webContents.openDevTools();
+        mainWindow.webContents.openDevTools();
     } else {
         mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
     }
@@ -267,7 +267,7 @@ function createAnalyticsWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
-        //analyticsWindow.webContents.openDevTools();
+        analyticsWindow.webContents.openDevTools();
     } else {
         analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"));
         analyticsWindow.webContents.on("did-finish-load", () => {
@@ -287,12 +287,12 @@ ipcMain.on("quit-app", () => {
 });
 
 app.whenReady().then(() => {
-    startServer();
+    //startServer();
     createMainWindow();
 });
 
 app.on("before-quit", () => {
-    stopServer();
+    //stopServer();
 });
 
 app.on("window-all-closed", () => {
@@ -300,5 +300,5 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
-    stopServer();
+    //stopServer();
 });

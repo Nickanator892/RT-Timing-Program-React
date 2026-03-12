@@ -15,7 +15,7 @@
         "electron:build": "npm run build && electron .",
         "pack": "npm run build && electron-builder --dir",
         "dist": "npm run build && electron-builder",
-        "application": "concurrently \"tsx src/backend/server.ts\" \"vite\""
+        "application": "concurrently \"tsx src/backend/server.ts\" \"wait-on http://localhost:5000/api/db-status && vite\""
     },
     "build": {
         "appId": "com.yourcompany.rt-timing",
@@ -60,9 +60,11 @@
         "eslint-plugin-react-hooks": "^7.0.1",
         "eslint-plugin-react-refresh": "^0.4.24",
         "globals": "^16.5.0",
+        "tsx": "^4.21.0",
         "typescript": "~5.9.3",
         "typescript-eslint": "^8.46.4",
         "vite": "^7.2.4",
-        "vite-plugin-electron": "^0.29.0"
+        "vite-plugin-electron": "^0.29.0",
+        "wait-on": "^9.0.4"
     }
 }

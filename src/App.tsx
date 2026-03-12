@@ -90,16 +90,19 @@ function TimerLayout() {
 function App() {
     const [dbReady, setDbReady] = useState<boolean | null>(null);
 
-    const checkDbStatus = useCallback(() => {
-        fetch(`${API_BASE}/api/db-status`)
-            .then((res) => res.json())
-            .then((data) => {
-                setDbReady(data.ready === true);
-            })
-            .catch(() => {
-                setDbReady(false);
-            });
-    }, []);
+const checkDbStatus = useCallback(() => {
+    console.log("Checking DB status...");
+    fetch(`${API_BASE}/api/db-status`)
+        .then((res) => res.json())
+        .then((data) => {
+            console.log("DB status response:", data);
+            setDbReady(data.ready === true);
+        })
+        .catch((err) => {
+            console.log("DB status fetch failed:", err);
+            setDbReady(false);
+        });
+}, []);
 
     useEffect(() => {
         checkDbStatus();

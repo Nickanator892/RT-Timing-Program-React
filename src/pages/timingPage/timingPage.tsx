@@ -141,7 +141,7 @@ useEffect(() => {
         if (!selectedHarn || timesFetched.current) return;
         timesFetched.current = true;
         async function loadBuiltCount() {
-            const result = await fetchTimes(selectedHarn);
+            const result = await fetchTimes(selectedHarn, timerMode.id);
             if (buildKit) {
                 const harness = buildKit.harnesses.find((h) => h.partNum === selectedHarn);
                 if (harness) setHarnTotal(harness.buildNumber);
@@ -302,7 +302,7 @@ useEffect(() => {
                 }
             }
 
-            const updatedTimes = await fetchTimes(selectedHarn);
+            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
             if (Array.isArray(updatedTimes)) {
                 setHarnBuilt(updatedTimes.length);
             }

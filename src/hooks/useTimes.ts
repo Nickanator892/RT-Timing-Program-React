@@ -43,11 +43,11 @@ export function useTimes() {
         }
     };
 
-    async function fetchTimes(harnNumber: string) {
+    async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
         const result = await execQuery(
             "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? ORDER BY startTime DESC",
-            [harnNumber, 1]
+            [harnNumber, timeTypeId]
         );
         if (Array.isArray(result)) {
             setLoggedTimes(result);
@@ -55,10 +55,10 @@ export function useTimes() {
         }
     }
 
-    async function fetchAllTimes(REV: number | undefined): Promise<HarnCount[]> {
+    async function fetchAllTimes(REV: number | undefined, timeTypeId: number): Promise<HarnCount[]> {
         const result = await execQuery(
             "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? GROUP BY harnNumber",
-            [REV, 1]
+            [REV, timeTypeId]
         );
         return Array.isArray(result)
             ? result.map((r: any) => ({

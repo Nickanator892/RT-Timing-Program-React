@@ -32,6 +32,17 @@ let dbPath: string | null = null;
 // --------------------
 // Helpers
 // --------------------
+
+process.on("unhandledRejection", (err) => {
+    console.error("Unhandled rejection:", err);
+    // don't exit
+});
+
+process.on("uncaughtException", (err) => {
+    console.error("Uncaught exception:", err);
+    // don't exit
+});
+
 function validateSQLitePath(candidate: string): void {
   const stat = fs.statSync(candidate);
   if (!stat.isFile()) {
@@ -84,7 +95,7 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     dbPath = config.dbPath;
     console.log("Loaded DB path:", dbPath);
 
-    await runQuery(`
+    runQuery(`
       CREATE VIEW IF NOT EXISTS HARNBUILDTIMES_VIEW AS
       SELECT 
           h.*,
@@ -105,6 +116,7 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
 // --------------------
 
 app.get("/api/db-status", (_req, res) => {
+  console.log("DBPATH", dbPath)
   if (!dbPath) {
     return res.json({ ready: false, error: "No database path configured" });
   }
@@ -168,3 +180,5 @@ app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log("Config file:", CONFIG_FILE);
 });
+
+process.stdin.resume();
