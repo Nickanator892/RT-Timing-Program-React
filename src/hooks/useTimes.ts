@@ -1,5 +1,4 @@
-import { useSharedState } from "./useSharedState"; // Import your shared state hook
-import { useBuildKit } from "./useBuildKit";
+import { useSharedState } from "./useSharedState";
 
 export interface LoggedTime {
     startTime: string;
@@ -20,7 +19,6 @@ export function useTimes() {
         "loggedTimes",
         undefined
     );
-    const { buildKit } = useBuildKit();
 
     const execQuery = async (
         requestedQuery: string,
@@ -46,7 +44,7 @@ export function useTimes() {
     async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
         const result = await execQuery(
-            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? ORDER BY startTime DESC",
+            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? ORDER BY startTime ASC",
             [harnNumber, timeTypeId]
         );
         if (Array.isArray(result)) {

@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import "./chart.css";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
@@ -20,8 +19,6 @@ interface chartData {
 
 function AnalyticsChart({
     loggedTimes,
-    harnNumber,
-    buildNumber,
     buildTimeEst,
     currentTimeSeconds,
 }: chartData) {
@@ -148,58 +145,6 @@ function AnalyticsChart({
         }),
         [currentTimeMinutes, buildTimeEst.seconds, currentTimeSeconds]
     );
-
-    function AnalyticsChart({
-        loggedTimes,
-        harnNumber,
-        buildNumber,
-        buildTimeEst,
-        currentTimeSeconds,
-    }: chartData) {
-        const chartRef = useRef<any>(null);
-
-        // ... your existing code ...
-
-        // Update annotations when currentTimeMinutes changes
-        useEffect(() => {
-            if (chartRef.current && chartRef.current.chart) {
-                chartRef.current.chart.updateOptions({
-                    annotations: {
-                        yaxis: [
-                            {
-                                y: buildTimeEst.seconds / 60,
-                                borderColor: "#F527F5",
-                                strokeDashArray: 0,
-                                borderWidth: 2,
-                                label: {
-                                    borderColor: "#FF4560",
-                                    style: {
-                                        color: "#FFFFFF",
-                                        background: "#000000",
-                                    },
-                                    text: "Estimated Time",
-                                },
-                            },
-                            {
-                                y: currentTimeMinutes,
-                                borderColor: "#FF4560",
-                                strokeDashArray: 5,
-                                borderWidth: 2,
-                                label: {
-                                    borderColor: "#FF4560",
-                                    style: {
-                                        color: "#FFFFFF",
-                                        background: "#000000",
-                                    },
-                                    text: `Current: ${currentTimeSeconds}`,
-                                },
-                            },
-                        ],
-                    },
-                });
-            }
-        }, [currentTimeMinutes, currentTimeSeconds, buildTimeEst.seconds]);
-    }
 
     return (
         <div className="chart">
