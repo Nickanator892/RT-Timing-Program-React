@@ -26,7 +26,7 @@ let sharedTimerData = {
   sessions: []
 };
 function startServer() {
-  serverProcess = spawn("npx", ["ts-node", "src/backend/server.ts"], {
+  serverProcess = spawn("npx", ["tsx", "src/backend/server.ts"], {
     shell: true,
     stdio: "ignore",
     windowsHide: true,
@@ -157,8 +157,11 @@ function createMainWindow() {
       nodeIntegration: false
     },
     resizable: false,
-    maximizable: false,
-    center: true
+    maximizable: false
+  });
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.setPosition(x, y);
+    mainWindow.show();
   });
   windows.push(mainWindow);
   mainWindow.on("closed", () => {
@@ -167,7 +170,6 @@ function createMainWindow() {
   });
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
   }
@@ -175,7 +177,7 @@ function createMainWindow() {
 }
 function createAnalyticsWindow() {
   const displays = screen.getAllDisplays();
-  const targetDisplay = displays[0];
+  const targetDisplay = displays[1];
   const { x, y } = targetDisplay.bounds;
   if (analyticsWindow && !analyticsWindow.isDestroyed()) {
     return analyticsWindow;
@@ -193,6 +195,11 @@ function createAnalyticsWindow() {
       nodeIntegration: false
     },
     title: "Analytics Dashboard"
+  });
+  analyticsWindow.once("ready-to-show", () => {
+    analyticsWindow.setPosition(x, y);
+    console.log("Window title", analyticsWindow.getTitle());
+    analyticsWindow.show();
   });
   windows.push(analyticsWindow);
   analyticsWindow.on("closed", () => {

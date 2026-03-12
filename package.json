@@ -15,7 +15,7 @@
         "electron:build": "npm run build && electron .",
         "pack": "npm run build && electron-builder --dir",
         "dist": "npm run build && electron-builder",
-        "application": "concurrently \"tsx src/backend/server.ts\" \"vite\" \"wait-on http://localhost:5173 && electron .\""
+        "application": "concurrently \"tsx src/backend/server.ts\" \"vite\""
     },
     "build": {
         "appId": "com.yourcompany.rt-timing",
