@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, screen, app } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import "child_process";
+import { spawn } from "child_process";
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = path.dirname(__filename$1);
 const isDev = process.env.VITE_DEV_SERVER_URL !== void 0;
@@ -11,6 +11,7 @@ const settingsPath = path.join(__dirname$1, "settings.json");
 let windows = [];
 let mainWindow = null;
 let analyticsWindow = null;
+let serverProcess = null;
 let timerInterval = null;
 let timerStart = null;
 let timerElapsed = 0;
@@ -24,6 +25,25 @@ let sharedTimerData = {
   currentSessionStart: null,
   sessions: []
 };
+function startServer() {
+  serverProcess = spawn("npx", ["tsx", "src/backend/server.ts"], {
+    shell: true,
+    stdio: "ignore",
+    windowsHide: true,
+    detached: false
+  });
+  serverProcess.on("error", (err) => console.error("Failed to start server:", err));
+  serverProcess.on("exit", (code) => {
+    console.log(`Server exited with code ${code}`);
+    serverProcess = null;
+  });
+}
+function stopServer() {
+  if (serverProcess) {
+    serverProcess.kill("SIGTERM");
+    serverProcess = null;
+  }
+}
 function broadcastToAll(data) {
   windows.forEach((win) => {
     if (!win.isDestroyed()) {
@@ -141,6 +161,7 @@ function createMainWindow() {
   });
   mainWindow.once("ready-to-show", () => {
     mainWindow.setPosition(x, y);
+    mainWindow.maximize();
     mainWindow.show();
   });
   windows.push(mainWindow);
@@ -150,7 +171,6 @@ function createMainWindow() {
   });
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
   }
@@ -158,7 +178,7 @@ function createMainWindow() {
 }
 function createAnalyticsWindow() {
   const displays = screen.getAllDisplays();
-  const targetDisplay = displays[1];
+  const targetDisplay = displays[0];
   const { x, y } = targetDisplay.bounds;
   if (analyticsWindow && !analyticsWindow.isDestroyed()) {
     return analyticsWindow;
@@ -168,7 +188,7 @@ function createAnalyticsWindow() {
     height: 1080,
     x,
     y,
-    fullscreen: true,
+    fullscreen: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -179,7 +199,7 @@ function createAnalyticsWindow() {
   });
   analyticsWindow.once("ready-to-show", () => {
     analyticsWindow.setPosition(x, y);
-    console.log("Window title", analyticsWindow.getTitle());
+    analyticsWindow.maximize();
     analyticsWindow.show();
   });
   windows.push(analyticsWindow);
@@ -189,7 +209,6 @@ function createAnalyticsWindow() {
   });
   if (process.env.VITE_DEV_SERVER_URL) {
     analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
-    analyticsWindow.webContents.openDevTools();
   } else {
     analyticsWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
     analyticsWindow.webContents.on("did-finish-load", () => {
@@ -202,12 +221,15 @@ ipcMain.on("quit-app", () => {
   app.quit();
 });
 app.whenReady().then(() => {
+  startServer();
   createMainWindow();
 });
 app.on("before-quit", () => {
+  stopServer();
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("will-quit", () => {
+  stopServer();
 });

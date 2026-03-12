@@ -209,6 +209,7 @@ function createMainWindow() {
 
     mainWindow.once("ready-to-show", () => {
         mainWindow.setPosition(x, y)
+        mainWindow.maximize()
         mainWindow.show()
     })
 
@@ -221,7 +222,7 @@ function createMainWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-        mainWindow.webContents.openDevTools();
+        //mainWindow.webContents.openDevTools();
     } else {
         mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
     }
@@ -231,7 +232,7 @@ function createMainWindow() {
 
 function createAnalyticsWindow() {
     const displays = screen.getAllDisplays();
-    const targetDisplay = displays[1];
+    const targetDisplay = displays[0];
     const { x, y } = targetDisplay.bounds;
     if (analyticsWindow && !analyticsWindow.isDestroyed()) {
         return analyticsWindow;
@@ -242,7 +243,7 @@ function createAnalyticsWindow() {
         height: 1080,
         x: x,
         y: y,
-        fullscreen: true,
+        fullscreen: false,
         autoHideMenuBar: true,
         webPreferences: {
             preload: preloadPath,
@@ -254,7 +255,7 @@ function createAnalyticsWindow() {
 
     analyticsWindow.once("ready-to-show", () => {
         analyticsWindow.setPosition(x, y)
-        console.log("Window title", analyticsWindow.getTitle())
+        analyticsWindow.maximize()
         analyticsWindow.show()
     })
 
@@ -267,7 +268,7 @@ function createAnalyticsWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
-        analyticsWindow.webContents.openDevTools();
+        //analyticsWindow.webContents.openDevTools();
     } else {
         analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"));
         analyticsWindow.webContents.on("did-finish-load", () => {
@@ -287,12 +288,12 @@ ipcMain.on("quit-app", () => {
 });
 
 app.whenReady().then(() => {
-    //startServer();
+    startServer();
     createMainWindow();
 });
 
 app.on("before-quit", () => {
-    //stopServer();
+    stopServer();
 });
 
 app.on("window-all-closed", () => {
@@ -300,5 +301,5 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
-    //stopServer();
+    stopServer();
 });
