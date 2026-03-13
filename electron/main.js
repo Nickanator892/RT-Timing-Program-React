@@ -39,7 +39,7 @@ let sharedTimerData = {
 // Server management
 // --------------------
 function startServer() {
-    serverProcess = spawn("npx", ["ts-node", "src/backend/server.ts"], {
+    serverProcess = spawn("npx", ["tsx", "src/backend/server.ts"], {
         shell: true,
         stdio: "ignore",
         windowsHide: true,
@@ -205,8 +205,13 @@ function createMainWindow() {
         },
         resizable: false,
         maximizable: false,
-        center: true,
     });
+
+    mainWindow.once("ready-to-show", () => {
+        mainWindow.setPosition(x, y)
+        mainWindow.maximize()
+        mainWindow.show()
+    })
 
     windows.push(mainWindow);
 
@@ -217,7 +222,7 @@ function createMainWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-        mainWindow.webContents.openDevTools();
+        //mainWindow.webContents.openDevTools();
     } else {
         mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
     }
@@ -238,7 +243,7 @@ function createAnalyticsWindow() {
         height: 1080,
         x: x,
         y: y,
-        fullscreen: true,
+        fullscreen: false,
         autoHideMenuBar: true,
         webPreferences: {
             preload: preloadPath,
@@ -247,6 +252,12 @@ function createAnalyticsWindow() {
         },
         title: "Analytics Dashboard",
     });
+
+    analyticsWindow.once("ready-to-show", () => {
+        analyticsWindow.setPosition(x, y)
+        analyticsWindow.maximize()
+        analyticsWindow.show()
+    })
 
     windows.push(analyticsWindow);
 

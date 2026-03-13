@@ -1,5 +1,4 @@
-import { useSharedState } from "./useSharedState"; // Import your shared state hook
-import { useBuildKit } from "./useBuildKit";
+import { useSharedState } from "./useSharedState";
 
 export interface LoggedTime {
     startTime: string;
@@ -20,7 +19,6 @@ export function useTimes() {
         "loggedTimes",
         undefined
     );
-    const { buildKit } = useBuildKit();
 
     const execQuery = async (
         requestedQuery: string,
@@ -43,11 +41,11 @@ export function useTimes() {
         }
     };
 
-    async function fetchTimes(harnNumber: string) {
+    async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
         const result = await execQuery(
-            "SELECT * FROM HARNBUILDTIMES WHERE harnNumber = (?) ORDER BY dateBuilt ASC, startTime ASC",
-            [harnNumber]
+            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? ORDER BY startTime ASC",
+            [harnNumber, timeTypeId]
         );
         if (Array.isArray(result)) {
             setLoggedTimes(result);
@@ -55,35 +53,26 @@ export function useTimes() {
         }
     }
 
-    async function fetchAllTimes(REV: number | undefined): Promise<HarnCount[]> {
+    async function fetchAllTimes(REV: number | undefined, timeTypeId: number): Promise<HarnCount[]> {
         const result = await execQuery(
-            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES WHERE REV=? GROUP BY harnNumber",
-            [REV]
+            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? GROUP BY harnNumber",
+            [REV, timeTypeId]
         );
         return Array.isArray(result)
             ? result.map((r: any) => ({
-                  harnNumber: r.harnNumber,
-                  count: Number(r.count),
-              }))
+                harnNumber: r.harnNumber,
+                count: Number(r.count),
+            }))
             : [];
     }
 
-    async function writeTime(time: LoggedTime, buildId: number, userId: number | undefined) {
+    async function writeTime(time: Partial<LoggedTime>, buildId: number, userId: number | undefined) {
         try {
             if (userId) {
+                // Close the final segment
                 const result = await execQuery(
-                    "UPDATE HARNBUILDTIMES SET startTime=?, endTime=?, seconds=?, formattedTime=?, harnNumber=?, dateBuilt=?, REV=?, builderId=? WHERE buildId=?",
-                    [
-                        time.startTime,
-                        time.endTime,
-                        time.seconds,
-                        time.formattedTime,
-                        time.harnNumber,
-                        time.dateBuilt,
-                        buildKit?.REV,
-                        userId,
-                        buildId,
-                    ]
+                    "UPDATE HARNBUILDSEGMENTS SET endTime=? WHERE buildId=? AND endTime=''",
+                    [time.endTime, buildId]
                 );
                 return result;
             }

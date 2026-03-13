@@ -240,3 +240,13 @@ input {
     max-width: 5em;
     border-radius: 0;
 }
+
+.user-control-button-active {
+    margin-bottom: -2em;
+    margin-left: -5.5em;
+    min-width: 7em;
+    min-height: 3.2em;
+    max-width: 2em;
+    border-radius: 0;
+    font-size: 15px;
+}

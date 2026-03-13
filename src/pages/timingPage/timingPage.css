@@ -10,8 +10,9 @@ body {
     flex-direction: row;
 }
 #timer {
-    margin-left: -3.8%;
-    padding-top: 2%;
+    margin-left: 10%;
+    padding-top: -10%;
+    margin-top: 6%;
     width: 8ch;
     font-size: 90px;
     font-family: "Orbitron";
@@ -203,34 +204,42 @@ hr {
     border-top: 2px solid white;
     border-bottom: 2px solid white;
     border-left: 2px solid white;
-    width: 84%;
+    width: 97%;
     margin-right: 0%;
     padding-left: 2%;
     margin-bottom: -3%;
-    margin-top: -15%;
+    margin-top: -19%;
     margin-left: -4.2%;
 }
 
 .harn-build-info p {
-    font-size: 1.4em;
+    font-size: 1em;
     width: 25em;
     font-family: "RobotoMono";
 }
 
 #nav-buttons {
     display: flex;
-    padding-top: 2%;
+    padding-top: 1%;
     gap: 1.5em;
 }
 .close-button {
     width: 38.6vw !important;
-    height: 5vw !important;
+    height: 6vw !important;
     font-size: 3.5ch !important;
     margin-left: -4.2%;
+    margin-top: 2.5em;
 }
 
 .harn-info-and-close-button {
     display: flex;
     flex-direction: column;
     gap: 2em;
+}
+
+.timer-mode-dropdown {
+    margin-top: 1em;
+    margin-left: -0.6em;
+    width: 100%;
+    height: 2em;
 }

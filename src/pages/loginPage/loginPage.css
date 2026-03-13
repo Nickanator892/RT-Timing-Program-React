@@ -48,12 +48,13 @@
 
 .user-list-object {
     border: 2px solid white;
+    margin-left: 1em;
 }
 
 .user-name-p {
     padding-top: 0.7em;
-    padding-left: 0.2em;
     font-family: "Orbitron";
+    padding-left: 0.3em;
     font-size: 25px !important;
     width: 20em;
 }

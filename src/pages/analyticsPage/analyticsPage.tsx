@@ -22,8 +22,10 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
         seconds: 1,
         formattedTime: "00:00:01",
     });
+        const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
     const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
+    const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
 
     const { fetchTimes, fetchAllTimes } = useTimes();
     const { buildKit } = useBuildKit();
@@ -32,6 +34,17 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
     const lastBuildKitRev = useRef<number | null>(null);
+
+    const lastTimerMode = useRef<number>(timerMode.id);
+
+    // Reset guard when timerMode changes
+    useEffect(() => {
+        if (timerMode.id !== lastTimerMode.current) {
+            timesFetched.current = false;
+            countsFetched.current = false;
+            lastTimerMode.current = timerMode.id;
+        }
+    }, [timerMode]);
 
     // Reset guards when harness changes
     useEffect(() => {
@@ -68,29 +81,38 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     }, [buildKit, harn]);
 
     // Load chart times for selected harness
+// Load chart times for selected harness
     useEffect(() => {
         if (!selectedHarn || timesFetched.current) return;
         timesFetched.current = true;
         async function loadTimes() {
-            const result = await fetchTimes(selectedHarn);
+            console.log("Timer mode:", timerMode.header)
+            const result = await fetchTimes(selectedHarn, timerMode.id);
             if (Array.isArray(result)) {
                 setTimes(
-                    result.map((t: LoggedTime) => ({
-                        seconds: t.seconds,
-                        formattedTime: t.formattedTime,
-                    }))
+                    result.map((t: LoggedTime) => {
+                        const seconds = Math.round(
+                            (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 1000
+                        );
+                        const h = Math.floor(seconds / 3600);
+                        const m = Math.floor((seconds % 3600) / 60);
+                        const s = seconds % 60;
+                        const formattedTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+                        return { seconds, formattedTime };
+                    })
                 );
             }
         }
         loadTimes();
-    }, [selectedHarn, harn, refreshTrigger]);
+    }, [selectedHarn, harn, refreshTrigger, timerMode]);
 
     // Load per-harness built counts
     useEffect(() => {
         if (!buildKit || countsFetched.current) return;
         countsFetched.current = true;
         async function loadCounts() {
-            const allTimes = await fetchAllTimes(buildKit?.REV);
+            console.log("Timer mode:", timerMode.header)
+            const allTimes = await fetchAllTimes(buildKit?.REV, timerMode.id);
             const counts: Record<string, number> = {};
             for (const harness of buildKit!.harnesses) {
                 const match = allTimes.find((t: HarnCount) => t.harnNumber === harness.partNum);
@@ -99,10 +121,16 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             setHarnCounts(counts);
         }
         loadCounts();
-    }, [buildKit, refreshTrigger]);
+    }, [buildKit, refreshTrigger, timerMode]);
 
     function createInfoElement() {
-        if (selectedUser) return <p>User: {selectedUser.name}</p>;
+        if (selectedUser) return (
+            <div>
+                <p>Primary: {selectedUser.name}</p>
+                <p>Secondaries: {secondaryBuilders.map((builder) => {return (<li>{builder.name}</li>)})}</p>
+            </div>
+
+    );
         return null;
     }
 

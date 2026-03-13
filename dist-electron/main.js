@@ -26,7 +26,7 @@ let sharedTimerData = {
   sessions: []
 };
 function startServer() {
-  serverProcess = spawn("npx", ["ts-node", "src/backend/server.ts"], {
+  serverProcess = spawn("npx", ["tsx", "src/backend/server.ts"], {
     shell: true,
     stdio: "ignore",
     windowsHide: true,
@@ -157,8 +157,12 @@ function createMainWindow() {
       nodeIntegration: false
     },
     resizable: false,
-    maximizable: false,
-    center: true
+    maximizable: false
+  });
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.setPosition(x, y);
+    mainWindow.maximize();
+    mainWindow.show();
   });
   windows.push(mainWindow);
   mainWindow.on("closed", () => {
@@ -167,7 +171,6 @@ function createMainWindow() {
   });
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
   }
@@ -185,7 +188,7 @@ function createAnalyticsWindow() {
     height: 1080,
     x,
     y,
-    fullscreen: true,
+    fullscreen: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -193,6 +196,11 @@ function createAnalyticsWindow() {
       nodeIntegration: false
     },
     title: "Analytics Dashboard"
+  });
+  analyticsWindow.once("ready-to-show", () => {
+    analyticsWindow.setPosition(x, y);
+    analyticsWindow.maximize();
+    analyticsWindow.show();
   });
   windows.push(analyticsWindow);
   analyticsWindow.on("closed", () => {

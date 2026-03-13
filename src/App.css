@@ -3,3 +3,7 @@ body {
     margin: 1px;
     overflow: hidden;
 }
+
+button {
+    color: white;
+}
