@@ -6,7 +6,7 @@
         "email": "Nick@rttechno.com"
     },
     "private": true,
-    "version": "0.2.0",
+    "version": "0.2.1",
     "type": "module",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -36,7 +36,11 @@
             {
                 "from": "db-config.json",
                 "to": "db-config.json"
-            }
+            },
+            {
+        "from": "dist-server/",
+        "to": "dist-server/"
+        }
         ],
         "linux": {
             "target": [{ "target": "deb", "arch": ["arm64"] }],
