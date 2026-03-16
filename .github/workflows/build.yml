@@ -18,13 +18,9 @@ jobs:
           node-version: "24.11"
 
       - run: npm install
-      - run: npm run pack
+      - run: npm run build
+      - run: tsc -p tsconfig.server.json
+      - run: cp src/backend/db.worker.cjs dist-server/
+      - run: npx electron-builder -l
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/*.deb
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
