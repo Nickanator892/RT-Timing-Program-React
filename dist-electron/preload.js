@@ -1,31 +1,34 @@
-const { contextBridge: i, ipcRenderer: e } = require("electron");
-i.exposeInMainWorld("electron", {
+const { contextBridge, ipcRenderer } = require("electron");
+contextBridge.exposeInMainWorld("electron", {
   // Settings
-  readSettings: () => e.invoke("read-settings"),
-  writeSettings: (t) => e.invoke("write-settings", t),
+  readSettings: () => ipcRenderer.invoke("read-settings"),
+  writeSettings: (settings) => ipcRenderer.invoke("write-settings", settings),
   // Shared data
-  getSharedData: () => e.invoke("get-shared-data"),
-  getWindowType: () => e.invoke("get-window-type"),
-  updateSharedData: (t) => e.send("update-shared-data", t),
-  addSession: (t) => e.send("add-session", t),
-  onSharedDataChanged: (t) => {
-    const n = (s, a) => t(a);
-    return e.on("shared-data-changed", n), () => {
-      e.removeListener("shared-data-changed", n), e.setMaxListeners(50);
+  getSharedData: () => ipcRenderer.invoke("get-shared-data"),
+  getWindowType: () => ipcRenderer.invoke("get-window-type"),
+  updateSharedData: (data) => ipcRenderer.send("update-shared-data", data),
+  addSession: (sessionData) => ipcRenderer.send("add-session", sessionData),
+  onSharedDataChanged: (callback) => {
+    const subscription = (event, data) => callback(data);
+    ipcRenderer.on("shared-data-changed", subscription);
+    return () => {
+      ipcRenderer.removeListener("shared-data-changed", subscription);
+      ipcRenderer.setMaxListeners(50);
     };
   },
   // Timer controls
-  timerStart: () => e.send("timer-start"),
-  timerPause: () => e.send("timer-pause"),
-  timerReset: () => e.send("timer-reset"),
+  timerStart: () => ipcRenderer.send("timer-start"),
+  timerPause: () => ipcRenderer.send("timer-pause"),
+  timerReset: () => ipcRenderer.send("timer-reset"),
   // Window management
-  openAnalyticsWindow: () => e.send("open-analytics-window"),
-  quitApp: () => e.send("quit-app"),
+  openAnalyticsWindow: () => ipcRenderer.send("open-analytics-window"),
+  quitApp: () => ipcRenderer.send("quit-app"),
   // Navigation
-  onNavigateTo: (t) => {
-    const n = (s, a) => t(a);
-    return e.on("navigate-to", n), () => {
-      e.removeListener("navigate-to", n);
+  onNavigateTo: (callback) => {
+    const subscription = (event, route) => callback(route);
+    ipcRenderer.on("navigate-to", subscription);
+    return () => {
+      ipcRenderer.removeListener("navigate-to", subscription);
     };
   }
 });

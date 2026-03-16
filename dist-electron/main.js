@@ -1,154 +1,248 @@
-import { ipcMain as i, BrowserWindow as v, screen as T, app as f } from "electron";
-import a from "path";
-import { fileURLToPath as D } from "url";
-import E from "fs";
-import { spawn as j } from "child_process";
-const V = D(import.meta.url), y = a.dirname(V), w = process.env.VITE_DEV_SERVER_URL !== void 0, S = w ? a.join(process.cwd(), "electron", "preload.js") : a.join(y, "preload.js"), b = a.join(y, "settings.json");
-let p = [], r = null, n = null, u = null, c = null, R = null, m = 0, s = {
+import { ipcMain, BrowserWindow, screen, app } from "electron";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
+import { spawn } from "child_process";
+const __filename$1 = fileURLToPath(import.meta.url);
+const __dirname$1 = path.dirname(__filename$1);
+const isDev = process.env.VITE_DEV_SERVER_URL !== void 0;
+const preloadPath = isDev ? path.join(process.cwd(), "electron", "preload.js") : path.join(__dirname$1, "preload.js");
+const settingsPath = path.join(__dirname$1, "settings.json");
+let windows = [];
+let mainWindow = null;
+let analyticsWindow = null;
+let serverProcess = null;
+let timerInterval = null;
+let timerStart = null;
+let timerElapsed = 0;
+let sharedTimerData = {
   displayTimer: "00:00:00",
   activeButton: null,
   elapsedTime: 0,
-  isRunning: !1,
+  isRunning: false,
   selectedUser: null,
   pauseReason: [],
   currentSessionStart: null,
   sessions: []
 };
-function x() {
-  const t = w ? a.join(process.cwd(), "src/backend/server.ts") : a.join(process.resourcesPath, "dist-server/server.js"), e = w ? a.join(process.cwd(), "src/backend/db.worker.cjs") : a.join(process.resourcesPath, "dist-server/db.worker.cjs");
-  u = j(w ? "npx" : "node", w ? ["tsx", t] : [t], {
-    shell: !0,
+function startServer() {
+  const serverPath = isDev ? path.join(process.cwd(), "src/backend/server.ts") : path.join(process.resourcesPath, "dist-server/server.js");
+  const workerPath = isDev ? path.join(process.cwd(), "src/backend/db.worker.cjs") : path.join(process.resourcesPath, "dist-server/db.worker.cjs");
+  const command = isDev ? "npx" : "node";
+  const args = isDev ? ["tsx", serverPath] : [serverPath];
+  const logPath = path.join(app.getPath("userData"), "server.log");
+  fs.writeFileSync(
+    logPath,
+    `serverPath: ${serverPath}
+workerPath: ${workerPath}
+serverPath exists: ${fs.existsSync(serverPath)}
+workerPath exists: ${fs.existsSync(workerPath)}
+`
+  );
+  serverProcess = spawn(command, args, {
+    shell: true,
     stdio: "ignore",
-    windowsHide: !0,
-    detached: !1,
-    env: { ...process.env, WORKER_PATH: e }
-  }), u.on("error", (l) => console.error("Failed to start server:", l)), u.on("exit", (l) => {
-    console.log(`Server exited with code ${l}`), u = null;
+    windowsHide: true,
+    detached: false,
+    env: { ...process.env, WORKER_PATH: workerPath }
+  });
+  serverProcess.on("error", (err) => fs.appendFileSync(logPath, `Failed to start server: ${err}
+`));
+  serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}
+`));
+}
+function stopServer() {
+  if (serverProcess) {
+    serverProcess.kill("SIGTERM");
+    serverProcess = null;
+  }
+}
+function broadcastToAll(data) {
+  windows.forEach((win) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("shared-data-changed", data);
+    }
   });
 }
-function _() {
-  u && (u.kill("SIGTERM"), u = null);
-}
-function h(t) {
-  p.forEach((e) => {
-    e.isDestroyed() || e.webContents.send("shared-data-changed", t);
-  });
-}
-let g = null;
-function P(t) {
-  g && clearTimeout(g), g = setTimeout(() => {
-    h(t);
+let broadcastDebounceTimer = null;
+function broadcastNonTimer(data) {
+  if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
+  broadcastDebounceTimer = setTimeout(() => {
+    broadcastToAll(data);
   }, 100);
 }
-function I(t) {
-  const e = Math.floor(t / 1e3), o = Math.floor(e / 3600), d = Math.floor(e % 3600 / 60), l = e % 60;
-  return `${String(o).padStart(2, "0")}:${String(d).padStart(2, "0")}:${String(
-    l
+function formatTime(ms) {
+  const totalSeconds = Math.floor(ms / 1e3);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
+    seconds
   ).padStart(2, "0")}`;
 }
-i.on("timer-start", () => {
-  if (c) return;
-  R = Date.now() - m, s.isRunning = !0, h(s);
-  function t() {
-    m = Date.now() - R;
-    const e = I(m);
-    s.displayTimer = e, s.elapsedTime = m, h(s);
-    const o = m % 1e3;
-    c = setTimeout(t, 1e3 - o);
+ipcMain.on("timer-start", () => {
+  if (timerInterval) return;
+  timerStart = Date.now() - timerElapsed;
+  sharedTimerData.isRunning = true;
+  broadcastToAll(sharedTimerData);
+  function tick() {
+    timerElapsed = Date.now() - timerStart;
+    const formatted = formatTime(timerElapsed);
+    sharedTimerData.displayTimer = formatted;
+    sharedTimerData.elapsedTime = timerElapsed;
+    broadcastToAll(sharedTimerData);
+    const drift = timerElapsed % 1e3;
+    timerInterval = setTimeout(tick, 1e3 - drift);
   }
-  c = setTimeout(t, 1e3);
+  timerInterval = setTimeout(tick, 1e3);
 });
-i.on("timer-pause", () => {
-  c && (clearTimeout(c), c = null), s.isRunning = !1, h(s);
+ipcMain.on("timer-pause", () => {
+  if (timerInterval) {
+    clearTimeout(timerInterval);
+    timerInterval = null;
+  }
+  sharedTimerData.isRunning = false;
+  broadcastToAll(sharedTimerData);
 });
-i.on("timer-reset", () => {
-  c && (clearTimeout(c), c = null), m = 0, R = null, s.displayTimer = "00:00:00", s.elapsedTime = 0, s.isRunning = !1, h(s);
+ipcMain.on("timer-reset", () => {
+  if (timerInterval) {
+    clearTimeout(timerInterval);
+    timerInterval = null;
+  }
+  timerElapsed = 0;
+  timerStart = null;
+  sharedTimerData.displayTimer = "00:00:00";
+  sharedTimerData.elapsedTime = 0;
+  sharedTimerData.isRunning = false;
+  broadcastToAll(sharedTimerData);
 });
-i.handle("read-settings", async () => {
+ipcMain.handle("read-settings", async () => {
   try {
-    const t = E.readFileSync(b, "utf-8");
-    return JSON.parse(t);
-  } catch (t) {
-    return console.error("Failed to read settings:", t), { pauseReasons: [] };
+    const data = fs.readFileSync(settingsPath, "utf-8");
+    return JSON.parse(data);
+  } catch (error) {
+    console.error("Failed to read settings:", error);
+    return { pauseReasons: [] };
   }
 });
-i.handle("write-settings", async (t, e) => {
+ipcMain.handle("write-settings", async (event, settings) => {
   try {
-    return E.writeFileSync(b, JSON.stringify(e, null, 2)), { success: !0 };
-  } catch (o) {
-    return console.error("Failed to write settings:", o), { success: !1, error: o.message };
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to write settings:", error);
+    return { success: false, error: error.message };
   }
 });
-i.handle("get-shared-data", () => s);
-i.handle("get-window-type", (t) => {
-  const e = v.fromWebContents(t.sender);
-  return e === r ? "main" : e === n ? "analytics" : "unknown";
+ipcMain.handle("get-shared-data", () => {
+  return sharedTimerData;
 });
-i.on("update-shared-data", (t, e) => {
-  s = { ...s, ...e }, P(s);
+ipcMain.handle("get-window-type", (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win === mainWindow) return "main";
+  if (win === analyticsWindow) return "analytics";
+  return "unknown";
 });
-i.on("add-session", (t, e) => {
-  s.sessions.push(e), h(s);
+ipcMain.on("update-shared-data", (event, newData) => {
+  sharedTimerData = { ...sharedTimerData, ...newData };
+  broadcastNonTimer(sharedTimerData);
 });
-i.on("open-analytics-window", () => {
-  k();
+ipcMain.on("add-session", (event, sessionData) => {
+  sharedTimerData.sessions.push(sessionData);
+  broadcastToAll(sharedTimerData);
 });
-function U() {
-  const e = T.getAllDisplays()[0], { x: o, y: d } = e.bounds;
-  return r = new v({
+ipcMain.on("open-analytics-window", () => {
+  createAnalyticsWindow();
+});
+function createMainWindow() {
+  const displays = screen.getAllDisplays();
+  const targetDisplay = displays[0];
+  const { x, y } = targetDisplay.bounds;
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
-    x: o,
-    y: d,
-    autoHideMenuBar: !0,
+    x,
+    y,
+    autoHideMenuBar: true,
     webPreferences: {
-      preload: S,
-      contextIsolation: !0,
-      nodeIntegration: !1
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false
     },
-    resizable: !1,
-    maximizable: !1
-  }), r.once("ready-to-show", () => {
-    r.setPosition(o, d), r.maximize(), r.show();
-  }), p.push(r), r.on("closed", () => {
-    p = p.filter((l) => l !== r), r = null;
-  }), process.env.VITE_DEV_SERVER_URL ? r.loadURL(process.env.VITE_DEV_SERVER_URL) : r.loadFile(a.join(y, "../dist/index.html")), r;
+    resizable: false,
+    maximizable: false
+  });
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.setPosition(x, y);
+    mainWindow.maximize();
+    mainWindow.show();
+  });
+  windows.push(mainWindow);
+  mainWindow.on("closed", () => {
+    windows = windows.filter((w) => w !== mainWindow);
+    mainWindow = null;
+  });
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    mainWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
+  }
+  return mainWindow;
 }
-function k() {
-  const e = T.getAllDisplays()[0], { x: o, y: d } = e.bounds;
-  return n && !n.isDestroyed() || (n = new v({
+function createAnalyticsWindow() {
+  const displays = screen.getAllDisplays();
+  const targetDisplay = displays[0];
+  const { x, y } = targetDisplay.bounds;
+  if (analyticsWindow && !analyticsWindow.isDestroyed()) {
+    return analyticsWindow;
+  }
+  analyticsWindow = new BrowserWindow({
     width: 1920,
     height: 1080,
-    x: o,
-    y: d,
-    fullscreen: !1,
-    autoHideMenuBar: !0,
+    x,
+    y,
+    fullscreen: false,
+    autoHideMenuBar: true,
     webPreferences: {
-      preload: S,
-      contextIsolation: !0,
-      nodeIntegration: !1
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false
     },
     title: "Analytics Dashboard"
-  }), n.once("ready-to-show", () => {
-    n.setPosition(o, d), n.maximize(), n.show();
-  }), p.push(n), n.on("closed", () => {
-    p = p.filter((l) => l !== n), n = null;
-  }), process.env.VITE_DEV_SERVER_URL ? n.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics") : (n.loadFile(a.join(y, "../dist/index.html")), n.webContents.on("did-finish-load", () => {
-    n.webContents.send("navigate-to", "/analytics");
-  }))), n;
+  });
+  analyticsWindow.once("ready-to-show", () => {
+    analyticsWindow.setPosition(x, y);
+    analyticsWindow.maximize();
+    analyticsWindow.show();
+  });
+  windows.push(analyticsWindow);
+  analyticsWindow.on("closed", () => {
+    windows = windows.filter((w) => w !== analyticsWindow);
+    analyticsWindow = null;
+  });
+  if (process.env.VITE_DEV_SERVER_URL) {
+    analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
+  } else {
+    analyticsWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
+    analyticsWindow.webContents.on("did-finish-load", () => {
+      analyticsWindow.webContents.send("navigate-to", "/analytics");
+    });
+  }
+  return analyticsWindow;
 }
-i.on("quit-app", () => {
-  f.quit();
+ipcMain.on("quit-app", () => {
+  app.quit();
 });
-f.whenReady().then(() => {
-  x(), U();
+app.whenReady().then(() => {
+  startServer();
+  createMainWindow();
 });
-f.on("before-quit", () => {
-  _();
+app.on("before-quit", () => {
+  stopServer();
 });
-f.on("window-all-closed", () => {
-  process.platform !== "darwin" && f.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
 });
-f.on("will-quit", () => {
-  _();
+app.on("will-quit", () => {
+  stopServer();
 });

@@ -51,24 +51,23 @@ function startServer() {
     const args = isDev ? ["tsx", serverPath] : [serverPath];
 
     const logPath = path.join(app.getPath("userData"), "server.log");
-    const logStream = fs.createWriteStream(logPath, { flags: "a" });
-
-    logStream.write(`Starting server...\n`);
-    logStream.write(`serverPath: ${serverPath}\n`);
-    logStream.write(`workerPath: ${workerPath}\n`);
-    logStream.write(`serverPath exists: ${fs.existsSync(serverPath)}\n`);
-    logStream.write(`workerPath exists: ${fs.existsSync(workerPath)}\n`);
+    fs.writeFileSync(logPath,
+        `serverPath: ${serverPath}\n` +
+        `workerPath: ${workerPath}\n` +
+        `serverPath exists: ${fs.existsSync(serverPath)}\n` +
+        `workerPath exists: ${fs.existsSync(workerPath)}\n`
+    );
 
     serverProcess = spawn(command, args, {
         shell: true,
-        stdio: ["ignore", logStream, logStream],
+        stdio: "ignore",
         windowsHide: true,
         detached: false,
         env: { ...process.env, WORKER_PATH: workerPath }
     });
 
-    serverProcess.on("error", (err) => logStream.write(`Failed to start server: ${err}\n`));
-    serverProcess.on("exit", (code) => logStream.write(`Server exited with code ${code}\n`));
+    serverProcess.on("error", (err) => fs.appendFileSync(logPath, `Failed to start server: ${err}\n`));
+    serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}\n`));
 }
 
 function stopServer() {
