@@ -2,7 +2,8 @@
     "name": "rt-timing",
     "description": "RT Technologies' internal task timing and tracking software. To be distributed on RPi Linux",
     "author": {
-        "name": "Nick Martens"
+        "name": "Nick Martens",
+        "email": "Nick@rttechno.com"
     },
     "private": true,
     "version": "0.1.0",
