@@ -7,10 +7,6 @@ import { Worker } from "worker_threads";
 const app = express();
 const port = 5000;
 
-import { fileURLToPath } from "url";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 app.use(
   cors({
     origin: "*",
@@ -24,7 +20,7 @@ app.use(express.json());
 // Persistent config
 // --------------------
 const CONFIG_FILE = path.join(process.cwd(), "db-config.json");
-const WORKER_PATH = path.join(__dirname, "db.worker.cjs");
+const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/backend/db.worker.cjs");
 
 let dbPath: string | null = null;
 
@@ -34,12 +30,10 @@ let dbPath: string | null = null;
 
 process.on("unhandledRejection", (err) => {
     console.error("Unhandled rejection:", err);
-    // don't exit
 });
 
 process.on("uncaughtException", (err) => {
     console.error("Uncaught exception:", err);
-    // don't exit
 });
 
 function validateSQLitePath(candidate: string): void {
@@ -47,7 +41,6 @@ function validateSQLitePath(candidate: string): void {
   if (!stat.isFile()) {
     throw new Error("Path is not a file");
   }
-  // Validate it's a real SQLite file by checking the header magic bytes
   const fd = fs.openSync(candidate, "r");
   const buf = Buffer.alloc(16);
   fs.readSync(fd, buf, 0, 16, 0);
@@ -66,11 +59,11 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
       workerData: { dbPath, query, params },
     });
     worker.on("message", (msg) => {
-      console.log("Worker result:", msg); // 👈 add this
+      console.log("Worker result:", msg);
       resolve(msg);
     });
     worker.on("error", (err) => {
-      console.error("Worker error:", err); // 👈 and this
+      console.error("Worker error:", err);
       reject(err);
     });
     worker.on("exit", (code) => {
@@ -178,6 +171,7 @@ app.post("/api/query", async (req, res) => {
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log("Config file:", CONFIG_FILE);
+  console.log("Worker path:", WORKER_PATH);
 });
 
 process.stdin.resume();
