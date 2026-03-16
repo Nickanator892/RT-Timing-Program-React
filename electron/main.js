@@ -47,6 +47,10 @@ function startServer() {
         ? path.join(process.cwd(), "src/backend/db.worker.cjs")
         : path.join(process.resourcesPath, "dist-server/db.worker.cjs");
 
+    const configPath = isDev
+        ? path.join(process.cwd(), "db-config.json")
+        : path.join(app.getPath("userData"), "db-config.json");
+
     const command = isDev ? "npx" : "node";
     const args = isDev ? ["tsx", serverPath] : [serverPath];
 
@@ -54,6 +58,7 @@ function startServer() {
     fs.writeFileSync(logPath,
         `serverPath: ${serverPath}\n` +
         `workerPath: ${workerPath}\n` +
+        `configPath: ${configPath}\n` +
         `serverPath exists: ${fs.existsSync(serverPath)}\n` +
         `workerPath exists: ${fs.existsSync(workerPath)}\n`
     );
@@ -63,7 +68,11 @@ function startServer() {
         stdio: ["ignore", "ignore", "pipe"],
         windowsHide: true,
         detached: false,
-        env: { ...process.env, WORKER_PATH: workerPath }
+        env: { 
+            ...process.env, 
+            WORKER_PATH: workerPath,
+            DB_CONFIG_PATH: configPath
+        }
     });
 
     serverProcess.stderr.on("data", (data) => fs.appendFileSync(logPath, `Server error: ${data.toString()}\n`));

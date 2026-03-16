@@ -19,7 +19,7 @@ app.use(express.json());
 // --------------------
 // Persistent config
 // --------------------
-const CONFIG_FILE = path.join(process.cwd(), "db-config.json");
+const CONFIG_FILE = process.env.DB_CONFIG_PATH ?? path.join(process.cwd(), "db-config.json");
 const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/backend/db.worker.cjs");
 
 let dbPath: string | null = null;
