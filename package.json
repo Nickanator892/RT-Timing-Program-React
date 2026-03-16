@@ -6,7 +6,7 @@
         "email": "Nick@rttechno.com"
     },
     "private": true,
-    "version": "0.2.11",
+    "version": "0.2.12",
     "type": "module",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -48,8 +48,7 @@
         },
         "publish": {
             "provider": "github",
-            "draft": false,
-            "prerelease": false
+            "releaseType": "release"
         }
     },
     "dependencies": {
