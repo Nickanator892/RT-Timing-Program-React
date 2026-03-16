@@ -23,19 +23,26 @@
     },
     "build": {
         "files": [
-        "dist/**/*",
-        "dist-electron/**/*",
-        "dist-server/**/*",
-        "package.json"
+            "dist/**/*",
+            "dist-electron/**/*",
+            "dist-server/**/*",
+            "package.json"
+        ],
+        "asarUnpack": [
+            "node_modules/better-sqlite3/**/*"
         ],
         "extraResources": [
-        {
-            "from": "db-config.json",
-            "to": "db-config.json"
+            {
+                "from": "db-config.json",
+                "to": "db-config.json"
+            }
+        ],
+        "linux": {
+            "target": [{ "target": "deb", "arch": ["arm64"] }],
+            "category": "Utility"
         }
-        ]
-        },
-            "dependencies": {
+    },
+    "dependencies": {
         "apexcharts": "^5.3.6",
         "better-sqlite3": "^12.6.2",
         "cors": "^2.8.6",
