@@ -22,6 +22,6 @@ jobs:
       - run: tsc -p tsconfig.server.json
       - run: cp src/backend/db.worker.cjs dist-server/
       - run: ls dist-server/
-      - run: npx electron-builder -l
+      - run: npx electron-builder -l --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
