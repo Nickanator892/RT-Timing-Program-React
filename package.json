@@ -1,9 +1,13 @@
 {
     "name": "rt-timing",
+    "description": "RT Technologies' internal task timing and tracking software. To be distributed on RPi Linux",
+    "author": {
+        "name": "Nick Martens"
+    },
     "private": true,
-    "version": "0.0.0",
+    "version": "0.1.0",
     "type": "module",
-    "main": "electron/main.js",
+    "main": "dist-electron/main.js",
     "scripts": {
         "start": "concurrently \"npm run server\" \"npm run client\"",
         "server": "tsx src/backend/server.ts",
@@ -13,22 +17,25 @@
         "electron:dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
         "build": "vite build",
         "electron:build": "npm run build && electron .",
-        "pack": "npm run build && electron-builder --dir",
+        "pack": "npm run build && tsc -p tsconfig.server.json && electron-builder -l",
         "dist": "npm run build && electron-builder",
         "application": "concurrently \"tsx src/backend/server.ts\" \"wait-on http://localhost:5000/api/db-status && vite\""
     },
     "build": {
-        "appId": "com.yourcompany.rt-timing",
-        "productName": "RT Timing",
         "files": [
-            "dist/**/*",
-            "electron/**/*"
+        "dist/**/*",
+        "dist-electron/**/*",
+        "dist-server/**/*",
+        "package.json"
         ],
-        "win": {
-            "target": "nsis"
+        "extraResources": [
+        {
+            "from": "db-config.json",
+            "to": "db-config.json"
         }
-    },
-    "dependencies": {
+        ]
+        },
+            "dependencies": {
         "apexcharts": "^5.3.6",
         "better-sqlite3": "^12.6.2",
         "cors": "^2.8.6",
@@ -56,6 +63,7 @@
         "concurrently": "^9.2.1",
         "cross-env": "^10.1.0",
         "electron": "^40.0.0",
+        "electron-builder": "^26.8.1",
         "eslint": "^9.39.1",
         "eslint-plugin-react-hooks": "^7.0.1",
         "eslint-plugin-react-refresh": "^0.4.24",

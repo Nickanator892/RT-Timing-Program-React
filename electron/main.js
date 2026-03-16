@@ -39,18 +39,20 @@ let sharedTimerData = {
 // Server management
 // --------------------
 function startServer() {
-    serverProcess = spawn("npx", ["tsx", "src/backend/server.ts"], {
+    const serverPath = isDev
+        ? path.join(process.cwd(), "src/backend/server.ts")
+        : path.join(process.resourcesPath, "dist-server/server.js");
+
+    const command = isDev ? "npx" : "node";
+    const args = isDev ? ["tsx", serverPath] : [serverPath];
+
+    serverProcess = spawn(command, args, {
         shell: true,
         stdio: "ignore",
         windowsHide: true,
         detached: false,
     });
-
-    serverProcess.on("error", (err) => console.error("Failed to start server:", err));
-    serverProcess.on("exit", (code) => {
-        console.log(`Server exited with code ${code}`);
-        serverProcess = null;
-    });
+    // ...
 }
 
 function stopServer() {
