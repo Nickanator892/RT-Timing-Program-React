@@ -16,6 +16,8 @@ jobs:
 
       - run: npm install
       - run: npm run pack
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -23,4 +25,3 @@ jobs:
           files: dist/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
