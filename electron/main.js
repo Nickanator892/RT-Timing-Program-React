@@ -51,6 +51,12 @@ function startServer() {
         ? path.join(process.cwd(), "db-config.json")
         : path.join(app.getPath("userData"), "db-config.json");
 
+    const betterSqlitePath = isDev
+    ? path.join(process.cwd(), "node_modules/better-sqlite3")
+    : path.join(process.resourcesPath, "app.asar.unpacked/node_modules/better-sqlite3");
+
+
+
     const command = isDev ? "npx" : "node";
     const args = isDev ? ["tsx", serverPath] : [serverPath];
 
@@ -71,7 +77,8 @@ function startServer() {
         env: { 
             ...process.env, 
             WORKER_PATH: workerPath,
-            DB_CONFIG_PATH: configPath
+            DB_CONFIG_PATH: configPath,
+            BETTER_SQLITE3_PATH: betterSqlitePath
         }
     });
 
