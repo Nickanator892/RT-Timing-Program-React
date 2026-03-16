@@ -60,12 +60,13 @@ function startServer() {
 
     serverProcess = spawn(command, args, {
         shell: true,
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
         windowsHide: true,
         detached: false,
         env: { ...process.env, WORKER_PATH: workerPath }
     });
 
+    serverProcess.stderr.on("data", (data) => fs.appendFileSync(logPath, `Server error: ${data.toString()}\n`));
     serverProcess.on("error", (err) => fs.appendFileSync(logPath, `Failed to start server: ${err}\n`));
     serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}\n`));
 }
