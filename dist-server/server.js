@@ -1,48 +1,40 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-const express_1 = __importDefault(require("express"));
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
-const cors_1 = __importDefault(require("cors"));
-const worker_threads_1 = require("worker_threads");
-const app = (0, express_1.default)();
+import express from "express";
+import fs from "fs";
+import path from "path";
+import cors from "cors";
+import { Worker } from "worker_threads";
+const app = express();
 const port = 5000;
-app.use((0, cors_1.default)({
+app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
 }));
-app.use(express_1.default.json());
+app.use(express.json());
 // --------------------
 // Persistent config
 // --------------------
-const CONFIG_FILE = path_1.default.join(process.cwd(), "db-config.json");
-const WORKER_PATH = path_1.default.join(__dirname, "db.worker.cjs");
+const CONFIG_FILE = path.join(process.cwd(), "db-config.json");
+const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/backend/db.worker.cjs");
 let dbPath = null;
 // --------------------
 // Helpers
 // --------------------
 process.on("unhandledRejection", (err) => {
     console.error("Unhandled rejection:", err);
-    // don't exit
 });
 process.on("uncaughtException", (err) => {
     console.error("Uncaught exception:", err);
-    // don't exit
 });
 function validateSQLitePath(candidate) {
-    const stat = fs_1.default.statSync(candidate);
+    const stat = fs.statSync(candidate);
     if (!stat.isFile()) {
         throw new Error("Path is not a file");
     }
-    // Validate it's a real SQLite file by checking the header magic bytes
-    const fd = fs_1.default.openSync(candidate, "r");
+    const fd = fs.openSync(candidate, "r");
     const buf = Buffer.alloc(16);
-    fs_1.default.readSync(fd, buf, 0, 16, 0);
-    fs_1.default.closeSync(fd);
+    fs.readSync(fd, buf, 0, 16, 0);
+    fs.closeSync(fd);
     if (buf.toString("utf8", 0, 6) !== "SQLite") {
         throw new Error("File is not a valid SQLite database");
     }
@@ -52,15 +44,15 @@ function validateSQLitePath(candidate) {
 // --------------------
 function runQuery(query, params = []) {
     return new Promise((resolve, reject) => {
-        const worker = new worker_threads_1.Worker(WORKER_PATH, {
+        const worker = new Worker(WORKER_PATH, {
             workerData: { dbPath, query, params },
         });
         worker.on("message", (msg) => {
-            console.log("Worker result:", msg); // 👈 add this
+            console.log("Worker result:", msg);
             resolve(msg);
         });
         worker.on("error", (err) => {
-            console.error("Worker error:", err); // 👈 and this
+            console.error("Worker error:", err);
             reject(err);
         });
         worker.on("exit", (code) => {
@@ -73,10 +65,10 @@ function runQuery(query, params = []) {
 // Load DB path on startup
 // --------------------
 (async () => {
-    if (!fs_1.default.existsSync(CONFIG_FILE))
+    if (!fs.existsSync(CONFIG_FILE))
         return;
     try {
-        const raw = fs_1.default.readFileSync(CONFIG_FILE, "utf-8");
+        const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
         const config = JSON.parse(raw);
         if (!config.dbPath)
             return;
@@ -124,7 +116,7 @@ app.post("/api/set-db-path", (req, res) => {
     try {
         validateSQLitePath(incomingPath);
         dbPath = incomingPath;
-        fs_1.default.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath }, null, 2), "utf-8");
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath }, null, 2), "utf-8");
         console.log("Database path saved:", dbPath);
         res.json({ success: true });
     }
@@ -161,5 +153,6 @@ app.post("/api/query", async (req, res) => {
 app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
     console.log("Config file:", CONFIG_FILE);
+    console.log("Worker path:", WORKER_PATH);
 });
 process.stdin.resume();
