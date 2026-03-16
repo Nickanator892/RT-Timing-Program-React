@@ -50,19 +50,25 @@ function startServer() {
     const command = isDev ? "npx" : "node";
     const args = isDev ? ["tsx", serverPath] : [serverPath];
 
+    const logPath = path.join(app.getPath("userData"), "server.log");
+    const logStream = fs.createWriteStream(logPath, { flags: "a" });
+
+    logStream.write(`Starting server...\n`);
+    logStream.write(`serverPath: ${serverPath}\n`);
+    logStream.write(`workerPath: ${workerPath}\n`);
+    logStream.write(`serverPath exists: ${fs.existsSync(serverPath)}\n`);
+    logStream.write(`workerPath exists: ${fs.existsSync(workerPath)}\n`);
+
     serverProcess = spawn(command, args, {
         shell: true,
-        stdio: "ignore",
+        stdio: ["ignore", logStream, logStream],
         windowsHide: true,
         detached: false,
         env: { ...process.env, WORKER_PATH: workerPath }
     });
 
-    serverProcess.on("error", (err) => console.error("Failed to start server:", err));
-    serverProcess.on("exit", (code) => {
-        console.log(`Server exited with code ${code}`);
-        serverProcess = null;
-    });
+    serverProcess.on("error", (err) => logStream.write(`Failed to start server: ${err}\n`));
+    serverProcess.on("exit", (code) => logStream.write(`Server exited with code ${code}\n`));
 }
 
 function stopServer() {
