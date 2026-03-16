@@ -7,6 +7,10 @@ import { Worker } from "worker_threads";
 const app = express();
 const port = 5000;
 
+import { fileURLToPath } from "url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 app.use(
   cors({
     origin: "*",
