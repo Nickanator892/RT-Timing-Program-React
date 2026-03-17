@@ -6,7 +6,7 @@
         "email": "Nick@rttechno.com"
     },
     "private": true,
-    "version": "0.2.26",
+    "version": "0.2.27",
     "type": "module",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -23,6 +23,8 @@
         "application": "concurrently \"tsx src/backend/server.ts\" \"wait-on http://localhost:5000/api/db-status && vite\""
     },
     "build": {
+        "buildDependenciesFromSource": true,
+        "npmRebuild": true,
         "files": [
             "dist/**/*",
             "dist-electron/**/*",
