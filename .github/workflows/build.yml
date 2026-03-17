@@ -14,11 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - uses: actions/setup-node@v3
         with:
           node-version: "24.11"
@@ -30,6 +25,16 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Rebuild better-sqlite3 from source for Electron arm64
+        run: |
+          cd node_modules/better-sqlite3
+          npx node-gyp rebuild \
+            --target=40.0.0 \
+            --arch=arm64 \
+            --dist-url=https://electronjs.org/headers \
+            --runtime=electron \
+            --build-from-source
         env:
           CC: aarch64-linux-gnu-gcc
           CXX: aarch64-linux-gnu-g++
