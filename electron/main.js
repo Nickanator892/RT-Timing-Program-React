@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { spawn } from "child_process";
+import http from "http";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,7 +13,6 @@ const preloadPath = isDev
     ? path.join(process.cwd(), "electron", "preload.js")
     : path.join(__dirname, "preload.js");
 
-const settingsPath = path.join(__dirname, "settings.json");
 
 let windows = [];
 let mainWindow = null;
@@ -169,29 +169,6 @@ ipcMain.on("timer-reset", () => {
 });
 
 // --------------------
-// Settings IPC handlers
-// --------------------
-ipcMain.handle("read-settings", async () => {
-    try {
-        const data = fs.readFileSync(settingsPath, "utf-8");
-        return JSON.parse(data);
-    } catch (error) {
-        console.error("Failed to read settings:", error);
-        return { pauseReasons: [] };
-    }
-});
-
-ipcMain.handle("write-settings", async (event, settings) => {
-    try {
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-        return { success: true };
-    } catch (error) {
-        console.error("Failed to write settings:", error);
-        return { success: false, error: error.message };
-    }
-});
-
-// --------------------
 // Shared data IPC handlers
 // --------------------
 ipcMain.handle("get-shared-data", () => {
@@ -321,12 +298,34 @@ ipcMain.on("quit-app", () => {
     app.quit();
 });
 
-app.whenReady().then(() => {
+function waitForServer(url, maxAttempts = 30, interval = 500) {
+    return new Promise((resolve, reject) => {
+        let attempts = 0;
+        function attempt() {
+            http.get(url, (res) => {
+                resolve(); // server responded
+            }).on("error", () => {
+                attempts++;
+                if (attempts >= maxAttempts) {
+                    reject(new Error("Server did not start in time"));
+                } else {
+                    setTimeout(attempt, interval);
+                }
+            });
+        }
+        attempt();
+    });
+}
+
+app.whenReady().then(async () => {
     startServer();
-    // Give server time to start before loading UI
-    setTimeout(() => {
-        createMainWindow();
-    }, 2000);
+    try {
+        await waitForServer("http://localhost:5000/api/db-status");
+    } catch (e) {
+        const logPath = path.join(app.getPath("userData"), "server.log");
+        fs.appendFileSync(logPath, `Server never became ready: ${e}\n`);
+    }
+    createMainWindow();
 });
 
 app.on("before-quit", () => {
