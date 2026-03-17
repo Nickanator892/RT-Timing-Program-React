@@ -44,7 +44,7 @@ workerPath exists: ${fs.existsSync(workerPath)}
   );
   serverProcess = spawn(command, args, {
     shell: true,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
     detached: false,
     env: {
