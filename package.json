@@ -6,7 +6,7 @@
         "email": "Nick@rttechno.com"
     },
     "private": true,
-    "version": "0.2.29",
+    "version": "0.2.30",
     "type": "module",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -43,11 +43,20 @@
             {
                 "from": "dist-server/",
                 "to": "dist-server/",
-                "filter": ["**/*"]
+                "filter": [
+                    "**/*"
+                ]
             }
         ],
         "linux": {
-            "target": [{ "target": "deb", "arch": ["arm64"] }],
+            "target": [
+                {
+                    "target": "deb",
+                    "arch": [
+                        "arm64"
+                    ]
+                }
+            ],
             "category": "Utility"
         },
         "publish": {
@@ -70,6 +79,7 @@
         "react-router-dom": "^7.13.0"
     },
     "devDependencies": {
+        "@electron/rebuild": "^4.0.3",
         "@eslint/js": "^9.39.1",
         "@types/better-sqlite3": "^7.6.13",
         "@types/cors": "^2.8.19",

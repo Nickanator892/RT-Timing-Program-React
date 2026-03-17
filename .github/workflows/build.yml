@@ -11,15 +11,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      npm_config_arch: arm64
-      npm_config_target_arch: arm64
-      npm_config_target: 40.0.0
-      npm_config_disturl: https://electronjs.org/headers
-      npm_config_runtime: electron
-      CC: aarch64-linux-gnu-gcc
-      CXX: aarch64-linux-gnu-g++
-
     steps:
       - uses: actions/checkout@v3
 
@@ -41,15 +32,30 @@ jobs:
         run: npm install
 
       - name: Rebuild better-sqlite3 for Electron arm64
-        run: npx electron-rebuild -f -w better-sqlite3 --arch arm64
+        run: npx @electron/rebuild -f -w better-sqlite3 --arch arm64 --electronVersion 40.0.0
+        env:
+          CC: aarch64-linux-gnu-gcc
+          CXX: aarch64-linux-gnu-g++
+          npm_config_arch: arm64
+          npm_config_target_arch: arm64
+          npm_config_target: 40.0.0
+          npm_config_disturl: https://electronjs.org/headers
+          npm_config_runtime: electron
 
-      - run: npm run build
+      - name: Build frontend
+        run: npm run build
 
-      - run: npx esbuild src/backend/server.ts --bundle --platform=node --outfile=dist-server/server.js --external:better-sqlite3
+      - name: Build backend
+        run: npx esbuild src/backend/server.ts --bundle --platform=node --outfile=dist-server/server.js --external:better-sqlite3
 
-      - run: cp src/backend/db.worker.cjs dist-server/
+      - name: Copy worker
+        run: cp src/backend/db.worker.cjs dist-server/
 
       - name: Build and publish
         run: npx electron-builder -l --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npm_config_arch: arm64
+          npm_config_target_arch: arm64
+          CC: aarch64-linux-gnu-gcc
+          CXX: aarch64-linux-gnu-g++
