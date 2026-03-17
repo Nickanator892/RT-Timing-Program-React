@@ -6,7 +6,7 @@
         "email": "Nick@rttechno.com"
     },
     "private": true,
-    "version": "0.2.25",
+    "version": "0.2.26",
     "type": "module",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -29,7 +29,9 @@
             "package.json"
         ],
         "asarUnpack": [
-            "node_modules/better-sqlite3/**/*"
+            "node_modules/better-sqlite3/**/*",
+            "node_modules/bindings/**/*",
+            "node_modules/file-uri-to-path/**/*"
         ],
         "extraResources": [
             {
