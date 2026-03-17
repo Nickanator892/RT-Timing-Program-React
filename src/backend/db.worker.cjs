@@ -1,5 +1,5 @@
 const { workerData, parentPort } = require("worker_threads");
-const Database = require("better-sqlite3");
+const Database = require(process.env.BETTER_SQLITE3_PATH || 'better-sqlite3');
 
 try {
     const db = new Database(workerData.dbPath, { readonly: workerData.readonly ?? false });
