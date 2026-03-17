@@ -323,7 +323,10 @@ ipcMain.on("quit-app", () => {
 
 app.whenReady().then(() => {
     startServer();
-    createMainWindow();
+    // Give server time to start before loading UI
+    setTimeout(() => {
+        createMainWindow();
+    }, 2000);
 });
 
 app.on("before-quit", () => {
