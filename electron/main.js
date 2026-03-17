@@ -256,7 +256,7 @@ function createMainWindow() {
 
     if (process.env.VITE_DEV_SERVER_URL) {
         mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-        //mainWindow.webContents.openDevTools();
+        mainWindow.webContents.openDevTools();
     } else {
         mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
     }

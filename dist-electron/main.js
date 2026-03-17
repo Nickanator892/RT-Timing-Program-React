@@ -245,7 +245,9 @@ ipcMain.on("quit-app", () => {
 });
 app.whenReady().then(() => {
   startServer();
-  createMainWindow();
+  setTimeout(() => {
+    createMainWindow();
+  }, 2e3);
 });
 app.on("before-quit", () => {
   stopServer();
