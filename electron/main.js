@@ -282,10 +282,9 @@ function createAnalyticsWindow() {
         analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
         //analyticsWindow.webContents.openDevTools();
     } else {
-        analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"));
-        analyticsWindow.webContents.on("did-finish-load", () => {
-            analyticsWindow.webContents.send("navigate-to", "/analytics");
-        });
+        analyticsWindow.loadFile(path.join(__dirname, "../dist/index.html"), {
+            hash: "analytics"
+    });
     }
 
     return analyticsWindow;

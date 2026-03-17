@@ -56,6 +56,8 @@ workerPath exists: ${fs.existsSync(workerPath)}
   });
   serverProcess.stderr.on("data", (data) => fs.appendFileSync(logPath, `Server error: ${data.toString()}
 `));
+  serverProcess.stdout.on("data", (data) => fs.appendFileSync(logPath, `Server: ${data.toString()}
+`));
   serverProcess.on("error", (err) => fs.appendFileSync(logPath, `Failed to start server: ${err}
 `));
   serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}
@@ -216,9 +218,8 @@ function createAnalyticsWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     analyticsWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "#/analytics");
   } else {
-    analyticsWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
-    analyticsWindow.webContents.on("did-finish-load", () => {
-      analyticsWindow.webContents.send("navigate-to", "/analytics");
+    analyticsWindow.loadFile(path.join(__dirname$1, "../dist/index.html"), {
+      hash: "analytics"
     });
   }
   return analyticsWindow;
