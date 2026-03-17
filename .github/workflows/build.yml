@@ -31,11 +31,6 @@ jobs:
       - name: Install dependencies
         run: npm install
         env:
-          npm_config_arch: arm64
-          npm_config_target_arch: arm64
-          npm_config_target: 40.0.0
-          npm_config_disturl: https://electronjs.org/headers
-          npm_config_runtime: electron
           CC: aarch64-linux-gnu-gcc
           CXX: aarch64-linux-gnu-g++
 
@@ -52,7 +47,5 @@ jobs:
         run: npx electron-builder -l --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          npm_config_arch: arm64
-          npm_config_target_arch: arm64
           CC: aarch64-linux-gnu-gcc
           CXX: aarch64-linux-gnu-g++
