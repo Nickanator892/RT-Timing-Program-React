@@ -30,17 +30,14 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-
-      - name: Rebuild better-sqlite3 for Electron arm64
-        run: npx @electron/rebuild -f -w better-sqlite3 --arch arm64 --electronVersion 40.0.0
         env:
-          CC: aarch64-linux-gnu-gcc
-          CXX: aarch64-linux-gnu-g++
           npm_config_arch: arm64
           npm_config_target_arch: arm64
           npm_config_target: 40.0.0
           npm_config_disturl: https://electronjs.org/headers
           npm_config_runtime: electron
+          CC: aarch64-linux-gnu-gcc
+          CXX: aarch64-linux-gnu-g++
 
       - name: Build frontend
         run: npm run build
