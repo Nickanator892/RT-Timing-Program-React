@@ -174,4 +174,4 @@ app.listen(port, () => {
   console.log("Worker path:", WORKER_PATH);
 });
 
-process.stdin.resume();
+setInterval(() => {}, 1000 * 60 * 60);

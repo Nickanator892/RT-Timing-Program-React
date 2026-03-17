@@ -28,6 +28,8 @@ let sharedTimerData = {
 function startServer() {
   const serverPath = isDev ? path.join(process.cwd(), "src/backend/server.ts") : path.join(process.resourcesPath, "dist-server/server.js");
   const workerPath = isDev ? path.join(process.cwd(), "src/backend/db.worker.cjs") : path.join(process.resourcesPath, "dist-server/db.worker.cjs");
+  const configPath = isDev ? path.join(process.cwd(), "db-config.json") : path.join(app.getPath("userData"), "db-config.json");
+  const betterSqlitePath = isDev ? path.join(process.cwd(), "node_modules/better-sqlite3") : path.join(process.resourcesPath, "app.asar.unpacked/node_modules/better-sqlite3");
   const command = isDev ? "npx" : "node";
   const args = isDev ? ["tsx", serverPath] : [serverPath];
   const logPath = path.join(app.getPath("userData"), "server.log");
@@ -35,6 +37,7 @@ function startServer() {
     logPath,
     `serverPath: ${serverPath}
 workerPath: ${workerPath}
+configPath: ${configPath}
 serverPath exists: ${fs.existsSync(serverPath)}
 workerPath exists: ${fs.existsSync(workerPath)}
 `
@@ -44,7 +47,12 @@ workerPath exists: ${fs.existsSync(workerPath)}
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
     detached: false,
-    env: { ...process.env, WORKER_PATH: workerPath }
+    env: {
+      ...process.env,
+      WORKER_PATH: workerPath,
+      DB_CONFIG_PATH: configPath,
+      BETTER_SQLITE3_PATH: betterSqlitePath
+    }
   });
   serverProcess.stderr.on("data", (data) => fs.appendFileSync(logPath, `Server error: ${data.toString()}
 `));
