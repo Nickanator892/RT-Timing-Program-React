@@ -55,46 +55,67 @@ export function useSettings() {
     const [settings, setSettings] = useState<Settings | null>(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        const loadSettings = async () => {
-            const reasonRows = await execQuery(
-                "SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"
-            );
-            const allPauseReasonsRows = await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS");
-            const userRows = await execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0");
-            const allUserRows = await execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC");
+useEffect(() => {
+    const loadSettings = async () => {
+        let success = false;
+        let attempts = 0;
 
-            if (reasonRows && allPauseReasonsRows && userRows && allUserRows) {
-                const pauseReasons: PauseReason[] = reasonRows.map((row: any) => ({
-                    Id: row["Id"],
-                    name: row["reason_name"],
-                    active: row["active"],
-                }));
-                const allPauseReasons: AllPauseReasons[] = allPauseReasonsRows.map((row: any) => ({
-                    Id: row["Id"],
-                    name: row["reason_name"],
-                    active: row["active"],
-                }));
-                const users: User[] = userRows.map((row: any) => ({
-                    Id: row["Id"],
-                    name: row["userName"],
-                    password: row["password"],
-                    privLevel: row["privLevel"],
-                    active: row["active"],
-                }));
-                const allUsers: AllUsers[] = allUserRows.map((row: any) => ({
-                    Id: row["Id"],
-                    name: row["userName"],
-                    password: row["password"],
-                    privLevel: row["privLevel"],
-                    active: row["active"],
-                }));
-                setSettings({ pauseReasons, allPauseReasons, users, allUsers });
+        while (!success && attempts < 10) {
+            try {
+                const [reasonRows, allPauseReasonsRows, userRows, allUserRows] = await Promise.all([
+                    execQuery("SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"),
+                    execQuery("SELECT * FROM HARNBUILDPAUSEREASONS"),
+                    execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0"),
+                    execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC"),
+                ]);
+
+                if (reasonRows && allPauseReasonsRows && userRows && allUserRows) {
+                    const pauseReasons: PauseReason[] = reasonRows.map((row: any) => ({
+                        Id: row["Id"],
+                        name: row["reason_name"],
+                        active: row["active"],
+                    }));
+                    const allPauseReasons: AllPauseReasons[] = allPauseReasonsRows.map((row: any) => ({
+                        Id: row["Id"],
+                        name: row["reason_name"],
+                        active: row["active"],
+                    }));
+                    const users: User[] = userRows.map((row: any) => ({
+                        Id: row["Id"],
+                        name: row["userName"],
+                        password: row["password"],
+                        privLevel: row["privLevel"],
+                        active: row["active"],
+                    }));
+                    const allUsers: AllUsers[] = allUserRows.map((row: any) => ({
+                        Id: row["Id"],
+                        name: row["userName"],
+                        password: row["password"],
+                        privLevel: row["privLevel"],
+                        active: row["active"],
+                    }));
+
+                    setSettings({ pauseReasons, allPauseReasons, users, allUsers });
+                    success = true;
+                } else {
+                    throw new Error("One or more queries returned undefined");
+                }
+            } catch (err) {
+                attempts++;
+                console.log(`Settings load attempt ${attempts}/10 failed, retrying in 1s...`);
+                await new Promise(res => setTimeout(res, 1000));
             }
-            setLoading(false);
-        };
-        loadSettings();
-    }, []);
+        }
+
+        if (!success) {
+            console.error("Failed to load settings after 10 attempts");
+        }
+
+        setLoading(false);
+    };
+
+    loadSettings();
+}, []);
 
     const addPauseReason = async (name: string) => {
         if (!settings) return;
