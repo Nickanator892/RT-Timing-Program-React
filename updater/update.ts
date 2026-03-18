@@ -96,6 +96,7 @@ async function fixSQLite() {
 }
 
 async function updateApplication() {
+    console.log("Updating Application!")
     const latestVersion = await getLatestVersion();
     if (!latestVersion) {
         exec("/opt/rt-timing/rt-timing")
