@@ -13,7 +13,6 @@ try {
     const db = new Database(workerData.dbPath, { readonly: workerData.readonly ?? false });
     console.log("DB opened successfully");
     
-    db.pragma("journal_mode = WAL");
     console.log("WAL mode set");
 
     const { query, params } = workerData;
