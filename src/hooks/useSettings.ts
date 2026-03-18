@@ -66,10 +66,10 @@ useEffect(() => {
         while (!success && attempts < 10) {
             try {
                 const [reasonRows, allPauseReasonsRows, userRows, allUserRows] = await Promise.all([
-                    execQuery("SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"),
-                    execQuery("SELECT * FROM HARNBUILDPAUSEREASONS"),
-                    execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0"),
-                    execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC"),
+                    await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"),
+                    await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS"),
+                    await execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0"),
+                    await execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC"),
                 ]);
 
                 if (reasonRows && allPauseReasonsRows && userRows && allUserRows) {
