@@ -10,7 +10,7 @@ try {
     const Database = require(process.env.BETTER_SQLITE3_PATH || 'better-sqlite3');
     console.log("Loaded better-sqlite3, opening DB...");
     
-    const db = new Database(workerData.dbPath, { readonly: true });
+    const db = new Database(workerData.dbPath, { readonly: workerData.readonly ?? false });
     console.log("DB opened successfully");
 
     const { query, params } = workerData;

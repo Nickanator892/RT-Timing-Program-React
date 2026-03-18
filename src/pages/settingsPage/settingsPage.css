@@ -80,7 +80,7 @@ button {
     border-radius: 8px;
     overflow-y: auto;
     overflow-x: hidden;
-    max-height: 500px;
+    max-height: 360px;
 }
 
 .user-selection {
@@ -254,5 +254,5 @@ input {
 #update-element {
     display: flex;
     margin-left: -120%;
-    margin-top: 170%;
+    margin-top: 190%;
 }
