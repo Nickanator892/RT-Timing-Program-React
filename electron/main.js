@@ -276,7 +276,7 @@ function createAnalyticsWindow() {
             contextIsolation: true,
             nodeIntegration: false,
         },
-        title: "Analytics Dashboard",
+        title: `Analytics Dashboard`,
     });
 
     analyticsWindow.once("ready-to-show", () => {

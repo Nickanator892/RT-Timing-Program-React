@@ -215,7 +215,7 @@ function createAnalyticsWindow() {
       contextIsolation: true,
       nodeIntegration: false
     },
-    title: "Analytics Dashboard"
+    title: `Analytics Dashboard`
   });
   analyticsWindow.once("ready-to-show", () => {
     analyticsWindow.setPosition(x, y);
@@ -258,11 +258,15 @@ function waitForServer(url, maxAttempts = 30, interval = 500) {
   });
 }
 ipcMain.handle("run-updater", () => {
-  spawn("sudo", ["systemctl", "start", "rt-timing-updater"], {
+  spawn("npx", ["tsx", "/usr/local/rt-timing-updater/updater/update.ts"], {
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
+    shell: true,
+    cwd: "/usr/local/rt-timing-updater/updater"
   }).unref();
-  app.quit();
+  setTimeout(() => {
+    app.quit();
+  }, 500);
 });
 app.whenReady().then(async () => {
   killExistingServer();
