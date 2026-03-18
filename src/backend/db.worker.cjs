@@ -10,10 +10,8 @@ try {
     const Database = require(process.env.BETTER_SQLITE3_PATH || 'better-sqlite3');
     console.log("Loaded better-sqlite3, opening DB...");
     
-    const db = new Database(workerData.dbPath, { readonly: workerData.readonly ?? false });
+    const db = new Database(workerData.dbPath, { readonly: true });
     console.log("DB opened successfully");
-    
-    console.log("WAL mode set");
 
     const { query, params } = workerData;
     const stmt = db.prepare(query);
@@ -29,7 +27,9 @@ try {
 
     console.log("Query executed successfully");
     db.close();
+    console.log("DB closed");
     parentPort.postMessage({ success: true, result });
+    console.log("Message posted");
 } catch (err) {
     console.log("Worker error:", err.message);
     parentPort.postMessage({ success: false, error: err.message });
