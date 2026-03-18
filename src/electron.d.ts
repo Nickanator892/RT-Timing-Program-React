@@ -31,6 +31,7 @@ declare global {
             timerPause: () => void;
             timerReset: () => void;
             quitApp: () => void;
+            runUpdater: () => Promise<void>;
         };
     }
 }

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("electron", {
     return () => {
       ipcRenderer.removeListener("navigate-to", subscription);
     };
-  }
+  },
+  runUpdater: () => ipcRenderer.invoke("run-updater")
 });
 console.log("Preload script executed!");

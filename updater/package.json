@@ -1,0 +1,16 @@
+{
+  "scripts": {
+    "update": "tsx updateService.ts"
+  },
+  "dependencies": {
+    "asar": "^3.2.0",
+    "child_process": "^1.0.2",
+    "cli-progress": "^3.12.0",
+    "ora": "^9.3.0",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
+    "@types/node": "^25.5.0"
+  }
+}
