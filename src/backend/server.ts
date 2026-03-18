@@ -63,7 +63,7 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
             }
         });
         worker.on("message", (msg) => {
-            console.log("Worker result:", msg);
+            console.log("Worker result:", JSON.stringify(msg));
             resolve(msg);
         });
         worker.on("error", (err) => {
@@ -71,6 +71,7 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
             reject(err);
         });
         worker.on("exit", (code) => {
+            console.log("Worker exit code:", code);
             if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
         });
     });
