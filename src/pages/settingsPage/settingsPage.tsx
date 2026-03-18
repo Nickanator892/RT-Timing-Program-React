@@ -7,7 +7,7 @@ import type { User } from "../../assets/types/UserType";
 import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
-import { UserRoundCheck, UserRoundX, ListCheck, ListX, UsersRound } from "lucide-react";
+import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
 import { useSharedState } from "../../hooks/useSharedState";
 import CheckForUpdateElement from "../../common/buttons/checkForUpdateButton/checkForUpdateElement";
 
@@ -18,7 +18,6 @@ interface settingsPageProps {
 
 function SettingsPage({ selectedUser }: settingsPageProps) {
     const {
-        users,
         allPauseReasons,
         allUsers,
         loading,

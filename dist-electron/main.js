@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, screen, app } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import http from "http";
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = path.dirname(__filename$1);
@@ -266,7 +266,11 @@ ipcMain.handle("run-updater", () => {
     detached: true,
     stdio: "ignore",
     shell: true,
-    cwd: "/usr/local/rt-timing-updater/updater"
+    cwd: "/usr/local/rt-timing-updater/updater",
+    env: {
+      ...process.env,
+      DISPLAY: ":0"
+    }
   }).unref();
   setTimeout(() => {
     app.quit();

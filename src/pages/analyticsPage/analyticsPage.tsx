@@ -12,6 +12,8 @@ interface analyticsPageProps {
     harn?: string;
 }
 
+declare const __APP_VERSION__: string;
+
 function AnalyticsPage({ harn }: analyticsPageProps) {
     const displayTimer = useSyncedTimer();
     const [isRunning] = useSharedState<boolean>("isRunning", false);
@@ -168,6 +170,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes
                     </p>
                     {createInfoElement()}
+                    <p id="version-tag">App Version: v{__APP_VERSION__}</p>
                 </div>
             </div>
 

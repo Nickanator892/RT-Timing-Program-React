@@ -186,3 +186,8 @@
 .db-progress h4 {
     margin-bottom: 1vh;
 }
+
+#version-tag {
+    font-size: 15px;
+    margin-bottom: 0;
+}
