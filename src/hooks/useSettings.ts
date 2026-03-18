@@ -37,16 +37,19 @@ interface Settings {
 
 const execQuery = async (query: string, params: unknown[] = []): Promise<any> => {
     try {
+        console.log("Sending query:", query);
         const response = await fetch("http://localhost:5000/api/query", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query, params }),
         });
+        console.log("Response status:", response.status);
         const data = await response.json();
+        console.log("Response data:", data);
         if (data.success === false) return undefined;
         return data.result;
     } catch (err) {
-        console.log(err);
+        console.log("execQuery error:", err);
         return undefined;
     }
 };
