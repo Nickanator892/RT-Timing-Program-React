@@ -70,7 +70,7 @@ function startServer() {
     );
 
     serverProcess = spawn(command, args, {
-        shell: true,
+        shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         detached: false,
