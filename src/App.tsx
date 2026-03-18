@@ -14,7 +14,6 @@ import ChooseHarnPage from "./pages/chooseHarnPage/chooseHarnPage";
 import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 
 const API_BASE = "http://localhost:5000";
-const DEV = import.meta.env.DEV;
 
 function TimerLayout() {
     const navigate = useNavigate();
@@ -32,7 +31,6 @@ function TimerLayout() {
         undefined
     );
     const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "");
-
 
     useEffect(() => {
         window.electron.getWindowType().then((type) => {
@@ -91,33 +89,25 @@ function TimerLayout() {
 
 function App() {
     const [dbReady, setDbReady] = useState<boolean | null>(null);
-    const [updating, setUpdating] = useState<boolean>(true);
 
     const checkDbStatus = useCallback(() => {
+        console.log("Checking DB status...");
         fetch(`${API_BASE}/api/db-status`)
             .then((res) => res.json())
             .then((data) => {
+                console.log("DB status response:", data);
                 setDbReady(data.ready === true);
             })
-            .catch(() => {
+            .catch((err) => {
+                console.log("DB status fetch failed:", err);
                 setDbReady(false);
             });
     }, []);
 
     useEffect(() => {
-        if (DEV) {
-            setUpdating(false);
-            checkDbStatus();
-        } else {
-            window.electron.runUpdater().then(() => {
-                setUpdating(false);
-                checkDbStatus();
-            });
-        }
+        checkDbStatus();
     }, [checkDbStatus]);
 
-
-    if (updating) return <p>Checking for updates...</p>;
     if (dbReady === null) return <p>Checking database...</p>;
     if (!dbReady) return <DatabaseSetup onDbSet={checkDbStatus} />;
 

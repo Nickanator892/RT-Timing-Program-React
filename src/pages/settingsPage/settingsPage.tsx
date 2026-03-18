@@ -9,12 +9,12 @@ import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButto
 import RTLogo from "../../components/RTLogo/RTLogo";
 import { UserRoundCheck, UserRoundX, ListCheck, ListX, UsersRound } from "lucide-react";
 import { useSharedState } from "../../hooks/useSharedState";
+import CheckForUpdateElement from "../../common/buttons/checkForUpdateButton/checkForUpdateElement";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
 }
 
-//FIX PRIV VALIDATION ISSUE
 
 function SettingsPage({ selectedUser }: settingsPageProps) {
     const {
@@ -342,6 +342,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             </div>
             <p id="error-message">{err}</p>
             <RTLogo />{" "}
+            <CheckForUpdateElement/>
         </div>
     );
 }
