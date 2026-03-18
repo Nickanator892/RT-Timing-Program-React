@@ -332,12 +332,15 @@ function waitForServer(url, maxAttempts = 30, interval = 500) {
 }
 
 ipcMain.handle("run-updater", () => {
-    spawn("sudo", ["systemctl", "start", "rt-timing-updater"], { 
-        detached: true, 
+    spawn("npx", ["tsx", "/usr/local/rt-timing-updater/updater/update.ts"], {
+        detached: true,
         stdio: "ignore",
-        shell: true
+        shell: true,
+        cwd: "/usr/local/rt-timing-updater/updater"
     }).unref();
-    app.quit();
+    setTimeout(() => {
+        app.quit();
+    }, 500);
 });
 
 app.whenReady().then(async () => {
