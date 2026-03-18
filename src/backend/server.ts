@@ -54,22 +54,26 @@ function validateSQLitePath(candidate: string): void {
 // Worker thread runner
 // --------------------
 function runQuery(query: string, params: any[] = []): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(WORKER_PATH, {
-      workerData: { dbPath, query, params },
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(WORKER_PATH, {
+            workerData: { dbPath, query, params },
+            env: {
+                ...process.env,
+                BETTER_SQLITE3_PATH: process.env.BETTER_SQLITE3_PATH ?? 'better-sqlite3'
+            }
+        });
+        worker.on("message", (msg) => {
+            console.log("Worker result:", msg);
+            resolve(msg);
+        });
+        worker.on("error", (err) => {
+            console.error("Worker error:", err);
+            reject(err);
+        });
+        worker.on("exit", (code) => {
+            if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+        });
     });
-    worker.on("message", (msg) => {
-      console.log("Worker result:", msg);
-      resolve(msg);
-    });
-    worker.on("error", (err) => {
-      console.error("Worker error:", err);
-      reject(err);
-    });
-    worker.on("exit", (code) => {
-      if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
-    });
-  });
 }
 
 // --------------------
