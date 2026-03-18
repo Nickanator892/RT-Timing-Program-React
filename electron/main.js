@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, screen } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import http from "http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -332,11 +332,19 @@ function waitForServer(url, maxAttempts = 30, interval = 500) {
 }
 
 ipcMain.handle("run-updater", () => {
-    spawn("npx", ["tsx", "/usr/local/rt-timing-updater/updater/update.ts"], {
+    if (process.platform !== "linux") {
+        console.log("Updater only runs on Linux, skipping...");
+        return;
+    }
+    spawn("lxterminal", ["-e", "npx tsx /usr/local/rt-timing-updater/updater/update.ts"], {
         detached: true,
         stdio: "ignore",
         shell: true,
-        cwd: "/usr/local/rt-timing-updater/updater"
+        cwd: "/usr/local/rt-timing-updater/updater",
+        env: {
+            ...process.env,
+            DISPLAY: ":0"
+        }
     }).unref();
     setTimeout(() => {
         app.quit();

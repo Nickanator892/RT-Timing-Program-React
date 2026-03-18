@@ -258,7 +258,11 @@ function waitForServer(url, maxAttempts = 30, interval = 500) {
   });
 }
 ipcMain.handle("run-updater", () => {
-  spawn("npx", ["tsx", "/usr/local/rt-timing-updater/updater/update.ts"], {
+  if (process.platform !== "linux") {
+    console.log("Updater only runs on Linux, skipping...");
+    return;
+  }
+  spawn("lxterminal", ["-e", "npx tsx /usr/local/rt-timing-updater/updater/update.ts"], {
     detached: true,
     stdio: "ignore",
     shell: true,
