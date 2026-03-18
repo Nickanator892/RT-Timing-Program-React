@@ -55,6 +55,7 @@ function validateSQLitePath(candidate: string): void {
 // --------------------
 function runQuery(query: string, params: any[] = []): Promise<any> {
     return new Promise((resolve, reject) => {
+      console.log("Worker path exists:", fs.existsSync(WORKER_PATH), WORKER_PATH);
         const worker = new Worker(WORKER_PATH, {
             workerData: { dbPath, query, params },
             env: {
