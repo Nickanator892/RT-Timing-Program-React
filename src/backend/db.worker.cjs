@@ -1,4 +1,8 @@
 const { workerData, parentPort } = require("worker_threads");
+console.log("Worker started");
+console.log("BETTER_SQLITE3_PATH:", process.env.BETTER_SQLITE3_PATH);
+console.log("dbPath:", workerData.dbPath);
+
 const Database = require(process.env.BETTER_SQLITE3_PATH || 'better-sqlite3');
 
 try {
