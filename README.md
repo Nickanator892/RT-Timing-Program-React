@@ -17,7 +17,7 @@ Meant to be used on a Raspberry Pi to time harness builds and automatically log 
 ## Setup
 
 # Download and run the setup script
-wget https://raw.githubusercontent.com/Nickanator892/RT-Timing-Program-React/Main/Timing-Pi-Setup-Assets/setup-pi.sh
-chmod +x setup-pi.sh
-./setup-pi.sh
+- wget https://raw.githubusercontent.com/Nickanator892/RT-Timing-Program-React/Main/Timing-Pi-Setup-Assets/setup-pi.sh
+- chmod +x setup-pi.sh
+- ./setup-pi.sh
   
