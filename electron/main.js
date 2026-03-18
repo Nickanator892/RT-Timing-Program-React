@@ -334,7 +334,8 @@ function waitForServer(url, maxAttempts = 30, interval = 500) {
 ipcMain.handle("run-updater", () => {
     spawn("sudo", ["systemctl", "start", "rt-timing-updater"], { 
         detached: true, 
-        stdio: "ignore" 
+        stdio: "ignore",
+        shell: true
     }).unref();
     app.quit();
 });
