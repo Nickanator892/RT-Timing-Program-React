@@ -63,9 +63,21 @@ workerPath exists: ${fs.existsSync(workerPath)}
   serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}
 `));
 }
+function killExistingServer() {
+  try {
+    execSync("fuser -k 5000/tcp", { stdio: "ignore" });
+  } catch {
+  }
+}
 function stopServer() {
   if (serverProcess) {
     serverProcess.kill("SIGTERM");
+    setTimeout(() => {
+      if (serverProcess) {
+        serverProcess.kill("SIGKILL");
+        serverProcess = null;
+      }
+    }, 2e3);
     serverProcess = null;
   }
 }
@@ -253,6 +265,7 @@ ipcMain.handle("run-updater", () => {
   app.quit();
 });
 app.whenReady().then(async () => {
+  killExistingServer();
   startServer();
   try {
     await waitForServer("http://localhost:5000/api/db-status");
@@ -267,6 +280,7 @@ app.on("before-quit", () => {
   stopServer();
 });
 app.on("window-all-closed", () => {
+  stopServer();
   if (process.platform !== "darwin") app.quit();
 });
 app.on("will-quit", () => {

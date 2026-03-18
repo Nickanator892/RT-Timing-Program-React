@@ -88,9 +88,23 @@ function startServer() {
     serverProcess.on("exit", (code) => fs.appendFileSync(logPath, `Server exited with code ${code}\n`));
 }
 
+function killExistingServer() {
+    try {
+        execSync("fuser -k 5000/tcp", { stdio: "ignore" });
+    } catch {
+        // No existing server, that's fine
+    }
+}
+
 function stopServer() {
     if (serverProcess) {
         serverProcess.kill("SIGTERM");
+        setTimeout(() => {
+            if (serverProcess) {
+                serverProcess.kill("SIGKILL");
+                serverProcess = null;
+            }
+        }, 2000);
         serverProcess = null;
     }
 }
@@ -326,6 +340,7 @@ ipcMain.handle("run-updater", () => {
 });
 
 app.whenReady().then(async () => {
+    killExistingServer();
     startServer();
     try {
         await waitForServer("http://localhost:5000/api/db-status");
@@ -341,6 +356,7 @@ app.on("before-quit", () => {
 });
 
 app.on("window-all-closed", () => {
+    stopServer();
     if (process.platform !== "darwin") app.quit();
 });
 
