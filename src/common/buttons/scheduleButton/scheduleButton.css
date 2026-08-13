@@ -1,0 +1,9 @@
+.schedule-button {
+    width: 6em;
+    height: 6em;
+}
+
+.schedule-button a {
+    color: rgba(255, 255, 255, 0.87);
+    display: inline-block;
+}

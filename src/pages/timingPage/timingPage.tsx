@@ -8,6 +8,7 @@ import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/choose
 import useTimes, { type LoggedTime } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
+import ScheduleButton from "../../common/buttons/scheduleButton/scheduleButton";
 import TimerModeDropdown from "../../common/timerModeDropdown/timerModeDropdown";
 import TimeSetupButton from "../../common/buttons/timeSetupButton/timeSetupButton";
 import TimeTeardownButton from "../../common/buttons/timeTeardownButton/timeTeardownButton";
@@ -381,6 +382,7 @@ useEffect(() => {
                     <SettingsButton />
                     <ChooseHarnessButton />
                     <ChooseKitButton />
+                    <ScheduleButton />
                 </div>
                 <p id="timer">{displayTimer}</p>
 
