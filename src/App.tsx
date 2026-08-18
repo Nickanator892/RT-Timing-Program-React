@@ -12,6 +12,7 @@ import type { User } from "./assets/types/UserType";
 import AnalyticsPage from "./pages/analyticsPage/analyticsPage";
 import ChooseHarnPage from "./pages/chooseHarnPage/chooseHarnPage";
 import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
+import SchedulePage from "./pages/schedulePage/schedulePage";
 
 const API_BASE = "http://localhost:5000";
 
@@ -82,6 +83,7 @@ function TimerLayout() {
                 <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
                 <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
                 <Route path="/choose-kit" element={<ChooseKitPage />} />
+                <Route path="/schedule" element={<SchedulePage />} />
             </Routes>
         </>
     );

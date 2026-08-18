@@ -23,6 +23,10 @@ const CONFIG_FILE = process.env.DB_CONFIG_PATH ?? path.join(process.cwd(), "db-c
 const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/backend/db.worker.cjs");
 
 let dbPath: string | null = null;
+// LAN URL of the HPP master-schedule board (RT-MCS service); the Schedule
+// page embeds it. Overridable via db-config.json's "scheduleUrl".
+const DEFAULT_SCHEDULE_URL = "http://192.168.0.199:8322/schedule";
+let scheduleUrl: string | null = null;
 
 // --------------------
 // Helpers
@@ -87,6 +91,9 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
   try {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
     const config = JSON.parse(raw);
+    if (typeof config.scheduleUrl === "string" && config.scheduleUrl) {
+      scheduleUrl = config.scheduleUrl;
+    }
     if (!config.dbPath) return;
 
     validateSQLitePath(config.dbPath);
@@ -127,6 +134,10 @@ app.get("/api/db-status", (_req, res) => {
   }
 });
 
+app.get("/api/config", (_req, res) => {
+  res.json({ scheduleUrl: scheduleUrl ?? DEFAULT_SCHEDULE_URL });
+});
+
 app.post("/api/set-db-path", (req, res) => {
   const incomingPath = req.body?.path;
 
@@ -137,7 +148,13 @@ app.post("/api/set-db-path", (req, res) => {
   try {
     validateSQLitePath(incomingPath);
     dbPath = incomingPath;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath }, null, 2), "utf-8");
+    // Preserve other config keys (e.g. scheduleUrl) - this endpoint used to
+    // rewrite the file with dbPath alone.
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({ dbPath, ...(scheduleUrl ? { scheduleUrl } : {}) }, null, 2),
+      "utf-8"
+    );
     console.log("Database path saved:", dbPath);
     res.json({ success: true });
   } catch (err) {

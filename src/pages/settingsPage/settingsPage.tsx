@@ -6,6 +6,7 @@ import SettingsButton from "../../common/buttons/settingsButton/settingsButton";
 import type { User } from "../../assets/types/UserType";
 import ChooseHarnessButton from "../../common/buttons/chooseHarnessButton/chooseHarnessButton";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
+import ScheduleButton from "../../common/buttons/scheduleButton/scheduleButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
 import { useSharedState } from "../../hooks/useSharedState";
@@ -179,6 +180,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                 <SettingsButton />
                 <ChooseHarnessButton />
                 <ChooseKitButton />
+                <ScheduleButton />
             </div>
             <div className="pause-reasons">
                 <div className="add-pause-reason-form">
