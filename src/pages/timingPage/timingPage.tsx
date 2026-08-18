@@ -175,15 +175,8 @@ useEffect(() => {
         }
     };
 
-    async function getBuildId() {
-        const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDS");
-        const buildId = Number(data["result"]["0"].maxId ?? 0);
-        setCurrentBuildId(buildId);
-        return buildId
-    }
-
     async function insertPause() {
-        const pauseEnd = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        const pauseEnd = formatTimestamp(new Date().toISOString());
         if (sharedPauseReason) {
             try {
                 await execQuery(
@@ -196,6 +189,9 @@ useEffect(() => {
         }
     }
 
+    // Local time in "YYYY-MM-DD HH:mm:ss": sorts correctly as text (ORDER BY
+    // startTime) and parses with new Date() (the old dd/mm/yyyy-HH:mm:ss did
+    // neither - analytics durations came back NaN).
     function formatTimestamp(iso: string): string {
     const d = new Date(iso);
     const dd = String(d.getDate()).padStart(2, '0');
@@ -204,7 +200,7 @@ useEffect(() => {
     const HH = String(d.getHours()).padStart(2, '0');
     const MM = String(d.getMinutes()).padStart(2, '0');
     const SS = String(d.getSeconds()).padStart(2, '0');
-    return `${dd}/${mm}/${yyyy}-${HH}:${MM}:${SS}`;
+    return `${yyyy}-${mm}-${dd} ${HH}:${MM}:${SS}`;
     }
 
     async function startTimer() {
@@ -223,8 +219,11 @@ useEffect(() => {
             setErr("");
             setDbSuccess("Submit");
 
-            await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
-            const buildId = await getBuildId();
+            // The insert's own lastID - a MAX(buildId) round trip races when two
+            // stations start builds at the same time.
+            const insertData = await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
+            const buildId = Number(insertData?.result?.lastID ?? 0);
+            setCurrentBuildId(buildId);
 
             // One row in HARNBUILDTIMES — no startTime/endTime here anymore
             await execQuery(
