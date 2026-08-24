@@ -7,6 +7,7 @@ import useTimes from "../../hooks/useTimes";
 import type { LoggedTime, HarnCount } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
+import { parseTimestamp } from "../../assets/timeDistribution";
 
 interface analyticsPageProps {
     harn?: string;
@@ -93,9 +94,14 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             if (Array.isArray(result)) {
                 setTimes(
                     result.map((t: LoggedTime) => {
-                        const seconds = Math.round(
-                            (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 1000
-                        );
+                        // parseTimestamp handles both the current and the legacy
+                        // timestamp formats - new Date() alone returned Invalid
+                        // Date for legacy rows, making every duration NaN and
+                        // leaving completed builds off the chart.
+                        const start = parseTimestamp(t.startTime);
+                        const end = parseTimestamp(t.endTime);
+                        const seconds =
+                            start && end ? Math.round((end.getTime() - start.getTime()) / 1000) : 0;
                         const h = Math.floor(seconds / 3600);
                         const m = Math.floor((seconds % 3600) / 60);
                         const s = seconds % 60;

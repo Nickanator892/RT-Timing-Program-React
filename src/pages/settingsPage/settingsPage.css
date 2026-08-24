@@ -256,3 +256,60 @@ input {
     margin-left: -120%;
     margin-top: 190%;
 }
+
+.manual-time-entry {
+    position: absolute;
+    top: 530px;
+    left: 40px;
+    border: 4px solid white;
+    border-radius: 8px;
+    padding: 0 15px 10px 15px;
+    max-width: 44%;
+}
+
+.manual-time-entry h2 {
+    text-decoration: underline;
+    font-family: "Orbitron";
+    text-align: center;
+}
+
+.manual-time-form {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    align-items: center;
+}
+
+.manual-time-form input {
+    height: 2em;
+    font-size: 16px;
+}
+
+.manual-time-form #manual-harn-input {
+    width: 12em;
+}
+
+.manual-time-form #manual-minutes-input,
+.manual-time-form #manual-units-input,
+.manual-time-form #manual-builders-input {
+    width: 8em;
+}
+
+.manual-time-form #manual-mode-select {
+    height: 2.2em;
+    font-size: 16px;
+    font-family: "Orbitron";
+}
+
+.manual-time-form #manual-time-button {
+    min-width: 8em;
+    min-height: 2.5em;
+}
+
+#manual-time-msg {
+    color: #27f546;
+    font-size: 18px;
+    font-family: "RobotoMono";
+    min-height: 1.2em;
+}
