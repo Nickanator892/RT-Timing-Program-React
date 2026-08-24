@@ -1,5 +1,5 @@
 import "./analyticsPage.css";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useSharedState } from "../../hooks/useSharedState";
 import type { User } from "../../assets/types/UserType";
 import AnalyticsChart from "../../common/analyticsChart/chart";
@@ -8,6 +8,11 @@ import type { LoggedTime, HarnCount } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import { parseTimestamp } from "../../assets/timeDistribution";
+import {
+    fetchScheduleWindow,
+    computeScheduleStatus,
+    type ScheduleWindow,
+} from "../../assets/scheduleStatus";
 
 interface analyticsPageProps {
     harn?: string;
@@ -28,6 +33,12 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
         const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
     const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
+    // undefined = not fetched yet, null = the run has no schedule dates
+    const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindow | null | undefined>(undefined);
+    // Build-mode (timeTypeId 1) completions regardless of the viewed timer mode -
+    // the schedule targets are build minutes, so the banner must not follow the
+    // mode dropdown the way the progress bars do.
+    const [buildCounts, setBuildCounts] = useState<Record<string, number>>({});
     const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
 
     const { fetchTimes, fetchAllTimes } = useTimes();
@@ -127,9 +138,69 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                 counts[harness.partNum] = match ? match.count : 0;
             }
             setHarnCounts(counts);
+
+            const buildTimes =
+                timerMode.id === 1 ? allTimes : await fetchAllTimes(buildKit?.REV, 1);
+            const forSchedule: Record<string, number> = {};
+            for (const harness of buildKit!.harnesses) {
+                const match = buildTimes.find((t: HarnCount) => t.harnNumber === harness.partNum);
+                forSchedule[harness.partNum] = match ? match.count : 0;
+            }
+            setBuildCounts(forSchedule);
         }
         loadCounts();
     }, [buildKit, refreshTrigger, timerMode]);
+
+    // Load the run's schedule window (pricing program's target dates)
+    useEffect(() => {
+        if (!buildKit) return;
+        let cancelled = false;
+        fetchScheduleWindow(buildKit.REV).then((win) => {
+            if (!cancelled) setScheduleWindow(win);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [buildKit?.REV]);
+
+    // displayTimer ticks once a second, keeping "expected by now" current.
+    const scheduleStatus = useMemo(() => {
+        if (!buildKit || !scheduleWindow) return null;
+        return computeScheduleStatus(buildKit, buildCounts, scheduleWindow);
+    }, [buildKit, buildCounts, scheduleWindow, displayTimer]);
+
+    function renderScheduleStatus() {
+        if (!buildKit || scheduleWindow === undefined) return null;
+        if (scheduleWindow === null) {
+            return (
+                <div className="schedule-status schedule-none">
+                    <p className="schedule-delta">NO SCHEDULE DATES</p>
+                </div>
+            );
+        }
+        if (!scheduleStatus) return null;
+        const onPace = Math.abs(scheduleStatus.deltaMin) < 30;
+        const ahead = scheduleStatus.deltaMin >= 0;
+        const stateClass = onPace ? "schedule-onpace" : ahead ? "schedule-ahead" : "schedule-behind";
+        return (
+            <div className={`schedule-status ${stateClass}`}>
+                <p className="schedule-day">
+                    SCHEDULE: DAY {scheduleStatus.workdayOf} / {scheduleStatus.totalWorkdays}
+                    {scheduleStatus.pastEnd ? " (PAST END DATE)" : ""}
+                </p>
+                <p className="schedule-delta">
+                    {onPace
+                        ? "ON PACE"
+                        : `${ahead ? "AHEAD" : "BEHIND"} ${(Math.abs(scheduleStatus.deltaMin) / 60).toFixed(1)} h`}
+                </p>
+                <p className="schedule-detail">
+                    {(scheduleStatus.earnedMin / 60).toFixed(1)} h done ·{" "}
+                    {(scheduleStatus.expectedMin / 60).toFixed(1)} h expected of{" "}
+                    {(scheduleStatus.plannedMin / 60).toFixed(1)} h planned
+                </p>
+            </div>
+        );
+    }
 
     function createInfoElement() {
         if (selectedUser) return (
@@ -169,6 +240,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     return (
         <div className="analytics-root">
             <div className="left-col">
+                {renderScheduleStatus()}
                 <div className="progress-list">{getProgress()}</div>
                 <div className="harn-build-chart-info">
                     <p id="current-build-pn">Part #: {harn}</p>
