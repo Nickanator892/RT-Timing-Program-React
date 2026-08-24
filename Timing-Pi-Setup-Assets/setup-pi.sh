@@ -20,11 +20,18 @@ cd updater
 npm install
 cd ..
 
-# Fix SQLite
-echo "Building SQLite for Electron arm64 - this may take a few minutes..."
-mkdir -p ~/better-sqlite3-build
-cd ~/better-sqlite3-build
-npm install better-sqlite3 --build-from-source
+# Fix SQLite: build better-sqlite3 for the SAME runtime that will load it.
+# The packaged app spawns its server with the system `node` from PATH (see
+# electron/main.js), so the module must match system Node's ABI - building with
+# a different Node install (or for Electron) fails at load time with errors
+# like "libnode.so.108: cannot open shared object file" or "Module did not
+# self-register".
+echo "Building better-sqlite3 for system Node - this may take a few minutes..."
+cd /usr/local/rt-timing-updater
+npm install --omit=dev --no-audit --no-fund
+npm rebuild better-sqlite3 --build-from-source
+# Prove the binary loads under this exact node before shipping it into the app.
+node -p "require('better-sqlite3') && 'better-sqlite3 loads OK'"
 sudo cp node_modules/better-sqlite3/build/Release/better_sqlite3.node \
   /opt/rt-timing/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
 cd ~

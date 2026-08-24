@@ -10,6 +10,9 @@ import RTLogo from "../../components/RTLogo/RTLogo";
 import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
 import { useSharedState } from "../../hooks/useSharedState";
 import CheckForUpdateElement from "../../common/buttons/checkForUpdateButton/checkForUpdateElement";
+import { timerModes } from "../../common/timerModeDropdown/timerModeDropdown";
+import { writeDistributedTimes } from "../../assets/timeDistribution";
+import { useBuildKit } from "../../hooks/useBuildKit";
 
 interface settingsPageProps {
     selectedUser: User | undefined;
@@ -37,6 +40,17 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     const [privLevelSelect, setPrivLevelSelect] = useState<number>(3);
     const [password, setPassword] = useState<string>("");
     const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
+    const [selectedHarn] = useSharedState<string>("selectedHarn", "");
+    const { buildKit } = useBuildKit();
+    // Manual time entry: type in a total that covered N units of a PN (e.g. a
+    // batched operation someone forgot to time live). Prefilled with the
+    // currently selected harness.
+    const [manualHarn, setManualHarn] = useState<string>(selectedHarn);
+    const [manualModeId, setManualModeId] = useState<number>(1);
+    const [manualMinutes, setManualMinutes] = useState<string>("");
+    const [manualUnits, setManualUnits] = useState<string>("");
+    const [manualBuilders, setManualBuilders] = useState<string>("1");
+    const [manualMsg, setManualMsg] = useState<string>("");
     const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
@@ -106,6 +120,47 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
             setErr("");
         } else {
             setErr("Must enter username");
+        }
+    }
+
+    async function saveManualTime() {
+        const validated = validatePriv(2);
+        if (!validated) return;
+        const minutes = Number(manualMinutes);
+        const units = Math.floor(Number(manualUnits));
+        const builders = Math.max(1, Math.floor(Number(manualBuilders) || 1));
+        if (!manualHarn.trim()) {
+            setErr("Enter a harness PN");
+            return;
+        }
+        if (!(minutes > 0)) {
+            setErr("Enter the total minutes");
+            return;
+        }
+        if (!(units >= 1)) {
+            setErr("Enter how many units the time covered");
+            return;
+        }
+        setManualMsg("Saving...");
+        try {
+            const endMs = Date.now();
+            const startMs = endMs - minutes * 60000;
+            await writeDistributedTimes({
+                harnNumber: manualHarn.trim(),
+                rev: buildKit?.REV,
+                builderId: selectedUser?.Id,
+                timeTypeId: manualModeId,
+                units,
+                startMs,
+                endMs,
+                numberOfBuilders: builders,
+                secondaryBuilderIds: [],
+            });
+            setManualMsg(`Recorded ${units} unit(s) at ${(minutes / units).toFixed(1)} min each`);
+            setErr("");
+        } catch (e: any) {
+            setManualMsg("");
+            setErr(String(e?.message ?? e));
         }
     }
 
@@ -338,6 +393,57 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                         Next
                     </button>
                 </div>
+            </div>
+            <div className="manual-time-entry">
+                <h2>Manual Time Entry</h2>
+                <div className="manual-time-form">
+                    <input
+                        type="text"
+                        id="manual-harn-input"
+                        placeholder="Harness PN"
+                        value={manualHarn}
+                        onChange={(e) => setManualHarn(e.target.value)}
+                    />
+                    <select
+                        id="manual-mode-select"
+                        value={manualModeId}
+                        onChange={(e) => setManualModeId(Number(e.target.value))}
+                    >
+                        {timerModes.map((mode) => (
+                            <option key={mode.id} value={mode.id}>
+                                {mode.label.replace("Timer Mode: ", "")}
+                            </option>
+                        ))}
+                    </select>
+                    <input
+                        type="number"
+                        id="manual-minutes-input"
+                        min={1}
+                        placeholder="Total minutes"
+                        value={manualMinutes}
+                        onChange={(e) => setManualMinutes(e.target.value)}
+                    />
+                    <input
+                        type="number"
+                        id="manual-units-input"
+                        min={1}
+                        placeholder="Units covered"
+                        value={manualUnits}
+                        onChange={(e) => setManualUnits(e.target.value)}
+                    />
+                    <input
+                        type="number"
+                        id="manual-builders-input"
+                        min={1}
+                        placeholder="# Builders"
+                        value={manualBuilders}
+                        onChange={(e) => setManualBuilders(e.target.value)}
+                    />
+                    <button type="button" id="manual-time-button" onClick={saveManualTime}>
+                        Record Time
+                    </button>
+                </div>
+                <p id="manual-time-msg">{manualMsg}</p>
             </div>
             <p id="error-message">{err}</p>
             <RTLogo />{" "}

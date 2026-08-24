@@ -17,6 +17,7 @@ import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import CloseButton from "../../common/buttons/closeButton/closeButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
+import { writeDistributedTimes } from "../../assets/timeDistribution";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -63,6 +64,12 @@ function TimingPage({
     const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
+    // Batch mode: one timed window covers `batchUnits` physical units of the PN
+    // (e.g. stripping every cable for all harnesses at once). No rows are
+    // written at start - submit slices the window across the units.
+    const [batchMode, setBatchMode] = useState<boolean>(false);
+    const [batchUnits, setBatchUnits] = useState<number>(1);
+    const batchPauses = useRef<{ start: string; end: string; reasonId: string | undefined }[]>([]);
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
 
@@ -84,6 +91,10 @@ useEffect(() => {
     if (timerDone) return;
     if (secondaryBuilders.length === prevSecondaryBuilders.current.length) return;
     prevSecondaryBuilders.current = secondaryBuilders;
+
+    // Batch runs have no rows to segment yet - the final builder count is
+    // recorded when submit writes the distributed rows.
+    if (batchMode) return;
 
     // handleBuilderChange - use HARNBUILDSEGMENTS instead of HARNBUILDTIMES
     async function handleBuilderChange() {
@@ -128,7 +139,13 @@ useEffect(() => {
     }
 
     handleBuilderChange();
-}, [secondaryBuilders, currentBuildId, currentSegmentStart, selectedHarn, buildKit, selectedUser, timerMode, timerDone]);
+}, [secondaryBuilders, currentBuildId, currentSegmentStart, selectedHarn, buildKit, selectedUser, timerMode, timerDone, batchMode]);
+
+    // Default the batch unit count to the PN's qty-to-build.
+    useEffect(() => {
+        const harness = buildKit?.harnesses.find((h) => h.partNum === selectedHarn);
+        if (harness && harness.buildNumber > 0) setBatchUnits(harness.buildNumber);
+    }, [selectedHarn, buildKit]);
 
     useEffect(() => {
         if (selectedHarn !== lastSelectedHarn.current) {
@@ -175,15 +192,8 @@ useEffect(() => {
         }
     };
 
-    async function getBuildId() {
-        const data = await execQuery("SELECT MAX(buildId) as maxId FROM HARNBUILDS");
-        const buildId = Number(data["result"]["0"].maxId ?? 0);
-        setCurrentBuildId(buildId);
-        return buildId
-    }
-
     async function insertPause() {
-        const pauseEnd = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        const pauseEnd = formatTimestamp(new Date().toISOString());
         if (sharedPauseReason) {
             try {
                 await execQuery(
@@ -196,6 +206,9 @@ useEffect(() => {
         }
     }
 
+    // Local time in "YYYY-MM-DD HH:mm:ss": sorts correctly as text (ORDER BY
+    // startTime) and parses with new Date() (the old dd/mm/yyyy-HH:mm:ss did
+    // neither - analytics durations came back NaN).
     function formatTimestamp(iso: string): string {
     const d = new Date(iso);
     const dd = String(d.getDate()).padStart(2, '0');
@@ -204,14 +217,25 @@ useEffect(() => {
     const HH = String(d.getHours()).padStart(2, '0');
     const MM = String(d.getMinutes()).padStart(2, '0');
     const SS = String(d.getSeconds()).padStart(2, '0');
-    return `${dd}/${mm}/${yyyy}-${HH}:${MM}:${SS}`;
+    return `${yyyy}-${mm}-${dd} ${HH}:${MM}:${SS}`;
     }
 
     async function startTimer() {
         if (isRunning) return;
         window.electron.timerStart();
         if (pauseStart) {
-            insertPause();
+            if (batchMode && !timerDone) {
+                // No build row exists yet - queue the pause; submit attaches it
+                // to the batch's first build row.
+                batchPauses.current.push({
+                    start: pauseStart,
+                    end: formatTimestamp(new Date().toISOString()),
+                    reasonId: sharedPauseReason?.Id,
+                });
+                setPauseStart(null);
+            } else {
+                insertPause();
+            }
         }
 
         if (timerDone) {
@@ -223,8 +247,15 @@ useEffect(() => {
             setErr("");
             setDbSuccess("Submit");
 
-            await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
-            const buildId = await getBuildId();
+            // Batch runs write nothing at start - all rows are created at
+            // submit, when the total window and unit count are known.
+            if (batchMode) return;
+
+            // The insert's own lastID - a MAX(buildId) round trip races when two
+            // stations start builds at the same time.
+            const insertData = await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
+            const buildId = Number(insertData?.result?.lastID ?? 0);
+            setCurrentBuildId(buildId);
 
             // One row in HARNBUILDTIMES — no startTime/endTime here anymore
             await execQuery(
@@ -275,6 +306,51 @@ useEffect(() => {
         setDisableSubmit(false);
     }
 
+    /** Batch submit: slice the timed window across the unit count. */
+    async function submitBatch() {
+        const units = Math.max(1, Math.floor(batchUnits));
+        setDbSuccess("Saving batch...");
+        try {
+            const startMs = new Date(startTime).getTime();
+            const endMs = new Date(endTime).getTime();
+            if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
+                throw new Error("Bad time window - end the timer before submitting");
+            }
+            const buildIds = await writeDistributedTimes({
+                harnNumber: selectedHarn,
+                rev: buildKit?.REV,
+                builderId: selectedUser?.Id,
+                timeTypeId: timerMode.id,
+                units,
+                startMs,
+                endMs,
+                numberOfBuilders: secondaryBuilders.length + 1,
+                secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+            });
+            for (const pause of batchPauses.current) {
+                await execQuery(
+                    "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
+                );
+            }
+            batchPauses.current = [];
+
+            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
+            if (Array.isArray(updatedTimes)) {
+                setHarnBuilt(updatedTimes.length);
+            }
+            window.electron.timerReset();
+            setRefreshTrigger((prev) => prev + 1);
+            setTimerDone(true);
+            setDbSuccess(`${units} units ✅`);
+            setErr("");
+            setPauseStart(null);
+        } catch (e: any) {
+            setErr(String(e?.message ?? e));
+            setDbSuccess("Submit");
+        }
+    }
+
     async function submitTime() {
         setDbSuccess("Checking...");
         if (isRunning) {
@@ -286,6 +362,10 @@ useEffect(() => {
         if (currentTime === "00:00:00") {
             setErr("Timer is 00:00:00");
             setDbSuccess("Submit");
+            return;
+        }
+        if (batchMode) {
+            await submitBatch();
             return;
         }
         setDbSuccess("Fetching...");
@@ -390,6 +470,29 @@ useEffect(() => {
                         <p id="timer-mode">Timer Mode: {timerMode.header}</p>
                     </div>
                     <TimerModeDropdown/>
+                    <div className="batch-controls">
+                        <label className="batch-toggle">
+                            <input
+                                type="checkbox"
+                                checked={batchMode}
+                                disabled={!timerDone}
+                                onChange={(e) => setBatchMode(e.target.checked)}
+                            />
+                            Batch: one time across all units
+                        </label>
+                        {batchMode && (
+                            <label className="batch-units">
+                                Units:
+                                <input
+                                    type="number"
+                                    min={1}
+                                    value={batchUnits}
+                                    disabled={!timerDone}
+                                    onChange={(e) => setBatchUnits(Number(e.target.value))}
+                                />
+                            </label>
+                        )}
+                    </div>
                     <CloseButton />
                 </div>
 

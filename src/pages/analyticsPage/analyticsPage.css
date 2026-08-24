@@ -21,6 +21,62 @@
     box-sizing: border-box;
 }
 
+.schedule-status {
+    flex-shrink: 0;
+    font-family: "Orbitron", monospace;
+    border: 2px solid white;
+    padding: 0.6vh 0.6vw;
+    margin: 0 0.4vw 0.8vh 0.4vw;
+    text-align: center;
+}
+
+.schedule-status p {
+    margin: 0.2vh 0;
+}
+
+.schedule-day {
+    font-size: clamp(11px, 0.9vw, 18px);
+}
+
+.schedule-delta {
+    font-size: clamp(20px, 2.2vw, 44px);
+    font-weight: bold;
+}
+
+.schedule-detail {
+    font-size: clamp(10px, 0.8vw, 16px);
+    opacity: 0.85;
+}
+
+.schedule-ahead {
+    border-color: #27f546;
+}
+.schedule-ahead .schedule-delta {
+    color: #27f546;
+}
+
+.schedule-behind {
+    border-color: #ff4560;
+}
+.schedule-behind .schedule-delta {
+    color: #ff4560;
+}
+
+.schedule-onpace {
+    border-color: #f5d327;
+}
+.schedule-onpace .schedule-delta {
+    color: #f5d327;
+}
+
+.schedule-none {
+    border-color: #666;
+    color: #888;
+}
+.schedule-none .schedule-delta {
+    font-size: clamp(14px, 1.2vw, 24px);
+}
+
 .progress-list {
     flex: 1;
     overflow-y: auto;

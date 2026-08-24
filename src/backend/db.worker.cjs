@@ -22,7 +22,9 @@ try {
         result = stmt.all(params);
     } else {
         const info = stmt.run(params);
-        result = info.changes;
+        // lastID lets INSERT callers get the new row id directly instead of a
+        // separate MAX() query (which races when two stations insert at once).
+        result = { changes: info.changes, lastID: Number(info.lastInsertRowid) };
     }
 
     console.log("Query executed successfully");
