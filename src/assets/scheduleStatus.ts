@@ -14,6 +14,9 @@ import type { BuildKit } from "../hooks/useBuildKit";
 export interface ScheduleWindow {
     start: Date;
     end: Date;
+    /** True when the window was shifted to the first logged build because the
+     *  scheduled dates predate the work actually starting. */
+    anchored: boolean;
 }
 
 export interface ScheduleStatus {
@@ -51,7 +54,13 @@ export function parseScheduleDate(s: string | null | undefined): Date | null {
     return isNaN(d.getTime()) ? null : d;
 }
 
-/** Target window of the run's most recent build schedule, or null when none. */
+/**
+ * Target window of the run's most recent build schedule, or null when none.
+ * Pricing-time schedules can predate the actual build by months; when the
+ * whole window ended before the first logged build, the window is shifted to
+ * start at that first build (same duration) so the banner measures pace
+ * against a schedule that reflects reality - flagged via `anchored`.
+ */
 export async function fetchScheduleWindow(rev: number): Promise<ScheduleWindow | null> {
     const rows = (await execQuery(
         `SELECT MIN(BHL.BHLTARGSTRTDATE) AS windowStart, MAX(BHL.BHLTARGENDDATE) AS windowEnd
@@ -63,7 +72,24 @@ export async function fetchScheduleWindow(rev: number): Promise<ScheduleWindow |
     const start = parseScheduleDate(rows[0].windowStart);
     const end = parseScheduleDate(rows[0].windowEnd);
     if (!start || !end || end <= start) return null;
-    return { start, end };
+
+    const firstRows = (await execQuery(
+        `SELECT MIN(s.startTime) AS firstStart
+         FROM HARNBUILDSEGMENTS s
+         JOIN HARNBUILDTIMES h ON h.buildId = s.buildId
+         WHERE h.REV = ?`,
+        [rev]
+    )) as { firstStart: string | null }[] | undefined;
+    const firstBuild = Array.isArray(firstRows) ? parseScheduleDate(firstRows[0]?.firstStart) : null;
+    if (firstBuild && end < firstBuild) {
+        const shift = firstBuild.getTime() - start.getTime();
+        return {
+            start: firstBuild,
+            end: new Date(end.getTime() + shift),
+            anchored: true,
+        };
+    }
+    return { start, end, anchored: false };
 }
 
 const DAY_START_H = 8;

@@ -186,6 +186,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             <div className={`schedule-status ${stateClass}`}>
                 <p className="schedule-day">
                     SCHEDULE: DAY {scheduleStatus.workdayOf} / {scheduleStatus.totalWorkdays}
+                    {scheduleWindow.anchored ? " (FROM FIRST BUILD)" : ""}
                     {scheduleStatus.pastEnd ? " (PAST END DATE)" : ""}
                 </p>
                 <p className="schedule-delta">
