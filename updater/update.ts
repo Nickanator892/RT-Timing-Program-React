@@ -1,7 +1,11 @@
 import { execSync, exec, spawn } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
 import ora from "ora";
 
 const serverPort = 5000;
+// The repo clone this script runs from (updater/ -> clone root).
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function run(command: string, cwd?: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -79,19 +83,27 @@ async function installFiles(newVersion: any) {
 }
 
 async function fixSQLite() {
-    const spinner = ora('Rebuilding SQLite for Electron arm64 - this may take a few minutes...').start();
+    const spinner = ora('Rebuilding better-sqlite3 for the system Node - this may take a few minutes...').start();
     try {
-        await run(`mkdir -p ${process.env.HOME}/better-sqlite3-build`);
-        await run(`npm install better-sqlite3 --build-from-source`, 
-            `${process.env.HOME}/better-sqlite3-build`
-        );
+        // The packaged app spawns its server with the system `node` from PATH
+        // (see electron/main.js), so the module must match system Node's ABI.
+        // Build in THIS clone rather than a scratch cache dir: a binary cached
+        // under an older Node install silently re-breaks every update - the
+        // module fails to load ("libnode.so.108: cannot open shared object
+        // file" / "Module did not self-register") and the UI shows empty
+        // lists everywhere while db-status still reads ready.
+        await run(`npm install --omit=dev --no-audit --no-fund`, REPO_ROOT);
+        await run(`npm rebuild better-sqlite3 --build-from-source`, REPO_ROOT);
+        // Prove the binary loads under this exact node BEFORE shipping it into
+        // the app - a bad build must fail loudly here, not as empty UI lists.
+        await run(`node -p "require('better-sqlite3') && 'ok'"`, REPO_ROOT);
         await run(
-            `sudo cp ${process.env.HOME}/better-sqlite3-build/node_modules/better-sqlite3/build/Release/better_sqlite3.node ` +
+            `sudo cp ${REPO_ROOT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node ` +
             `/opt/rt-timing/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node`
         );
-        spinner.succeed('SQLite rebuilt successfully!');
+        spinner.succeed('better-sqlite3 rebuilt and verified for the system Node!');
     } catch(e: any) {
-        spinner.fail(`Failed to rebuild SQLite: ${e}`);
+        spinner.fail(`Failed to rebuild better-sqlite3 - database queries may fail (empty lists) until this is fixed: ${e}`);
     }
 }
 
