@@ -249,7 +249,7 @@ hr {
     flex-direction: column;
     gap: 0.4em;
     margin-top: 0.6em;
-    margin-left: -0.6em;
+    margin-left: -1.2em; /* line up with .timer-mode-dropdown's left edge */
     font-family: "RobotoMono";
     font-size: 1em;
 }

@@ -142,6 +142,12 @@ function AnalyticsChart({
             markers: {
                 size: 8,
             },
+            // chart.foreColor forces all text white, but the tooltip keeps its
+            // light theme by default - white text on a white box. Dark theme
+            // makes the tap-a-point readout legible.
+            tooltip: {
+                theme: "dark",
+            },
         }),
         [currentTimeMinutes, buildTimeEst.seconds, currentTimeSeconds]
     );

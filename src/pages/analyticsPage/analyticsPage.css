@@ -10,12 +10,13 @@
 }
 
 .left-col {
-    padding-top: 5vw;
+    padding: 1vh 0 1vh 0.6vw;
     width: 30vw;
     min-width: 320px;
     max-width: 500px;
     display: flex;
     flex-direction: column;
+    gap: 0.8vh;
     flex-shrink: 0;
     overflow: hidden;
     box-sizing: border-box;
@@ -26,8 +27,9 @@
     font-family: "Orbitron", monospace;
     border: 2px solid white;
     padding: 0.6vh 0.6vw;
-    margin: 0 0.4vw 0.8vh 0.4vw;
+    margin: 0;
     text-align: center;
+    box-sizing: border-box;
 }
 
 .schedule-status p {
@@ -79,10 +81,11 @@
 
 .progress-list {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
     font-family: "Orbitron", monospace;
-    max-height: 60vw;
+    box-sizing: border-box;
 }
 
 .harn-progress-item {
@@ -118,14 +121,11 @@
 .harn-build-chart-info {
     display: flex;
     flex-direction: column;
-    gap: 1.5em;
+    gap: 1vh;
     flex-shrink: 0;
-    border-top: 2px solid white;
-    border-bottom: 2px solid white;
-    border-left: 2px solid white;
-    padding: 0.5vh 0.5vw;
+    border: 2px solid white;
+    padding: 0.8vh 0.6vw;
     box-sizing: border-box;
-    height: 20vw;
 }
 
 .harn-build-chart-info p {
@@ -154,7 +154,7 @@
 }
 
 .timer-section {
-    padding-top: 5vw;
+    padding-top: 1vh;
     padding-left: 2vw;
     display: flex;
     align-items: center;
@@ -215,11 +215,9 @@
 }
 
 .chart-area {
-    position: absolute;
-    bottom: 1vh;
-    right: 1vw;
-    width: 70vw;
-    height: 55vh;
+    flex: 1;
+    min-height: 0;
+    box-sizing: border-box;
 }
 
 .chart-area > * {

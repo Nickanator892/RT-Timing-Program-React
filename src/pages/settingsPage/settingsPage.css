@@ -23,7 +23,9 @@ button {
 }
 
 #error-message {
-    width: 100%;
+    /* width 100% + left 100px pushed this 100px past the viewport edge
+       (horizontal scrollbar on every page - these stylesheets are global) */
+    width: calc(100% - 120px);
     display: flex;
     position: absolute;
     bottom: 10px;

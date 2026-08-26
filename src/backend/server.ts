@@ -93,15 +93,31 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     dbPath = config.dbPath;
     console.log("Loaded DB path:", dbPath);
 
-    runQuery(`
-      CREATE VIEW IF NOT EXISTS HARNBUILDTIMES_VIEW AS
-      SELECT 
-          h.*,
+    // Recreate (not IF NOT EXISTS) so an old definition in the DB gets
+    // replaced. The old h.* + aliased-aggregate shape looked right but never
+    // worked: better-sqlite3 does NOT merge duplicate column names - it
+    // suffixes the later ones (":1"), so consumers read h's always-NULL
+    // startTime/endTime and every chart duration came out 0. Explicit columns
+    // give the aggregate the real names, and GROUP BY harnBuildTimeId (the
+    // row id) keeps pause rows (same buildId, timeTypeId 4) from collapsing
+    // into their build row and randomly hijacking its timeTypeId.
+    await runQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW`)
+    await runQuery(`
+      CREATE VIEW HARNBUILDTIMES_VIEW AS
+      SELECT
+          h.harnBuildTimeId,
+          h.buildId,
+          h.harnNumber,
+          h.REV,
+          h.builderId,
+          h.timeTypeId,
+          h.pauseReasonId,
+          h.numberOfBuilders,
           MIN(s.startTime) as startTime,
           MAX(s.endTime) as endTime
       FROM HARNBUILDTIMES h
       LEFT JOIN HARNBUILDSEGMENTS s ON h.buildId = s.buildId
-      GROUP BY h.buildId
+      GROUP BY h.harnBuildTimeId
     `)
   } catch (err) {
     console.warn("Saved DB path invalid, ignoring:", err);
