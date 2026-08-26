@@ -41,10 +41,14 @@ export function useTimes() {
         }
     };
 
+    // Completed builds only (open endTime = a run still in progress): an
+    // in-progress build otherwise charts as a 0-minute point and bumps the
+    // built counts the moment its timer starts - the live run is already
+    // represented by the "Current" line on the chart.
     async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
         const result = await execQuery(
-            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? ORDER BY startTime ASC",
+            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND COALESCE(endTime, '') != '' ORDER BY startTime ASC",
             [harnNumber, timeTypeId]
         );
         if (Array.isArray(result)) {
@@ -55,7 +59,7 @@ export function useTimes() {
 
     async function fetchAllTimes(REV: number | undefined, timeTypeId: number): Promise<HarnCount[]> {
         const result = await execQuery(
-            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? GROUP BY harnNumber",
+            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND COALESCE(endTime, '') != '' GROUP BY harnNumber",
             [REV, timeTypeId]
         );
         return Array.isArray(result)
