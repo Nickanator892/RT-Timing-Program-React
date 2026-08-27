@@ -111,8 +111,12 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         // leaving completed builds off the chart.
                         const start = parseTimestamp(t.startTime);
                         const end = parseTimestamp(t.endTime);
-                        const seconds =
+                        // Segments span wall-clock including pauses; subtract the
+                        // recorded pause time so an overnight Break doesn't read
+                        // as an 18-hour build.
+                        const gross =
                             start && end ? Math.round((end.getTime() - start.getTime()) / 1000) : 0;
+                        const seconds = Math.max(0, gross - Math.round(Number(t.pausedSeconds ?? 0)));
                         const h = Math.floor(seconds / 3600);
                         const m = Math.floor((seconds % 3600) / 60);
                         const s = seconds % 60;

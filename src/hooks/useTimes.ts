@@ -7,6 +7,8 @@ export interface LoggedTime {
     formattedTime: string;
     harnNumber: string;
     dateBuilt: string;
+    /** Total recorded pause time within the build's wall-clock span. */
+    pausedSeconds?: number;
 }
 
 export interface HarnCount {
