@@ -102,6 +102,11 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     // row id) keeps pause rows (same buildId, timeTypeId 4) from collapsing
     // into their build row and randomly hijacking its timeTypeId.
     await runQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW`)
+    // pausedSeconds: total recorded pause time for the build. Segments span
+    // wall-clock including pauses (the timer freezes on screen but the segment
+    // stays open), so consumers must subtract this - an overnight pause
+    // otherwise reads as an 18-hour build. The length guard skips legacy
+    // pause rows whose endTime was written time-only (unrecoverable).
     await runQuery(`
       CREATE VIEW HARNBUILDTIMES_VIEW AS
       SELECT
@@ -114,7 +119,14 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
           h.pauseReasonId,
           h.numberOfBuilders,
           MIN(s.startTime) as startTime,
-          MAX(s.endTime) as endTime
+          MAX(s.endTime) as endTime,
+          (SELECT COALESCE(SUM((julianday(p.endTime) - julianday(p.startTime)) * 86400), 0)
+             FROM HARNBUILDTIMES p
+            WHERE p.buildId = h.buildId
+              AND p.timeTypeId = 4
+              AND p.startTime IS NOT NULL
+              AND p.endTime IS NOT NULL
+              AND length(p.endTime) > 8) AS pausedSeconds
       FROM HARNBUILDTIMES h
       LEFT JOIN HARNBUILDSEGMENTS s ON h.buildId = s.buildId
       GROUP BY h.harnBuildTimeId
