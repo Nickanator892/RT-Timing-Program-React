@@ -143,8 +143,11 @@ function RecoveryPage({ setPauseStart }: recoveryPageProps) {
                         {candidate.heartbeatAt
                             ? `${Math.round(candidate.hoursSinceHeartbeat)} hours`
                             : "an unknown length of time"}
-                        . Its recorded time is still correct, but check with{" "}
-                        {candidate.builderName ?? "the builder"} before continuing it.
+                        . The time shown is what was recorded up to the last activity we can
+                        prove{candidate.heartbeatAt ? ` (${candidate.heartbeatAt})` : ""} - any work
+                        after that was not saved and is not included. Check with{" "}
+                        {candidate.builderName ?? "the builder"} before continuing, and add any
+                        missing time with Manual Time Entry in Settings.
                     </p>
                 ) : (
                     <p className="recovery-explain">
