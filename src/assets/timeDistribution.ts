@@ -59,13 +59,18 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
             "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
             [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders]
         );
+        // accumSeconds must be written here too: it is the duration authority
+        // the analytics view sums, so a batch segment without it charts as zero.
         await execQuery(
-            "INSERT INTO HARNBUILDSEGMENTS (buildId, startTime, endTime, numberOfBuilders) VALUES(?, ?, ?, ?)",
+            `INSERT INTO HARNBUILDSEGMENTS
+                (buildId, startTime, endTime, numberOfBuilders, accumSeconds)
+             VALUES(?, ?, ?, ?, ?)`,
             [
                 buildId,
                 formatTimestamp(new Date(args.startMs + k * sliceMs)),
                 formatTimestamp(new Date(args.startMs + (k + 1) * sliceMs)),
                 args.numberOfBuilders,
+                Math.max(0, Math.round(sliceMs / 1000)),
             ]
         );
         for (const secondaryId of args.secondaryBuilderIds) {

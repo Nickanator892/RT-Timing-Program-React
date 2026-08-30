@@ -62,3 +62,16 @@
 .pagination-buttons {
     padding-left: 3em;
 }
+
+/* Crash recovery: surfaced at login because restoring needs a builder first. */
+.login-recovery-banner {
+    border: 3px solid #f5d327;
+    border-radius: 8px;
+    color: #f5d327;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(12px, 1.05vw, 18px);
+    padding: 0.8vh 1.2vw;
+    margin: 0 auto 1vh auto;
+    max-width: 70vw;
+    text-align: center;
+}

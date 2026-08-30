@@ -24,6 +24,67 @@ let timerInterval = null;
 let timerStart = null;
 let timerElapsed = 0;
 
+// --------------------
+// Crash-recovery heartbeat
+// --------------------
+// The app cannot know when it died, so while it is alive it periodically
+// persists how much the current segment has earned. timerElapsed is already
+// pause-free (timer-pause freezes it), so the persisted value needs no pause
+// arithmetic: a crash costs at most one interval, and always UNDER-credits.
+let currentSegmentId = null;
+let segmentBase = 0;          // timerElapsed at the moment this segment opened
+let heartbeatTimer = null;
+let heartbeatTicks = 0;
+const HEARTBEAT_MS = 60_000;        // while running
+const PAUSED_EVERY_N_TICKS = 5;     // while paused, write every 5th tick (5 min)
+
+function segmentSeconds() {
+    return Math.max(0, Math.round((timerElapsed - segmentBase) / 1000));
+}
+
+function postJson(pathname, body) {
+    return new Promise((resolve) => {
+        const payload = JSON.stringify(body);
+        const req = http.request(
+            { host: "localhost", port: 5000, path: pathname, method: "POST",
+              headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+              timeout: 8000 },
+            (res) => { res.resume(); res.on("end", () => resolve(true)); }
+        );
+        // Fire-and-forget: a heartbeat failure must never disturb the timer.
+        req.on("error", () => resolve(false));
+        req.on("timeout", () => { req.destroy(); resolve(false); });
+        req.write(payload);
+        req.end();
+    });
+}
+
+function writeHeartbeat() {
+    if (!currentSegmentId) return Promise.resolve(false);
+    return postJson("/api/heartbeat", {
+        segmentId: currentSegmentId,
+        accumSeconds: segmentSeconds(),
+        state: sharedTimerData.isRunning ? "RUN" : "PAUSE",
+    });
+}
+
+function startHeartbeat() {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+        heartbeatTicks++;
+        // A long pause does not need minute-by-minute writes to a network share,
+        // but it must still refresh liveness so "paused since 3h ago and alive"
+        // stays distinguishable from "died 3h ago".
+        if (!sharedTimerData.isRunning && heartbeatTicks % PAUSED_EVERY_N_TICKS !== 0) return;
+        writeHeartbeat();
+    }, HEARTBEAT_MS);
+}
+
+function stopHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+}
+
 let sharedTimerData = {
     displayTimer: "00:00:00",
     activeButton: null,
@@ -33,6 +94,9 @@ let sharedTimerData = {
     pauseReason: [],
     currentSessionStart: null,
     sessions: [],
+    // Set once at boot by the recovery scan; null when there is nothing to
+    // recover. Detection only - no database writes happen at boot.
+    recovery: null,
 };
 
 // --------------------
@@ -146,6 +210,8 @@ ipcMain.on("timer-start", () => {
     timerStart = Date.now() - timerElapsed;
     sharedTimerData.isRunning = true;
     broadcastToAll(sharedTimerData);
+    startHeartbeat();
+    writeHeartbeat(); // transition: don't wait a full interval to record RUN
 
     function tick() {
         timerElapsed = Date.now() - timerStart;
@@ -168,6 +234,9 @@ ipcMain.on("timer-pause", () => {
     }
     sharedTimerData.isRunning = false;
     broadcastToAll(sharedTimerData);
+    // Freeze the earned total on disk at the instant of the pause, so a crash
+    // during a pause credits exactly the work done before it.
+    writeHeartbeat();
 });
 
 ipcMain.on("timer-reset", () => {
@@ -180,6 +249,58 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.displayTimer = "00:00:00";
     sharedTimerData.elapsedTime = 0;
     sharedTimerData.isRunning = false;
+    broadcastToAll(sharedTimerData);
+    // The build is submitted: stop heartbeating a segment that is now closed.
+    stopHeartbeat();
+    currentSegmentId = null;
+    segmentBase = 0;
+    heartbeatTicks = 0;
+    sharedTimerData.recovery = null;
+});
+
+// The renderer tells main which segment is live, so heartbeats land on the
+// right row. segmentBase makes the persisted value segment-local while
+// timerElapsed stays build-scoped.
+ipcMain.on("timer-segment", (_event, { segmentId, segmentAccumSeconds } = {}) => {
+    currentSegmentId = segmentId ?? null;
+    segmentBase = timerElapsed - Math.max(0, Number(segmentAccumSeconds) || 0) * 1000;
+    heartbeatTicks = 0;
+    if (currentSegmentId) {
+        startHeartbeat();
+        writeHeartbeat();
+    }
+});
+
+// Restore an interrupted build: reproduce exactly the frozen state that
+// timer-pause leaves behind, so the existing resume path works untouched.
+ipcMain.handle("restore-timer", (_event, { elapsedMs, segmentId, segmentAccumSeconds } = {}) => {
+    if (timerInterval) {
+        clearTimeout(timerInterval);
+        timerInterval = null;
+    }
+    timerElapsed = Math.max(0, Number(elapsedMs) || 0);
+    timerStart = null;
+    currentSegmentId = segmentId ?? null;
+    segmentBase = timerElapsed - Math.max(0, Number(segmentAccumSeconds) || 0) * 1000;
+    sharedTimerData.isRunning = false;
+    sharedTimerData.elapsedTime = timerElapsed;
+    sharedTimerData.displayTimer = formatTime(timerElapsed);
+    broadcastToAll(sharedTimerData);
+    startHeartbeat();
+    return { ok: true };
+});
+
+ipcMain.handle("get-recovery", () => sharedTimerData.recovery ?? null);
+
+// Worked seconds for the CURRENT segment. The renderer needs this whenever it
+// closes a segment (submit, builder change) so the stored value is exact rather
+// than up to one heartbeat interval stale.
+ipcMain.handle("get-segment-seconds", () => segmentSeconds());
+
+// "Not now" - stop offering it for this session; the segment stays open and
+// will be offered again next launch, because someone still has to deal with it.
+ipcMain.on("dismiss-recovery", () => {
+    sharedTimerData.recovery = null;
     broadcastToAll(sharedTimerData);
 });
 
@@ -351,6 +472,29 @@ ipcMain.handle("run-updater", () => {
     }, 500);
 });
 
+/**
+ * Look for a build this station left open. Runs in the main process, once per
+ * launch, BEFORE any window exists - the two windows (main + analytics) both
+ * mount the same React tree, so a renderer-side scan would run twice and race
+ * itself. Detection only; nothing is written until the operator chooses.
+ */
+function scanForInterruptedBuild() {
+    return new Promise((resolve) => {
+        http.get({ host: "localhost", port: 5000, path: "/api/recovery/scan", timeout: 8000 }, (res) => {
+            let body = "";
+            res.on("data", (c) => (body += c));
+            res.on("end", () => {
+                try {
+                    const parsed = JSON.parse(body);
+                    resolve(parsed?.recovery ?? null);
+                } catch {
+                    resolve(null);
+                }
+            });
+        }).on("error", () => resolve(null)).on("timeout", function () { this.destroy(); resolve(null); });
+    });
+}
+
 app.whenReady().then(async () => {
     killExistingServer();
     startServer();
@@ -360,10 +504,22 @@ app.whenReady().then(async () => {
         const logPath = path.join(app.getPath("userData"), "server.log");
         fs.appendFileSync(logPath, `Server never became ready: ${e}\n`);
     }
+    try {
+        sharedTimerData.recovery = await scanForInterruptedBuild();
+        if (sharedTimerData.recovery) {
+            const logPath = path.join(app.getPath("userData"), "server.log");
+            fs.appendFileSync(logPath,
+                `Recovery candidate: build ${sharedTimerData.recovery.buildId} ` +
+                `(${sharedTimerData.recovery.harnNumber}) status ${sharedTimerData.recovery.status}\n`);
+        }
+    } catch { /* recovery is best-effort; never block startup */ }
     createMainWindow();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", async () => {
+    // Last chance to record what this segment earned before the process dies.
+    await writeHeartbeat();
+    stopHeartbeat();
     stopServer();
 });
 
