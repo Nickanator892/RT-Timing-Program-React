@@ -1,0 +1,106 @@
+.qbtime-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.qbtime-modal {
+    background: #242424;
+    border: 4px solid white;
+    border-radius: 10px;
+    padding: 1.5vh 2vw;
+    min-width: 60vw;
+    max-height: 80vh;
+    overflow-y: auto;
+    font-family: "Orbitron", monospace;
+    display: flex;
+    flex-direction: column;
+    gap: 1vh;
+}
+
+.qbtime-modal h3 {
+    margin: 0;
+    text-align: center;
+    text-decoration: underline;
+}
+
+.qbtime-status {
+    font-family: "RobotoMono", monospace;
+    font-size: 16px;
+    margin: 0;
+    text-align: center;
+}
+
+.qbtime-status.ok { color: #27f546; }
+.qbtime-status.warn { color: #f5d327; }
+
+.qbtime-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6vh;
+}
+
+.qbtime-row {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr 0.5fr 0.8fr;
+    align-items: center;
+    gap: 1vw;
+    border: 2px solid #555;
+    border-radius: 6px;
+    padding: 0.5vh 0.8vw;
+}
+
+.qbtime-row.qbtime-head {
+    border: none;
+    font-size: 14px;
+    opacity: 0.75;
+}
+
+.qbtime-name { font-size: 19px; }
+
+.qbtime-row select {
+    font-family: "Orbitron", monospace;
+    font-size: 16px;
+    height: 2.2em;
+}
+
+.qbtime-row input[type="checkbox"] {
+    width: 1.6em;
+    height: 1.6em;
+    justify-self: center;
+}
+
+.qbtime-clock {
+    text-align: center;
+    font-family: "RobotoMono", monospace;
+    font-weight: bold;
+}
+
+.qbtime-clock.in { color: #27f546; }
+.qbtime-clock.out { color: #888; }
+
+.qbtime-explain {
+    font-family: "RobotoMono", monospace;
+    font-size: 14px;
+    opacity: 0.85;
+    margin: 0;
+}
+
+.qbtime-msg {
+    color: #ff4560;
+    font-family: "RobotoMono", monospace;
+    font-size: 14px;
+    min-height: 1.2em;
+    margin: 0;
+}
+
+.qbtime-close {
+    align-self: center;
+    min-width: 10em;
+    min-height: 2.6em;
+    font-size: 18px;
+}

@@ -161,6 +161,7 @@ async function ensureColumn(table: string, column: string, decl: string) {
 }
 
 export const INTERRUPTED_PAUSE_REASON = "Interrupted (app closed)";
+export const CLOCKED_OUT_PAUSE_REASON = "Clocked out (QuickBooks)";
 
 async function migrate() {
   // --- crash-recovery columns -------------------------------------------
@@ -198,11 +199,42 @@ async function migrate() {
        AND COALESCE(startTime, '') <> ''
   `);
 
-  await runQuery(
-    `INSERT INTO HARNBUILDPAUSEREASONS (reason_name, active)
-     SELECT ?, 1 WHERE NOT EXISTS (SELECT 1 FROM HARNBUILDPAUSEREASONS WHERE reason_name = ?)`,
-    [INTERRUPTED_PAUSE_REASON, INTERRUPTED_PAUSE_REASON]
-  );
+  for (const reason of [INTERRUPTED_PAUSE_REASON, CLOCKED_OUT_PAUSE_REASON]) {
+    await runQuery(
+      `INSERT INTO HARNBUILDPAUSEREASONS (reason_name, active)
+       SELECT ?, 1 WHERE NOT EXISTS (SELECT 1 FROM HARNBUILDPAUSEREASONS WHERE reason_name = ?)`,
+      [reason, reason]
+    );
+  }
+
+  // --- QuickBooks Time clock link ---------------------------------------
+  // Which QuickBooks Time user a builder is, and whether their clock state is
+  // allowed to drive the timer. Opt-in per person: office staff are in
+  // QuickBooks Time too but must never pause a build.
+  await ensureColumn("HARNBUILDERS", "qbTimeUserId", "INTEGER");
+  await ensureColumn("HARNBUILDERS", "qbAutoPause", "INTEGER");
+
+  // Written by the poller on the Windows host (Scripts/qbtime-poller.ps1),
+  // which is the only process holding the API token. Created here as well so
+  // the app works if it starts first - the stations never call Intuit.
+  await runQuery(`CREATE TABLE IF NOT EXISTS QBTIMEUSERS (
+                    qbTimeUserId INTEGER PRIMARY KEY,
+                    displayName  TEXT,
+                    username     TEXT,
+                    active       INTEGER,
+                    updatedAt    TEXT)`);
+  await runQuery(`CREATE TABLE IF NOT EXISTS QBTIMESTATUS (
+                    qbTimeUserId INTEGER PRIMARY KEY,
+                    onTheClock   INTEGER,
+                    shiftSeconds INTEGER,
+                    checkedAt    TEXT)`);
+  // lastPollAt is the freshness gate. If the poller dies, clock state is
+  // UNKNOWN - and unknown must never be treated as clocked out, or a dead
+  // poller would pause every station on the floor.
+  await runQuery(`CREATE TABLE IF NOT EXISTS QBTIMEPOLL (
+                    id         INTEGER PRIMARY KEY CHECK (id = 1),
+                    lastPollAt TEXT,
+                    lastError  TEXT)`);
 
   // Recreate (not IF NOT EXISTS) so an old definition in the DB gets
   // replaced. The old h.* + aliased-aggregate shape looked right but never

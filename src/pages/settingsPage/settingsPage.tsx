@@ -15,6 +15,7 @@ import {
     SCREENSAVER_KEY,
     readScreensaverMinutes,
 } from "../../common/screensaver/screensaver";
+import QbTimeMapping from "../../common/qbTimeMapping/qbTimeMapping";
 import { writeDistributedTimes } from "../../assets/timeDistribution";
 import { useBuildKit } from "../../hooks/useBuildKit";
 
@@ -58,6 +59,7 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     // Per-station display setting, so it lives on the station rather than in the
     // shared database where it would apply to every Pi at once.
     const [screensaverMins, setScreensaverMins] = useState<string>(String(readScreensaverMinutes()));
+    const [showQbTime, setShowQbTime] = useState(false);
     const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
@@ -401,8 +403,21 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                     </button>
                 </div>
             </div>
+            {showQbTime && <QbTimeMapping onClose={() => setShowQbTime(false)} />}
             <div className="screensaver-setting">
                 <h2>Screen</h2>
+                <button
+                    type="button"
+                    id="qbtime-open"
+                    onClick={() => {
+                        // Same privilege bar as user management: this decides
+                        // whose timer the clock is allowed to stop.
+                        if (!validatePriv(2)) return;
+                        setShowQbTime(true);
+                    }}
+                >
+                    QuickBooks Time...
+                </button>
                 <label>
                     Dim the screen after
                     <input
