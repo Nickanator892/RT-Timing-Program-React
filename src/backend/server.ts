@@ -199,6 +199,46 @@ async function migrate() {
        AND COALESCE(startTime, '') <> ''
   `);
 
+  // --- rescue sessions stranded before heartbeats existed ---------------
+  // An OPEN segment written by an older build has no accumSeconds and no
+  // heartbeatAt, so it would restore showing 00:00:00 and the operator's work
+  // would look like it never happened. We cannot know when the app died, but
+  // pause rows are hard evidence that it was alive: a pause row is only written
+  // on RESUME, so its endTime is a moment the app provably ran. Credit up to
+  // the last such moment - the same "last proof of life" rule the heartbeat
+  // uses, and equally incapable of over-crediting.
+  await runQuery(`
+    UPDATE HARNBUILDSEGMENTS
+       SET heartbeatAt = COALESCE(
+             (SELECT MAX(p.endTime) FROM HARNBUILDTIMES p
+               WHERE p.buildId = HARNBUILDSEGMENTS.buildId
+                 AND p.timeTypeId = 4
+                 AND p.endTime IS NOT NULL AND length(p.endTime) > 8
+                 AND p.startTime >= HARNBUILDSEGMENTS.startTime),
+             startTime),
+           heartbeatState = 'PAUSE'
+     WHERE COALESCE(endTime, '') = ''
+       AND heartbeatAt IS NULL
+       AND COALESCE(startTime, '') <> ''
+  `);
+  await runQuery(`
+    UPDATE HARNBUILDSEGMENTS
+       SET accumSeconds = MAX(0, CAST(
+             (julianday(heartbeatAt) - julianday(startTime)) * 86400
+             - COALESCE((SELECT SUM((julianday(p.endTime) - julianday(p.startTime)) * 86400)
+                           FROM HARNBUILDTIMES p
+                          WHERE p.buildId = HARNBUILDSEGMENTS.buildId
+                            AND p.timeTypeId = 4
+                            AND p.startTime IS NOT NULL AND p.endTime IS NOT NULL
+                            AND length(p.endTime) > 8
+                            AND p.startTime >= HARNBUILDSEGMENTS.startTime
+                            AND p.endTime   <= HARNBUILDSEGMENTS.heartbeatAt), 0) AS INTEGER))
+     WHERE COALESCE(endTime, '') = ''
+       AND accumSeconds IS NULL
+       AND heartbeatAt IS NOT NULL
+       AND COALESCE(startTime, '') <> ''
+  `);
+
   for (const reason of [INTERRUPTED_PAUSE_REASON, CLOCKED_OUT_PAUSE_REASON]) {
     await runQuery(
       `INSERT INTO HARNBUILDPAUSEREASONS (reason_name, active)
@@ -333,6 +373,13 @@ app.post("/api/heartbeat", async (req, res) => {
 /**
  * The one open segment this station left behind, if any. Station-scoped: a Pi
  * must never see - let alone touch - another station's live work.
+ *
+ * The scan also adopts segments whose stationId IS NULL: those were left open
+ * by a version that predates heartbeats, and they are exactly the sessions this
+ * feature exists to rescue. Without that clause the builds already stranded in
+ * the database would stay invisible forever. Such rows always classify as
+ * STALE, so they are offered to the operator rather than restored silently.
+ *
  * Returns { recovery: null } when there is nothing to recover.
  */
 app.get("/api/recovery/scan", async (_req, res) => {
@@ -352,7 +399,7 @@ app.get("/api/recovery/scan", async (_req, res) => {
          JOIN HARNBUILDTIMES   h  ON h.buildId = s.buildId AND h.timeTypeId <> 4
     LEFT JOIN HARNBUILDERS     bl ON bl.Id = h.builderId
         WHERE COALESCE(s.endTime, '') = ''
-          AND s.stationId = ?
+          AND (s.stationId = ? OR s.stationId IS NULL)
         ORDER BY s.segmentId DESC
         LIMIT 1`,
       [STATION_ID]
