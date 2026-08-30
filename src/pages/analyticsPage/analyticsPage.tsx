@@ -7,6 +7,7 @@ import useTimes from "../../hooks/useTimes";
 import type { LoggedTime, HarnCount } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
+import { usePixelShift } from "../../hooks/usePixelShift";
 import { parseTimestamp } from "../../assets/timeDistribution";
 import {
     fetchScheduleWindow,
@@ -43,6 +44,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
 
     const { fetchTimes, fetchAllTimes } = useTimes();
     const { buildKit } = useBuildKit();
+    const pixelShift = usePixelShift();
 
     const countsFetched = useRef(false);
     const timesFetched = useRef(false);
@@ -247,7 +249,10 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     }
 
     return (
-        <div className="analytics-root">
+        // This screen is never blanked - it exists to be read from across the
+        // shop - so burn-in is handled by creeping the whole view a few pixels
+        // every few minutes instead.
+        <div className="analytics-root" style={pixelShift}>
             <div className="left-col">
                 {renderScheduleStatus()}
                 <div className="progress-list">{getProgress()}</div>

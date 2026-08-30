@@ -1,0 +1,62 @@
+.screensaver {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: none;
+}
+
+/* Drift the whole block slowly around the panel so no pixel holds the same
+   bright content for hours - the point of the screensaver on a shop display. */
+.screensaver-drift {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.2vh;
+    text-align: center;
+    /* Dimmed rather than hidden: the state stays readable from across the shop. */
+    opacity: 0.55;
+    animation: screensaverDrift 90s ease-in-out infinite alternate;
+}
+
+@keyframes screensaverDrift {
+    0%   { transform: translate(-22vw, -18vh) scale(0.95); }
+    25%  { transform: translate(20vw, -10vh) scale(1); }
+    50%  { transform: translate(18vw, 16vh) scale(0.97); }
+    75%  { transform: translate(-16vw, 12vh) scale(1.02); }
+    100% { transform: translate(-20vw, -14vh) scale(0.95); }
+}
+
+.screensaver-logo {
+    font-family: "Orbitron", monospace;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4vw;
+}
+
+.screensaver-logo #RT-part-one { font-size: clamp(20px, 2.2vw, 44px); }
+.screensaver-logo #RT-part-two { font-size: clamp(12px, 1vw, 22px); }
+
+.screensaver-pn {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(18px, 2vw, 36px);
+}
+
+.screensaver-timer {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(40px, 5.5vw, 96px);
+    line-height: 1;
+}
+
+.screensaver-timer.running { color: #27f546; }
+
+.screensaver-state,
+.screensaver-idle {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(12px, 1.1vw, 20px);
+    letter-spacing: 0.2em;
+}
