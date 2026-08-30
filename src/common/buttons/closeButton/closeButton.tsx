@@ -1,33 +1,13 @@
 import "./closeButton.css";
 
 function CloseButton() {
-
-    const execQuery = async (requestedQuery: string, params: unknown[] = []): Promise<any> => {
-    try {
-        const response = await fetch("http://localhost:5000/api/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: requestedQuery, params }),
-        });
-        const data = await response.json();
-
-        if (data.success === false) return false;
-        return data;
-    } catch (err: any) {
-        console.log(err);
-        return false;
-    }
-};
-
+    // Closing used to DROP the shared HARNBUILDTIMES_VIEW, which breaks any
+    // other station mid-query; the server recreates the view on every start, so
+    // the drop was never needed. Quitting now just quits - and the main
+    // process's before-quit handler writes a final heartbeat first, so a build
+    // closed mid-run keeps the time it earned and can be resumed on relaunch.
     return (
-        <button className="close-button" onClick={() => {
-            const handleClose = async() => {
-                await execQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW;`)
-                window.electron.quitApp()
-            }
-            handleClose()
-        }
-        }>
+        <button className="close-button" onClick={() => window.electron.quitApp()}>
             Close
         </button>
     );

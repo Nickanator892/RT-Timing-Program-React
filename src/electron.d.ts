@@ -13,7 +13,27 @@ interface Settings {
     users: User[];
 }
 
-export {};
+/** A build this station left open, found by the boot-time recovery scan. */
+export interface RecoveryCandidate {
+    status: "RECOVERABLE" | "STALE";
+    segmentId: number;
+    buildId: number;
+    startTime: string;
+    buildStartTime: string;
+    heartbeatAt: string | null;
+    heartbeatState: "RUN" | "PAUSE" | null;
+    segmentAccumSeconds: number;
+    buildAccumSeconds: number;
+    numberOfBuilders: number;
+    harnNumber: string;
+    REV: number;
+    builderId: number | null;
+    builderName: string | null;
+    timeTypeId: number;
+    hoursSinceHeartbeat: number;
+    stationId: string;
+    dbNow: string;
+}
 
 declare global {
     interface Window {
@@ -30,6 +50,15 @@ declare global {
             timerStart: () => void;
             timerPause: () => void;
             timerReset: () => void;
+            timerSegment: (info: { segmentId: number | null; segmentAccumSeconds?: number }) => void;
+            getRecovery: () => Promise<RecoveryCandidate | null>;
+            getSegmentSeconds: () => Promise<number>;
+            restoreTimer: (info: {
+                elapsedMs: number;
+                segmentId: number;
+                segmentAccumSeconds?: number;
+            }) => Promise<{ ok: boolean }>;
+            dismissRecovery: () => void;
             quitApp: () => void;
             runUpdater: () => Promise<void>;
         };

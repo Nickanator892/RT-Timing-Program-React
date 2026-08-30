@@ -1,11 +1,39 @@
 import express from "express";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import cors from "cors";
 import { Worker } from "worker_threads";
 
 const app = express();
 const port = 5000;
+
+// Every segment records the station that opened it. Recovery only ever scans -
+// and only ever writes to - rows belonging to THIS station, so two Pis can
+// never close each other's live work.
+const STATION_ID = os.hostname();
+
+/**
+ * Parse a 'YYYY-MM-DD HH:mm:ss' local stamp back to a Date, matching how
+ * nowLocal() wrote it. Never use SQL's julianday('now','localtime') against
+ * these: SQLite's idea of local time can differ from the process's by hours.
+ */
+function parseLocalStamp(s: string | null | undefined): Date | null {
+    if (!s) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(String(s).trim());
+    if (!m) return null;
+    const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+/** Local time as 'YYYY-MM-DD HH:mm:ss' - the format every timestamp column uses. */
+function nowLocal(): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
+        d.getMinutes()
+    )}:${p(d.getSeconds())}`;
+}
 
 app.use(
   cors({
@@ -53,11 +81,11 @@ function validateSQLitePath(candidate: string): void {
 // --------------------
 // Worker thread runner
 // --------------------
-function runQuery(query: string, params: any[] = []): Promise<any> {
+function runWorker(workerPayload: any): Promise<any> {
     return new Promise((resolve, reject) => {
       console.log("Worker path exists:", fs.existsSync(WORKER_PATH), WORKER_PATH);
         const worker = new Worker(WORKER_PATH, {
-            workerData: { dbPath, query, params },
+            workerData: { dbPath, ...workerPayload },
             env: {
                 ...process.env,
                 BETTER_SQLITE3_PATH: process.env.BETTER_SQLITE3_PATH ?? 'better-sqlite3'
@@ -78,6 +106,26 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     });
 }
 
+function runQuery(query: string, params: any[] = []): Promise<any> {
+    return runWorker({ query, params });
+}
+
+/** All-or-nothing. A statement may carry requireChanges to abort the batch. */
+function runTransaction(
+    statements: { query: string; params?: any[]; requireChanges?: number }[]
+): Promise<any> {
+    return runWorker({ statements });
+}
+
+/** Throws with the worker's message instead of returning a failure envelope. */
+async function mustRun(
+    statements: { query: string; params?: any[]; requireChanges?: number }[]
+): Promise<any[]> {
+    const out = await runTransaction(statements);
+    if (!out.success) throw new Error(out.error || "transaction failed");
+    return out.result;
+}
+
 // --------------------
 // Load DB path on startup
 // --------------------
@@ -93,21 +141,82 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
     dbPath = config.dbPath;
     console.log("Loaded DB path:", dbPath);
 
-    // Recreate (not IF NOT EXISTS) so an old definition in the DB gets
-    // replaced. The old h.* + aliased-aggregate shape looked right but never
-    // worked: better-sqlite3 does NOT merge duplicate column names - it
-    // suffixes the later ones (":1"), so consumers read h's always-NULL
-    // startTime/endTime and every chart duration came out 0. Explicit columns
-    // give the aggregate the real names, and GROUP BY harnBuildTimeId (the
-    // row id) keeps pause rows (same buildId, timeTypeId 4) from collapsing
-    // into their build row and randomly hijacking its timeTypeId.
-    await runQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW`)
-    // pausedSeconds: total recorded pause time for the build. Segments span
-    // wall-clock including pauses (the timer freezes on screen but the segment
-    // stays open), so consumers must subtract this - an overnight pause
-    // otherwise reads as an 18-hour build. The length guard skips legacy
-    // pause rows whose endTime was written time-only (unrecoverable).
-    await runQuery(`
+    await migrate();
+  } catch (err) {
+    console.warn("Saved DB path invalid, ignoring:", err);
+    dbPath = null;
+  }
+})();
+
+/** SQLite has no ADD COLUMN IF NOT EXISTS - check pragma first. Idempotent. */
+async function ensureColumn(table: string, column: string, decl: string) {
+  const info = await runQuery(
+    `SELECT COUNT(*) AS n FROM pragma_table_info('${table}') WHERE name = ?`,
+    [column]
+  );
+  if (info?.success && Number(info.result?.[0]?.n ?? 0) === 0) {
+    console.log(`migrate: adding ${table}.${column}`);
+    await runQuery(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
+}
+
+export const INTERRUPTED_PAUSE_REASON = "Interrupted (app closed)";
+
+async function migrate() {
+  // --- crash-recovery columns -------------------------------------------
+  // accumSeconds is the duration AUTHORITY: the main process's own elapsed
+  // counter, which is already pause-free because timer-pause freezes it. It is
+  // persisted by heartbeat, so a crash costs at most one cadence interval and
+  // always UNDER-credits - it can never inflate labour time.
+  await ensureColumn("HARNBUILDSEGMENTS", "accumSeconds", "INTEGER");
+  // heartbeatAt is the liveness authority: the last instant the app was proven
+  // alive on this segment. Recovery treats it as the moment the operator
+  // effectively stopped, and uses it as the pause start when resuming.
+  await ensureColumn("HARNBUILDSEGMENTS", "heartbeatAt", "TEXT");
+  await ensureColumn("HARNBUILDSEGMENTS", "heartbeatState", "TEXT"); // 'RUN' | 'PAUSE'
+  // The station that owns the segment. Recovery only ever scans and writes its
+  // OWN station's rows, so two Pis can never close each other's live work.
+  await ensureColumn("HARNBUILDSEGMENTS", "stationId", "TEXT");
+
+  // --- backfill: give historical closed segments an accumSeconds ---------
+  // Span minus the pauses that fall inside it, matching what the old
+  // span-based math produced, so existing chart values do not move.
+  await runQuery(`
+    UPDATE HARNBUILDSEGMENTS
+       SET accumSeconds = MAX(0, CAST(
+             (julianday(endTime) - julianday(startTime)) * 86400
+             - COALESCE((SELECT SUM((julianday(p.endTime) - julianday(p.startTime)) * 86400)
+                           FROM HARNBUILDTIMES p
+                          WHERE p.buildId = HARNBUILDSEGMENTS.buildId
+                            AND p.timeTypeId = 4
+                            AND p.startTime IS NOT NULL AND p.endTime IS NOT NULL
+                            AND length(p.endTime) > 8
+                            AND p.startTime >= HARNBUILDSEGMENTS.startTime
+                            AND p.startTime <  HARNBUILDSEGMENTS.endTime), 0) AS INTEGER))
+     WHERE accumSeconds IS NULL
+       AND COALESCE(endTime, '') <> '' AND length(endTime) > 8
+       AND COALESCE(startTime, '') <> ''
+  `);
+
+  await runQuery(
+    `INSERT INTO HARNBUILDPAUSEREASONS (reason_name, active)
+     SELECT ?, 1 WHERE NOT EXISTS (SELECT 1 FROM HARNBUILDPAUSEREASONS WHERE reason_name = ?)`,
+    [INTERRUPTED_PAUSE_REASON, INTERRUPTED_PAUSE_REASON]
+  );
+
+  // Recreate (not IF NOT EXISTS) so an old definition in the DB gets
+  // replaced. The old h.* + aliased-aggregate shape looked right but never
+  // worked: better-sqlite3 does NOT merge duplicate column names - it
+  // suffixes the later ones (":1"), so consumers read h's always-NULL
+  // startTime/endTime and every chart duration came out 0. Explicit columns
+  // give the aggregate the real names, and GROUP BY harnBuildTimeId (the
+  // row id) keeps pause rows (same buildId, timeTypeId 4) from collapsing
+  // into their build row and randomly hijacking its timeTypeId.
+  //
+  // -- HBTV v3 (keep byte-identical with the copy in HPP's
+  //             BuildTimerScheduleForm.EnsureTimingTables; bump both together)
+  await runQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW`);
+  await runQuery(`
       CREATE VIEW HARNBUILDTIMES_VIEW AS
       SELECT
           h.harnBuildTimeId,
@@ -120,6 +229,8 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
           h.numberOfBuilders,
           MIN(s.startTime) as startTime,
           MAX(s.endTime) as endTime,
+          SUM(CASE WHEN COALESCE(s.endTime, '') = '' THEN 1 ELSE 0 END) AS openSegments,
+          SUM(COALESCE(s.accumSeconds, 0)) AS workedSeconds,
           (SELECT COALESCE(SUM((julianday(p.endTime) - julianday(p.startTime)) * 86400), 0)
              FROM HARNBUILDTIMES p
             WHERE p.buildId = h.buildId
@@ -130,12 +241,15 @@ function runQuery(query: string, params: any[] = []): Promise<any> {
       FROM HARNBUILDTIMES h
       LEFT JOIN HARNBUILDSEGMENTS s ON h.buildId = s.buildId
       GROUP BY h.harnBuildTimeId
-    `)
-  } catch (err) {
-    console.warn("Saved DB path invalid, ignoring:", err);
-    dbPath = null;
-  }
-})();
+  `);
+  // workedSeconds must NEVER have pausedSeconds subtracted from it:
+  // accumSeconds is already pause-free, so subtracting would double-count
+  // every pause. pausedSeconds stays exported for display only.
+  // openSegments is the in-progress flag: MAX(endTime) alone cannot express it
+  // because SQLite ranks '' below every timestamp, so a build with one closed
+  // and one open segment reports the closed stamp and reads as finished.
+  console.log("migrate: schema and view up to date");
+}
 
 // --------------------
 // Routes
@@ -152,6 +266,174 @@ app.get("/api/db-status", (_req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.json({ ready: false, error: message });
+  }
+});
+
+// --------------------
+// Crash recovery
+// --------------------
+
+/**
+ * Persist how much this segment has earned so far, and prove the app is alive.
+ * Fire-and-forget from the main process; a failure must never disturb the timer.
+ */
+app.post("/api/heartbeat", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const { segmentId, accumSeconds, state } = req.body ?? {};
+  if (!segmentId) return res.status(400).json({ success: false, error: "segmentId is required" });
+  try {
+    // accumSeconds only ever moves forward: a stale/duplicate heartbeat can
+    // never claw back time the operator actually worked.
+    const out = await runQuery(
+      `UPDATE HARNBUILDSEGMENTS
+          SET heartbeatAt = ?, heartbeatState = ?,
+              accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
+              stationId = COALESCE(stationId, ?)
+        WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
+      [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId]
+    );
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * The one open segment this station left behind, if any. Station-scoped: a Pi
+ * must never see - let alone touch - another station's live work.
+ * Returns { recovery: null } when there is nothing to recover.
+ */
+app.get("/api/recovery/scan", async (_req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  try {
+    const out = await runQuery(
+      `SELECT s.segmentId, s.buildId, s.startTime, s.heartbeatAt, s.heartbeatState,
+              COALESCE(s.accumSeconds, 0)  AS segmentAccumSeconds,
+              s.numberOfBuilders,
+              b.harnNumber, h.REV, h.builderId, h.timeTypeId,
+              bl.userName AS builderName,
+              (SELECT COALESCE(SUM(COALESCE(accumSeconds, 0)), 0)
+                 FROM HARNBUILDSEGMENTS WHERE buildId = s.buildId) AS buildAccumSeconds,
+              (SELECT MIN(startTime) FROM HARNBUILDSEGMENTS WHERE buildId = s.buildId) AS buildStartTime
+         FROM HARNBUILDSEGMENTS s
+         JOIN HARNBUILDS       b  ON b.buildId = s.buildId
+         JOIN HARNBUILDTIMES   h  ON h.buildId = s.buildId AND h.timeTypeId <> 4
+    LEFT JOIN HARNBUILDERS     bl ON bl.Id = h.builderId
+        WHERE COALESCE(s.endTime, '') = ''
+          AND s.stationId = ?
+        ORDER BY s.segmentId DESC
+        LIMIT 1`,
+      [STATION_ID]
+    );
+    if (!out?.success) return res.status(500).json(out);
+    const row = out.result?.[0];
+    if (!row) return res.json({ success: true, recovery: null });
+
+    // Age is computed with the SAME clock that wrote the timestamp. SQLite's
+    // julianday('now','localtime') can disagree with the process's local time by
+    // hours (observed: 6), which made a fresh crash look like it happened in
+    // the future and could equally hide a genuinely stale one.
+    const beat = parseLocalStamp(row.heartbeatAt) ?? parseLocalStamp(row.startTime);
+    const hoursSinceHeartbeat = beat ? (Date.now() - beat.getTime()) / 3_600_000 : Number.NaN;
+
+    // Legacy rows (pre-heartbeat) can only be credited what the operator can
+    // vouch for, so they are surfaced but never auto-restored. A negative age
+    // means the clock moved backwards (a Pi has no RTC and may not have reached
+    // NTP yet) - treat that as unknown rather than fresh.
+    const status =
+      !row.heartbeatAt || !Number.isFinite(hoursSinceHeartbeat) || hoursSinceHeartbeat < -0.1 || hoursSinceHeartbeat > 12
+        ? "STALE"
+        : "RECOVERABLE";
+    res.json({
+      success: true,
+      recovery: { ...row, hoursSinceHeartbeat, status, stationId: STATION_ID },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * Start a build. One transaction so a crash can never leave a half-built
+ * record: the recovery scan JOINs all three tables, so a torn start would be
+ * invisible to it and its time unrecoverable.
+ */
+app.post("/api/build/start", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime } = req.body ?? {};
+  if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
+  const start = startTime || nowLocal();
+  const builders = Math.max(1, Number(numberOfBuilders) || 1);
+  try {
+    const first = await mustRun([
+      { query: `INSERT INTO HARNBUILDS (harnNumber) VALUES (?)`, params: [harnNumber], requireChanges: 1 },
+    ]);
+    const buildId = Number(first[0].lastID);
+    const rest = await mustRun([
+      {
+        query: `INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders)
+                VALUES (?, ?, ?, ?, ?, ?)`,
+        params: [buildId, harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders],
+        requireChanges: 1,
+      },
+      {
+        query: `INSERT INTO HARNBUILDSEGMENTS
+                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId)
+                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?)`,
+        params: [buildId, start, builders, start, STATION_ID],
+        requireChanges: 1,
+      },
+      ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
+        query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
+        params: [buildId, id],
+      })),
+    ]);
+    res.json({ success: true, result: { buildId, segmentId: Number(rest[1].lastID), startTime: start } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * Close the current segment and open its replacement atomically (used when the
+ * builder roster changes mid-build). Between the two statements the build has
+ * NO open segment, and RtMcs's timer sweep reads that as a finished build and
+ * proposes consuming inventory for it - hence one transaction.
+ */
+app.post("/api/build/segment-roll", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds } = req.body ?? {};
+  if (!buildId || !segmentId) {
+    return res.status(400).json({ success: false, error: "buildId and segmentId are required" });
+  }
+  const now = nowLocal();
+  const builders = Math.max(1, Number(numberOfBuilders) || 1);
+  try {
+    const out = await mustRun([
+      {
+        query: `UPDATE HARNBUILDSEGMENTS
+                   SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?), heartbeatAt = ?
+                 WHERE segmentId = ? AND COALESCE(endTime, '') = '' AND stationId = ?`,
+        params: [now, Math.max(0, Math.floor(Number(accumSeconds) || 0)), now, segmentId, STATION_ID],
+        requireChanges: 1,
+      },
+      {
+        query: `INSERT INTO HARNBUILDSEGMENTS
+                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId)
+                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?)`,
+        params: [buildId, now, builders, now, STATION_ID],
+        requireChanges: 1,
+      },
+      { query: `UPDATE HARNBUILDTIMES SET numberOfBuilders = ? WHERE buildId = ?`, params: [builders, buildId] },
+      { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
+      ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
+        query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
+        params: [buildId, id],
+      })),
+    ]);
+    res.json({ success: true, result: { segmentId: Number(out[1].lastID), startTime: now } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
   }
 });
 

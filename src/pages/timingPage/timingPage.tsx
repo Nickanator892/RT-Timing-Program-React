@@ -64,6 +64,10 @@ function TimingPage({
     const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
+    // The segment rows are what carry the time; targeting them by id (rather
+    // than by "whichever one is open") is what makes recovery and multi-segment
+    // builds safe to close.
+    const [currentSegmentId, setCurrentSegmentId] = useSharedState<number>("currentSegmentId", 0);
     // Batch mode: one timed window covers `batchUnits` physical units of the PN
     // (e.g. stripping every cable for all harnesses at once). No rows are
     // written at start - submit slices the window across the units.
@@ -96,42 +100,27 @@ useEffect(() => {
     // recorded when submit writes the distributed rows.
     if (batchMode) return;
 
-    // handleBuilderChange - use HARNBUILDSEGMENTS instead of HARNBUILDTIMES
+    // handleBuilderChange - close the live segment and open its replacement in
+    // ONE transaction. Between those two writes the build has no open segment,
+    // and RtMcs's timer sweep reads that as a finished build and proposes
+    // consuming inventory for it.
     async function handleBuilderChange() {
         window.electron.timerPause();
         setIsRunning(false);
 
-        const segmentEnd = formatTimestamp(new Date().toISOString());
-
-        // Close current segment
-        await execQuery(
-            "UPDATE HARNBUILDSEGMENTS SET endTime=? WHERE buildId=? AND startTime=?",
-            [segmentEnd, currentBuildId, currentSegmentStart]
-        );
-
-        // Open new segment
-        const newSegmentStart = formatTimestamp(new Date().toISOString());
-        setCurrentSegmentStart(newSegmentStart);
-        await execQuery(
-            "INSERT INTO HARNBUILDSEGMENTS (buildId, startTime, endTime, numberOfBuilders) VALUES(?, ?, ?, ?)",
-            [currentBuildId, newSegmentStart, "", secondaryBuilders.length + 1]
-        );
-
-        // Update HARNBUILDTIMES numberOfBuilders to reflect current count
-        await execQuery(
-            "UPDATE HARNBUILDTIMES SET numberOfBuilders=? WHERE buildId=?",
-            [secondaryBuilders.length + 1, currentBuildId]
-        );
-
-        // Refresh secondary builders
-        await execQuery("DELETE FROM SECONDARYBUILDERS WHERE buildId=?", [currentBuildId]);
-        if (secondaryBuilders.length > 0) {
-            for (const builder of secondaryBuilders) {
-                await execQuery(
-                    "INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)",
-                    [currentBuildId, builder.Id]
-                );
-            }
+        try {
+            const rolled = await postApi("/api/build/segment-roll", {
+                buildId: currentBuildId,
+                segmentId: currentSegmentId,
+                accumSeconds: await window.electron.getSegmentSeconds(),
+                numberOfBuilders: secondaryBuilders.length + 1,
+                secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+            });
+            setCurrentSegmentStart(rolled.startTime);
+            setCurrentSegmentId(rolled.segmentId);
+            window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
+        } catch (e: any) {
+            setErr(`Could not record the builder change: ${e?.message ?? e}`);
         }
 
         window.electron.timerStart();
@@ -192,6 +181,27 @@ useEffect(() => {
         }
     };
 
+    /** Transactional endpoints (build start / segment roll). Throws on failure
+     *  so a half-written build can never be mistaken for a started one. */
+    const postApi = async (route: string, body: unknown): Promise<any> => {
+        const response = await fetch(`http://localhost:5000${route}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!data?.success) throw new Error(data?.error || `${route} failed`);
+        return data.result;
+    };
+
+    // A build restored after a crash arrives mid-flight: it is not "done", the
+    // clock already shows earned time, and Submit must be available without
+    // pressing End first.
+    useEffect(() => {
+        if (!timerDone && !isRunning && displayTimer !== "00:00:00") setDisableSubmit(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     async function insertPause() {
         const pauseEnd = formatTimestamp(new Date().toISOString());
         if (sharedPauseReason) {
@@ -251,31 +261,30 @@ useEffect(() => {
             // submit, when the total window and unit count are known.
             if (batchMode) return;
 
-            // The insert's own lastID - a MAX(buildId) round trip races when two
-            // stations start builds at the same time.
-            const insertData = await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [selectedHarn]);
-            const buildId = Number(insertData?.result?.lastID ?? 0);
-            setCurrentBuildId(buildId);
-
-            // One row in HARNBUILDTIMES — no startTime/endTime here anymore
-            await execQuery(
-                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-                [buildId, selectedHarn, buildKit?.REV, selectedUser?.Id, timerMode.id, secondaryBuilders.length + 1]
-            );
-
-            // First segment
-            await execQuery(
-                "INSERT INTO HARNBUILDSEGMENTS (buildId, startTime, endTime, numberOfBuilders) VALUES(?, ?, ?, ?)",
-                [buildId, startTime, "", secondaryBuilders.length + 1]
-            );
-
-            if (secondaryBuilders.length > 0) {
-                for (const builder of secondaryBuilders) {
-                    await execQuery(
-                        "INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)",
-                        [buildId, builder.Id]
-                    );
-                }
+            // One transaction: a crash between these inserts used to leave a
+            // build row with no segment, which carries no time and is invisible
+            // to the recovery scan.
+            try {
+                const created = await postApi("/api/build/start", {
+                    harnNumber: selectedHarn,
+                    rev: buildKit?.REV,
+                    builderId: selectedUser?.Id,
+                    timeTypeId: timerMode.id,
+                    numberOfBuilders: secondaryBuilders.length + 1,
+                    secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+                    startTime,
+                });
+                setCurrentBuildId(created.buildId);
+                setCurrentSegmentId(created.segmentId);
+                // Point the heartbeat at the new segment.
+                window.electron.timerSegment({ segmentId: created.segmentId, segmentAccumSeconds: 0 });
+            } catch (e: any) {
+                // Fail loudly: previously every write error here was swallowed
+                // and the operator timed a build that was never recorded.
+                window.electron.timerPause();
+                setIsRunning(false);
+                setTimerDone(true);
+                setErr(`Could not start the build: ${e?.message ?? e}`);
             }
             return;
         }

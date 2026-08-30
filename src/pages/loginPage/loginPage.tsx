@@ -2,7 +2,7 @@ import "./loginPage.css";
 import type React from "react";
 import useSettings from "../../hooks/useSettings";
 import { useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import RTLogo from "../../components/RTLogo/RTLogo";
 
 interface User {
@@ -23,7 +23,19 @@ function LoginPage({ setUser }: loginProps) {
     const [disablePassword, setDisablePassword] = useState<boolean>(true);
     const [localSelectedUser, setLocalSelectedUser] = useState<User>();
     const [err, setErr] = useState<string | undefined>();
+    // Set at boot by the main process when this station left a build open.
+    const [recovery, setRecovery] = useState<any>(null);
     const nav = useNavigate();
+
+    useEffect(() => {
+        window.electron.getRecovery().then(setRecovery).catch(() => setRecovery(null));
+    }, []);
+
+    /** An interrupted build needs a logged-in builder before anything is
+     *  written, so recovery is offered on the way through login. */
+    function afterLogin() {
+        nav(recovery ? "/recover" : "/choose-kit");
+    }
 
     const [currentPage, setCurrentPage] = useState(0);
     const itemsPerPage = 3;
@@ -47,7 +59,7 @@ function LoginPage({ setUser }: loginProps) {
         if (password == localSelectedUser?.password) {
             setUser(localSelectedUser);
             setTimeout(() => {
-                nav("/choose-kit");
+                afterLogin();
             }, 500);
         } else {
             setErr("Incorrect password");
@@ -89,6 +101,14 @@ function LoginPage({ setUser }: loginProps) {
     return (
         <div className="login-page">
             <h2 className="login-header">Select Builder</h2>
+            {recovery && (
+                <div className="login-recovery-banner">
+                    Unfinished build found: <strong>{recovery.harnNumber}</strong>
+                    {recovery.builderName ? ` - started by ${recovery.builderName}` : ""}
+                    {recovery.heartbeatAt ? `, last active ${recovery.heartbeatAt}` : ""}. Log in to
+                    restore it.
+                </div>
+            )}
             <RTLogo />
             <div id="users-list">{populateUserList()}</div>
             {!disablePassword && (

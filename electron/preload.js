@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld("electron", {
     timerPause: () => ipcRenderer.send("timer-pause"),
     timerReset: () => ipcRenderer.send("timer-reset"),
 
+    // Crash recovery
+    timerSegment: (info) => ipcRenderer.send("timer-segment", info),
+    getRecovery: () => ipcRenderer.invoke("get-recovery"),
+    getSegmentSeconds: () => ipcRenderer.invoke("get-segment-seconds"),
+    restoreTimer: (info) => ipcRenderer.invoke("restore-timer", info),
+    dismissRecovery: () => ipcRenderer.send("dismiss-recovery"),
+
     // Window management
     openAnalyticsWindow: () => ipcRenderer.send("open-analytics-window"),
     quitApp: () => ipcRenderer.send("quit-app"),

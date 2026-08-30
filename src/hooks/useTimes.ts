@@ -9,6 +9,12 @@ export interface LoggedTime {
     dateBuilt: string;
     /** Total recorded pause time within the build's wall-clock span. */
     pausedSeconds?: number;
+    /** Sum of per-segment worked seconds. Already pause-free - never subtract
+     *  pausedSeconds from it. Gap-safe, so a build interrupted overnight and
+     *  resumed the next morning reports the work, not the wall clock. */
+    workedSeconds?: number;
+    /** Segments still open; > 0 means the build is in progress. */
+    openSegments?: number;
 }
 
 export interface HarnCount {
@@ -43,14 +49,16 @@ export function useTimes() {
         }
     };
 
-    // Completed builds only (open endTime = a run still in progress): an
-    // in-progress build otherwise charts as a 0-minute point and bumps the
-    // built counts the moment its timer starts - the live run is already
-    // represented by the "Current" line on the chart.
+    // Completed builds only. openSegments (not endTime) is the in-progress
+    // test: SQLite ranks '' below every timestamp, so MAX(endTime) on a build
+    // with one closed and one open segment returns the closed stamp and the
+    // build reads as finished - which is exactly the shape a recovered build
+    // has. An in-progress build otherwise charts as a 0-minute point and bumps
+    // the built counts; the live run is already shown by the "Current" line.
     async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
         const result = await execQuery(
-            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND COALESCE(endTime, '') != '' ORDER BY startTime ASC",
+            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND openSegments = 0 ORDER BY startTime ASC",
             [harnNumber, timeTypeId]
         );
         if (Array.isArray(result)) {
@@ -61,7 +69,7 @@ export function useTimes() {
 
     async function fetchAllTimes(REV: number | undefined, timeTypeId: number): Promise<HarnCount[]> {
         const result = await execQuery(
-            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND COALESCE(endTime, '') != '' GROUP BY harnNumber",
+            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND openSegments = 0 GROUP BY harnNumber",
             [REV, timeTypeId]
         );
         return Array.isArray(result)
@@ -72,18 +80,42 @@ export function useTimes() {
             : [];
     }
 
+    /**
+     * Close the build's final segment. Targets the segment by id rather than
+     * "whichever one is open": a build can legitimately have several segments,
+     * and the blanket form stamped every open one with the same end time.
+     * Returns false (and reports it) when nothing matched, so a submit against
+     * a lost id fails visibly instead of showing Success over an open segment.
+     */
     async function writeTime(time: Partial<LoggedTime>, buildId: number, userId: number | undefined) {
+        if (!userId) return false;
         try {
-            if (userId) {
-                // Close the final segment
-                const result = await execQuery(
-                    "UPDATE HARNBUILDSEGMENTS SET endTime=? WHERE buildId=? AND endTime=''",
-                    [time.endTime, buildId]
-                );
-                return result;
+            const accumSeconds = await window.electron.getSegmentSeconds();
+            const segmentId = Number((await window.electron.getSharedData())?.currentSegmentId ?? 0);
+            const result = segmentId
+                ? await execQuery(
+                      `UPDATE HARNBUILDSEGMENTS
+                          SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?)
+                        WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
+                      [time.endTime, accumSeconds, segmentId]
+                  )
+                : await execQuery(
+                      // Pre-recovery builds started before this release have no
+                      // segment id in shared state; fall back to the old form.
+                      `UPDATE HARNBUILDSEGMENTS
+                          SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?)
+                        WHERE buildId = ? AND COALESCE(endTime, '') = ''`,
+                      [time.endTime, accumSeconds, buildId]
+                  );
+            const changes = Number((result as any)?.changes ?? 0);
+            if (!changes) {
+                console.error("writeTime matched no open segment", { buildId, segmentId });
+                return false;
             }
+            return result;
         } catch (err: any) {
             console.log(err);
+            return false;
         }
     }
 

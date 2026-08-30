@@ -105,18 +105,22 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             if (Array.isArray(result)) {
                 setTimes(
                     result.map((t: LoggedTime) => {
-                        // parseTimestamp handles both the current and the legacy
-                        // timestamp formats - new Date() alone returned Invalid
-                        // Date for legacy rows, making every duration NaN and
-                        // leaving completed builds off the chart.
-                        const start = parseTimestamp(t.startTime);
-                        const end = parseTimestamp(t.endTime);
-                        // Segments span wall-clock including pauses; subtract the
-                        // recorded pause time so an overnight Break doesn't read
-                        // as an 18-hour build.
-                        const gross =
-                            start && end ? Math.round((end.getTime() - start.getTime()) / 1000) : 0;
-                        const seconds = Math.max(0, gross - Math.round(Number(t.pausedSeconds ?? 0)));
+                        // workedSeconds sums the per-segment worked time, which
+                        // is already pause-free and immune to gaps between
+                        // segments (a build interrupted overnight and resumed
+                        // the next morning). Never subtract pausedSeconds from
+                        // it - that would deduct every pause twice.
+                        // The span fallback covers rows written before this
+                        // release, using the tolerant parser because the legacy
+                        // dd/mm/yyyy format is not parseable by new Date().
+                        let seconds = Math.round(Number(t.workedSeconds ?? 0));
+                        if (!seconds) {
+                            const start = parseTimestamp(t.startTime);
+                            const end = parseTimestamp(t.endTime);
+                            const gross =
+                                start && end ? Math.round((end.getTime() - start.getTime()) / 1000) : 0;
+                            seconds = Math.max(0, gross - Math.round(Number(t.pausedSeconds ?? 0)));
+                        }
                         const h = Math.floor(seconds / 3600);
                         const m = Math.floor((seconds % 3600) / 60);
                         const s = seconds % 60;
