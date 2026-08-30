@@ -1,0 +1,79 @@
+/* Touchscreen keyboard. Fixed to the bottom of the screen, above everything,
+   with finger-sized keys (the Pi panel is driven by hand, often gloved). */
+.osk {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10000;
+    background: #101010;
+    border-top: 3px solid #555;
+    padding: 0.8vh 1vw 1.2vh 1vw;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+    animation: oskSlideUp 0.12s ease-out;
+}
+
+@keyframes oskSlideUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+}
+
+.osk-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7vh;
+    width: 100%;
+    max-width: 1100px;
+}
+
+.osk-row {
+    display: flex;
+    flex-direction: row;
+    gap: 0.6vw;
+    justify-content: center;
+}
+
+.osk-key {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(16px, 1.7vw, 28px);
+    min-width: 4.2vw;
+    min-height: 7vh;
+    flex: 1 1 0;
+    border-radius: 10px;
+    border: 2px solid #666;
+    background: #1e1e1e;
+    color: white;
+    /* No tap highlight / text selection when hammered by a finger. */
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+
+.osk-key:active {
+    background: #3a3a3a;
+    transform: translateY(2px);
+}
+
+.osk-key.osk-active {
+    background: #2f4f2f;
+    border-color: #27f546;
+}
+
+.osk-wide { flex: 1.6 1 0; }
+.osk-space { flex: 4 1 0; }
+
+.osk-enter {
+    flex: 2 1 0;
+    border-color: #27f546;
+    color: #27f546;
+}
+
+.osk-enter:active {
+    background: green;
+    color: white;
+}
+
+/* The numeric pad is a phone-style block rather than a full-width strip. */
+.osk-numeric .osk-rows { max-width: 460px; }
+.osk-numeric .osk-key { min-width: 8vw; }

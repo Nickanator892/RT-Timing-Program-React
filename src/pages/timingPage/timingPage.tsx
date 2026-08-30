@@ -17,7 +17,10 @@ import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import CloseButton from "../../common/buttons/closeButton/closeButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
-import { writeDistributedTimes } from "../../assets/timeDistribution";
+import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
+
+/** Must match the seeded reason name in the backend migration. */
+const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
 
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
@@ -202,6 +205,76 @@ useEffect(() => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // --- QuickBooks Time clock link -------------------------------------
+    // A builder who is opted in (HARNBUILDERS.qbAutoPause) cannot be timed
+    // while clocked out: a running build pauses itself, and Start is blocked
+    // until they clock back in. Clocking IN never auto-resumes - being back on
+    // the clock does not mean they are back on this harness.
+    const CLOCK_POLL_MS = 30_000;
+    const CLOCK_STALE_MS = 3 * 60_000; // poller runs every 30s; 3 min = clearly dead
+    const [clockBlocked, setClockBlocked] = useState(false);
+    const autoPausedRef = useRef(false);
+
+    useEffect(() => {
+        if (!selectedUser?.Id) return;
+        let cancelled = false;
+
+        async function checkClock() {
+            const data = await execQuery(
+                `SELECT b.qbAutoPause, b.qbTimeUserId, s.onTheClock, p.lastPollAt,
+                        (SELECT Id FROM HARNBUILDPAUSEREASONS WHERE reason_name = ? LIMIT 1) AS reasonId
+                   FROM HARNBUILDERS b
+              LEFT JOIN QBTIMESTATUS s ON s.qbTimeUserId = b.qbTimeUserId
+              LEFT JOIN QBTIMEPOLL   p ON p.id = 1
+                  WHERE b.Id = ?`,
+                [CLOCKED_OUT_REASON, selectedUser!.Id]
+            );
+            if (cancelled) return;
+            const row = data?.result?.[0];
+            if (!row || Number(row.qbAutoPause) !== 1 || !row.qbTimeUserId) {
+                setClockBlocked(false);
+                return;
+            }
+
+            // If the poller has stopped, clock state is unknown. Unknown must
+            // never read as "clocked out" - that would pause the whole floor
+            // the moment the poller or the network hiccups.
+            const polled = parseTimestamp(row.lastPollAt);
+            if (!polled || Date.now() - polled.getTime() > CLOCK_STALE_MS) {
+                setClockBlocked(false);
+                return;
+            }
+
+            const offTheClock = Number(row.onTheClock) === 0;
+            setClockBlocked(offTheClock);
+
+            if (offTheClock && isRunning && !timerDone && !autoPausedRef.current) {
+                autoPausedRef.current = true;
+                window.electron.timerPause();
+                setIsRunning(false);
+                setPauseStart(formatTimestamp(new Date().toISOString()));
+                setEndTime(formatTimestamp(new Date().toISOString()));
+                // Preset the reason so the existing resume path writes a proper
+                // pause row without sending the operator to the reason screen.
+                if (row.reasonId) {
+                    window.electron.updateSharedData({
+                        pauseReason: { Id: String(row.reasonId), name: CLOCKED_OUT_REASON },
+                    });
+                }
+                setErr(`${selectedUser!.name} clocked out of QuickBooks - timer paused`);
+            }
+            if (!offTheClock) autoPausedRef.current = false;
+        }
+
+        checkClock();
+        const id = window.setInterval(checkClock, CLOCK_POLL_MS);
+        return () => {
+            cancelled = true;
+            window.clearInterval(id);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedUser?.Id, isRunning, timerDone]);
+
     async function insertPause() {
         const pauseEnd = formatTimestamp(new Date().toISOString());
         if (sharedPauseReason) {
@@ -232,6 +305,10 @@ useEffect(() => {
 
     async function startTimer() {
         if (isRunning) return;
+        if (clockBlocked) {
+            setErr(`${selectedUser?.name ?? "This builder"} is clocked out of QuickBooks - clock in to start timing`);
+            return;
+        }
         window.electron.timerStart();
         if (pauseStart) {
             if (batchMode && !timerDone) {
@@ -428,9 +505,15 @@ useEffect(() => {
                     id="start-button"
                     className={activeButton === "start" ? "pressed" : ""}
                     onClick={() => handleButtonClick("start")}
-                    disabled={disableButtons}
+                    disabled={disableButtons || clockBlocked}
                 >
-                    {isRunning ? "Running" : displayTimer === "00:00:00" ? "Start" : "Resume"}
+                    {clockBlocked
+                        ? "Clocked Out"
+                        : isRunning
+                        ? "Running"
+                        : displayTimer === "00:00:00"
+                        ? "Start"
+                        : "Resume"}
                 </button>
                 <button
                     id="pause-button"

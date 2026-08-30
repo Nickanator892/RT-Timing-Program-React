@@ -7,6 +7,16 @@
     background: #111;
     box-sizing: border-box;
     color: white;
+    /* usePixelShift creeps this whole element a few pixels every few minutes to
+       stop static content etching into the panel. transform-origin centre so the
+       accompanying slight scale-down leaves an even margin on all sides. */
+    transform-origin: center center;
+}
+
+/* The sliver revealed at the trailing edge as the view creeps must match the
+   screen, or the shift would show as a bright line. */
+body:has(.analytics-root) {
+    background: #111;
 }
 
 .left-col {

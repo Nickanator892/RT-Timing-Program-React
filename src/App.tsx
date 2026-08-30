@@ -13,6 +13,8 @@ import AnalyticsPage from "./pages/analyticsPage/analyticsPage";
 import ChooseHarnPage from "./pages/chooseHarnPage/chooseHarnPage";
 import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 import RecoveryPage from "./pages/recoveryPage/recoveryPage";
+import OnScreenKeyboard from "./common/onScreenKeyboard/onScreenKeyboard";
+import Screensaver from "./common/screensaver/screensaver";
 
 const API_BASE = "http://localhost:5000";
 
@@ -85,6 +87,10 @@ function TimerLayout() {
                 <Route path="/choose-kit" element={<ChooseKitPage />} />
                 <Route path="/recover" element={<RecoveryPage setPauseStart={setPauseStart} />} />
             </Routes>
+            {/* Mounted once for the whole app: the panel has no physical
+                keyboard, and the screen would otherwise burn in overnight. */}
+            <OnScreenKeyboard />
+            <Screensaver />
         </>
     );
 }
@@ -111,7 +117,15 @@ function App() {
     }, [checkDbStatus]);
 
     if (dbReady === null) return <p>Checking database...</p>;
-    if (!dbReady) return <DatabaseSetup onDbSet={checkDbStatus} />;
+    // The keyboard is mounted here too: the database path has to be typed on a
+    // panel with no physical keyboard, before the rest of the app exists.
+    if (!dbReady)
+        return (
+            <>
+                <DatabaseSetup onDbSet={checkDbStatus} />
+                <OnScreenKeyboard />
+            </>
+        );
 
     return <TimerLayout />;
 }

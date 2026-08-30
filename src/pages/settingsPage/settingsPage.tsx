@@ -11,6 +11,11 @@ import { UserRoundCheck, UserRoundX, ListCheck, ListX } from "lucide-react";
 import { useSharedState } from "../../hooks/useSharedState";
 import CheckForUpdateElement from "../../common/buttons/checkForUpdateButton/checkForUpdateElement";
 import { timerModes } from "../../common/timerModeDropdown/timerModeDropdown";
+import {
+    SCREENSAVER_KEY,
+    readScreensaverMinutes,
+} from "../../common/screensaver/screensaver";
+import QbTimeMapping from "../../common/qbTimeMapping/qbTimeMapping";
 import { writeDistributedTimes } from "../../assets/timeDistribution";
 import { useBuildKit } from "../../hooks/useBuildKit";
 
@@ -51,6 +56,10 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
     const [manualUnits, setManualUnits] = useState<string>("");
     const [manualBuilders, setManualBuilders] = useState<string>("1");
     const [manualMsg, setManualMsg] = useState<string>("");
+    // Per-station display setting, so it lives on the station rather than in the
+    // shared database where it would apply to every Pi at once.
+    const [screensaverMins, setScreensaverMins] = useState<string>(String(readScreensaverMinutes()));
+    const [showQbTime, setShowQbTime] = useState(false);
     const itemsPerPage = 4;
     const startIndex = currentPage * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
@@ -393,6 +402,39 @@ function SettingsPage({ selectedUser }: settingsPageProps) {
                         Next
                     </button>
                 </div>
+            </div>
+            {showQbTime && <QbTimeMapping onClose={() => setShowQbTime(false)} />}
+            <div className="screensaver-setting">
+                <h2>Screen</h2>
+                <button
+                    type="button"
+                    id="qbtime-open"
+                    onClick={() => {
+                        // Same privilege bar as user management: this decides
+                        // whose timer the clock is allowed to stop.
+                        if (!validatePriv(2)) return;
+                        setShowQbTime(true);
+                    }}
+                >
+                    QuickBooks Time...
+                </button>
+                <label>
+                    Dim the screen after
+                    <input
+                        type="number"
+                        id="screensaver-minutes"
+                        min={0}
+                        value={screensaverMins}
+                        onChange={(e) => {
+                            setScreensaverMins(e.target.value);
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n) && n >= 0) {
+                                localStorage.setItem(SCREENSAVER_KEY, String(Math.floor(n)));
+                            }
+                        }}
+                    />
+                    minutes of no touch (0 = never)
+                </label>
             </div>
             <div className="manual-time-entry">
                 <h2>Manual Time Entry</h2>
