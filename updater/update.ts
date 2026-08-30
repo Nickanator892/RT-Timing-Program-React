@@ -1,11 +1,41 @@
 import { execSync, exec, spawn } from "child_process";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import ora from "ora";
 
 const serverPort = 5000;
 // The repo clone this script runs from (updater/ -> clone root).
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MODULE_TARGET =
+    "/opt/rt-timing/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node";
+
+// Single-instance lock: the boot-time service and the Settings-tab updater can
+// run concurrently, and the loser's `dpkg -i` overwrites the winner's rebuilt
+// module with the .deb's unusable one (seen 2026-08-27). mkdir is atomic; a
+// lock older than 30 minutes is treated as stale (crashed run).
+const LOCK_DIR = "/tmp/rt-timing-updater.lock";
+function acquireLock(): boolean {
+    try {
+        fs.mkdirSync(LOCK_DIR);
+        return true;
+    } catch {
+        try {
+            const ageMs = Date.now() - fs.statSync(LOCK_DIR).mtimeMs;
+            if (ageMs > 30 * 60 * 1000) {
+                fs.rmdirSync(LOCK_DIR);
+                fs.mkdirSync(LOCK_DIR);
+                return true;
+            }
+        } catch {}
+        return false;
+    }
+}
+function releaseLock() {
+    try {
+        fs.rmdirSync(LOCK_DIR);
+    } catch {}
+}
 
 function run(command: string, cwd?: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -82,44 +112,72 @@ async function installFiles(newVersion: any) {
     }
 }
 
+/** dlopen the EXACT file - a bare require() can resolve a different copy of
+ *  the module and pass while the file we are about to ship does not exist
+ *  (seen 2026-08-27: verify passed, cp then failed, app came up broken). */
+async function verifyModuleFile(file: string) {
+    await run(`node -e "process.dlopen(module, '${file}')"`);
+}
+
 async function fixSQLite() {
     const spinner = ora('Rebuilding better-sqlite3 for the system Node - this may take a few minutes...').start();
+    // The packaged app spawns its server with the system `node` from PATH
+    // (see electron/main.js), so the module must match system Node's ABI.
+    // The .deb does not ship a usable binary at all, so this step is the ONLY
+    // source of a working module - it must fail loudly, never silently.
+    const built = `${REPO_ROOT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
+    const cached = `${process.env.HOME}/better-sqlite3-build/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
     try {
-        // The packaged app spawns its server with the system `node` from PATH
-        // (see electron/main.js), so the module must match system Node's ABI.
-        // Build in THIS clone rather than a scratch cache dir: a binary cached
-        // under an older Node install silently re-breaks every update - the
-        // module fails to load ("libnode.so.108: cannot open shared object
-        // file" / "Module did not self-register") and the UI shows empty
-        // lists everywhere while db-status still reads ready.
-        await run(`npm install --omit=dev --no-audit --no-fund`, REPO_ROOT);
-        await run(`npm rebuild better-sqlite3 --build-from-source`, REPO_ROOT);
-        // Prove the binary loads under this exact node BEFORE shipping it into
-        // the app - a bad build must fail loudly here, not as empty UI lists.
-        await run(`node -p "require('better-sqlite3') && 'ok'"`, REPO_ROOT);
-        await run(
-            `sudo cp ${REPO_ROOT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node ` +
-            `/opt/rt-timing/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node`
+        let source = "";
+        try {
+            await run(`npm install --omit=dev --no-audit --no-fund`, REPO_ROOT);
+            await run(`npm rebuild better-sqlite3 --build-from-source`, REPO_ROOT);
+            await verifyModuleFile(built);
+            source = built;
+        } catch (buildErr: any) {
+            // Fallback: the last known-good binary. Only used if it still
+            // loads under the current node (an old-ABI cache must not ship).
+            spinner.text = `Rebuild failed (${buildErr}); trying last known-good binary...`;
+            await verifyModuleFile(cached);
+            source = cached;
+        }
+        await run(`sudo cp ${source} ${MODULE_TARGET}`);
+        // Final gate: the file actually installed into the app loads.
+        await verifyModuleFile(MODULE_TARGET);
+        // Refresh the fallback for next time.
+        if (source === built) {
+            await run(`mkdir -p ${path.dirname(cached)} && cp ${built} ${cached}`);
+        }
+        spinner.succeed(`better-sqlite3 verified and installed (from ${source === built ? "fresh build" : "known-good cache"})`);
+    } catch (e: any) {
+        spinner.fail(
+            `better-sqlite3 could not be rebuilt OR restored - every database query will fail ` +
+            `(empty builder/kit lists) until this is fixed manually: ${e}`
         );
-        spinner.succeed('better-sqlite3 rebuilt and verified for the system Node!');
-    } catch(e: any) {
-        spinner.fail(`Failed to rebuild better-sqlite3 - database queries may fail (empty lists) until this is fixed: ${e}`);
     }
 }
 
 async function updateApplication() {
     console.log("Updating Application!")
-    const latestVersion = await getLatestVersion();
-    if (!latestVersion) {
-        exec("/opt/rt-timing/rt-timing")
+    if (!acquireLock()) {
+        console.log("Another updater instance is already running - exiting without touching the install.");
         return false;
     }
-    await killApplication();
-    await installFiles(latestVersion);
-    await fixSQLite();
-    console.log("Update Complete!")
-    exec("/opt/rt-timing/rt-timing")
-    return true
+    try {
+        const latestVersion = await getLatestVersion();
+        if (!latestVersion) {
+            exec("/opt/rt-timing/rt-timing")
+            return false;
+        }
+        await killApplication();
+        await installFiles(latestVersion);
+        await fixSQLite();
+        console.log("Update Complete!")
+        exec("/opt/rt-timing/rt-timing")
+        return true
+    } finally {
+        releaseLock();
+    }
 }
 
 updateApplication();
