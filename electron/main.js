@@ -290,7 +290,15 @@ ipcMain.handle("restore-timer", (_event, { elapsedMs, segmentId, segmentAccumSec
     return { ok: true };
 });
 
-ipcMain.handle("get-recovery", () => sharedTimerData.recovery ?? null);
+// A candidate already restored into the running app is no longer something to
+// offer. Without this, logging out and back in would find the same object again
+// and - now that recovery is automatic - silently restore a build that may
+// since have been submitted.
+ipcMain.handle("get-recovery", () =>
+    sharedTimerData.recovery && sharedTimerData.recovery.status !== "RESTORED"
+        ? sharedTimerData.recovery
+        : null
+);
 
 // Worked seconds for the CURRENT segment. The renderer needs this whenever it
 // closes a segment (submit, builder change) so the stored value is exact rather
@@ -495,6 +503,39 @@ function scanForInterruptedBuild() {
     });
 }
 
+function logRecovery(where) {
+    if (!sharedTimerData.recovery) return;
+    fs.appendFileSync(path.join(app.getPath("userData"), "server.log"),
+        `Recovery candidate (${where}): build ${sharedTimerData.recovery.buildId} ` +
+        `(${sharedTimerData.recovery.harnNumber}) status ${sharedTimerData.recovery.status}\n`);
+}
+
+/**
+ * Keep looking after the first scan comes back empty.
+ *
+ * On a site-wide power cut the Pi is routinely up before the file server is,
+ * and the boot scan then finds nothing at all - the operator logs in, sees no
+ * unfinished build and starts a new one over the top of it. The login screen
+ * re-polls, so a candidate found late still reaches them.
+ */
+async function retryRecoveryScan(attempts = 10, delayMs = 15000) {
+    for (let i = 0; i < attempts; i++) {
+        await new Promise((r) => setTimeout(r, delayMs));
+        // Once a build is live, the only open segment is that build's own. It
+        // must never be offered back to the operator as something to recover.
+        if (currentSegmentId || sharedTimerData.recovery) return;
+        try {
+            const found = await scanForInterruptedBuild();
+            if (found) {
+                sharedTimerData.recovery = found;
+                logRecovery(`late scan, attempt ${i + 1}`);
+                broadcastNonTimer(sharedTimerData);
+                return;
+            }
+        } catch { /* best-effort */ }
+    }
+}
+
 app.whenReady().then(async () => {
     killExistingServer();
     startServer();
@@ -506,14 +547,10 @@ app.whenReady().then(async () => {
     }
     try {
         sharedTimerData.recovery = await scanForInterruptedBuild();
-        if (sharedTimerData.recovery) {
-            const logPath = path.join(app.getPath("userData"), "server.log");
-            fs.appendFileSync(logPath,
-                `Recovery candidate: build ${sharedTimerData.recovery.buildId} ` +
-                `(${sharedTimerData.recovery.harnNumber}) status ${sharedTimerData.recovery.status}\n`);
-        }
+        logRecovery("boot");
     } catch { /* recovery is best-effort; never block startup */ }
     createMainWindow();
+    if (!sharedTimerData.recovery) retryRecoveryScan();
 });
 
 app.on("before-quit", async () => {
