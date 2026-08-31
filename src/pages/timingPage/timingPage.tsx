@@ -45,6 +45,9 @@ function TimingPage({
     const [harnTotal, setHarnTotal] = useState(0);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
     const [timerDone, setTimerDone] = useSharedState<boolean>("timerDone", true);
+    // Set by the main process when heartbeats stop landing: the clock is
+    // counting but nothing is being written.
+    const [heartbeatError] = useSharedState<string | null>("heartbeatError", null);
     const displayTimer = useSyncedTimer();
     const [startTime, setStartTime] = useSharedState<string>("startTime", "");
     const [endTime, setEndTime] = useSharedState<string>("endTime", "");
@@ -197,6 +200,25 @@ useEffect(() => {
         return data.result;
     };
 
+    /** Writes that must not fail quietly.
+     *
+     *  execQuery above returns `false` for every failure and throws nothing, so
+     *  an INSERT that never happened is indistinguishable from one that did.
+     *  That is fine for the reads it is used for and wrong for anything that
+     *  records time - use this instead, and let the caller decide what to tell
+     *  the operator. The server's own message is preserved: "attempt to write a
+     *  readonly database" is the sentence that explains the whole problem. */
+    const execWrite = async (query: string, params: unknown[] = []): Promise<any> => {
+        const response = await fetch("http://localhost:5000/api/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, params }),
+        });
+        const data = await response.json();
+        if (!data?.success) throw new Error(data?.error || "the database rejected the write");
+        return data.result;
+    };
+
     // A build restored after a crash arrives mid-flight: it is not "done", the
     // clock already shows earned time, and Submit must be available without
     // pressing End first.
@@ -275,18 +297,52 @@ useEffect(() => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedUser?.Id, isRunning, timerDone]);
 
+    // --- Database writability -------------------------------------------
+    // A read-only share is invisible until something tries to write: the app
+    // starts, the builder list loads, the clock counts up, and every INSERT
+    // fails. After a power cut the Pi is routinely up before the file server,
+    // which is how a build came to be started against a read-only database on
+    // 2026-08-31. Start is blocked until the database can actually take a write
+    // - but only on a definite "no". An unreachable status endpoint is unknown,
+    // not bad, and unknown must never stop the floor from working.
+    const DB_POLL_MS = 30_000;
+    const [dbBlocked, setDbBlocked] = useState(false);
+
+    /** null when the database is writable (or unknown); otherwise the reason. */
+    const checkDbWritable = async (): Promise<string | null> => {
+        try {
+            const response = await fetch("http://localhost:5000/api/db-status");
+            const data = await response.json();
+            if (data?.writable === false) {
+                const why = String(data?.writeError || data?.error || "the share is read-only");
+                setDbBlocked(true);
+                return why;
+            }
+            setDbBlocked(false);
+            return null;
+        } catch {
+            setDbBlocked(false);
+            return null;
+        }
+    };
+
+    useEffect(() => {
+        checkDbWritable();
+        const id = window.setInterval(checkDbWritable, DB_POLL_MS);
+        return () => window.clearInterval(id);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    /** The pause row is what keeps the paused window OUT of this build's time.
+     *  If it is not written, that window is silently charged to the build - so
+     *  this throws with the real reason and the caller refuses to resume. */
     async function insertPause() {
         const pauseEnd = formatTimestamp(new Date().toISOString());
-        if (sharedPauseReason) {
-            try {
-                await execQuery(
-                    "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                    [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id]
-                );
-            } catch (err: unknown) {
-                throw new Error("Error");
-            }
-        }
+        if (!sharedPauseReason) return;
+        await execWrite(
+            "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id]
+        );
     }
 
     // Local time in "YYYY-MM-DD HH:mm:ss": sorts correctly as text (ORDER BY
@@ -309,6 +365,17 @@ useEffect(() => {
             setErr(`${selectedUser?.name ?? "This builder"} is clocked out of QuickBooks - clock in to start timing`);
             return;
         }
+        // Checked at the moment of the press, not just on the 30s poll: the
+        // window this exists for is the few minutes after a power cut, when it
+        // flips from read-only to writable.
+        const notWritable = await checkDbWritable();
+        if (notWritable) {
+            // handleButtonClick has already lit Start green. Put the indicator
+            // back where the timer actually is.
+            setActiveButton(pauseStart ? "pause" : null);
+            setErr(`Database is not writable - nothing would be recorded (${notWritable})`);
+            return;
+        }
         window.electron.timerStart();
         if (pauseStart) {
             if (batchMode && !timerDone) {
@@ -321,7 +388,19 @@ useEffect(() => {
                 });
                 setPauseStart(null);
             } else {
-                insertPause();
+                try {
+                    await insertPause();
+                } catch (e: any) {
+                    // Without this row the paused window is charged to the build
+                    // as worked time. Refuse the resume rather than quietly
+                    // inflating someone's build: undo the clock we just started
+                    // and leave the operator paused, exactly where they were.
+                    window.electron.timerPause();
+                    setIsRunning(false);
+                    setActiveButton("pause");
+                    setErr(`Could not record the pause: ${e?.message ?? e}`);
+                    return;
+                }
             }
         }
 
@@ -361,6 +440,7 @@ useEffect(() => {
                 window.electron.timerPause();
                 setIsRunning(false);
                 setTimerDone(true);
+                setActiveButton(null);
                 setErr(`Could not start the build: ${e?.message ?? e}`);
             }
             return;
@@ -413,8 +493,10 @@ useEffect(() => {
                 numberOfBuilders: secondaryBuilders.length + 1,
                 secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
             });
+            // execWrite, not execQuery: a dropped pause row here would silently
+            // inflate the batch's times, and submitBatch's catch reports it.
             for (const pause of batchPauses.current) {
-                await execQuery(
+                await execWrite(
                     "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                     [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
                 );
@@ -505,9 +587,11 @@ useEffect(() => {
                     id="start-button"
                     className={activeButton === "start" ? "pressed" : ""}
                     onClick={() => handleButtonClick("start")}
-                    disabled={disableButtons || clockBlocked}
+                    disabled={disableButtons || clockBlocked || dbBlocked}
                 >
-                    {clockBlocked
+                    {dbBlocked
+                        ? "No Database"
+                        : clockBlocked
                         ? "Clocked Out"
                         : isRunning
                         ? "Running"
@@ -588,6 +672,18 @@ useEffect(() => {
                     <CloseButton />
                 </div>
 
+                {dbBlocked && (
+                    <p className="db-warning">
+                        The database cannot be written to right now. Time started here would not be
+                        recorded, so Start is held until it comes back.
+                    </p>
+                )}
+                {heartbeatError && (
+                    <p className="db-warning">
+                        This time is NOT being saved - {heartbeatError}. Note where you are and get
+                        someone before you keep timing.
+                    </p>
+                )}
                 <p id="error-message">{err}</p>
                 <RTLogo />
             </div>

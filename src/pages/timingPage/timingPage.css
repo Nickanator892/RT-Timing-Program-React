@@ -176,6 +176,21 @@ hr {
     font-size: 25px;
 }
 
+/* Louder than #error-message on purpose: this one means the time on screen is
+   not reaching the database, and it has to be readable across the bench. */
+.db-warning {
+    color: #ffdf5d;
+    background: #7a1f1f;
+    border: 2px solid #ffdf5d;
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin: 6px 0;
+    max-width: 40em;
+    font-size: 22px;
+    font-weight: bold;
+    text-align: center;
+}
+
 #RT-logo {
     display: flex;
     flex-direction: row;
