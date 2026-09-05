@@ -42,6 +42,9 @@ function segmentSeconds() {
     return Math.max(0, Math.round((timerElapsed - segmentBase) / 1000));
 }
 
+/** Resolves { ok, error }. It reads the body rather than just the status code
+ *  because /api/heartbeat answers 200 with {success:false} when the UPDATE
+ *  itself failed - which is exactly the read-only-share case we have to see. */
 function postJson(pathname, body) {
     return new Promise((resolve) => {
         const payload = JSON.stringify(body);
@@ -49,23 +52,62 @@ function postJson(pathname, body) {
             { host: "localhost", port: 5000, path: pathname, method: "POST",
               headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
               timeout: 8000 },
-            (res) => { res.resume(); res.on("end", () => resolve(true)); }
+            (res) => {
+                let raw = "";
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let parsed = null;
+                    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+                    const httpOk = res.statusCode >= 200 && res.statusCode < 300;
+                    if (httpOk && parsed?.success !== false) return resolve({ ok: true });
+                    resolve({ ok: false, error: parsed?.error || `HTTP ${res.statusCode}` });
+                });
+            }
         );
-        // Fire-and-forget: a heartbeat failure must never disturb the timer.
-        req.on("error", () => resolve(false));
-        req.on("timeout", () => { req.destroy(); resolve(false); });
+        // Still fire-and-forget: a heartbeat failure reports itself, but it must
+        // never throw into, or block, the timer.
+        req.on("error", (e) => resolve({ ok: false, error: String(e?.message || e) }));
+        req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "timed out" }); });
         req.write(payload);
         req.end();
     });
 }
 
-function writeHeartbeat() {
-    if (!currentSegmentId) return Promise.resolve(false);
-    return postJson("/api/heartbeat", {
+// The heartbeat is the only proof the displayed time is being recorded at all.
+// When it stops landing, the operator is watching a clock that is lying to them
+// - so say so instead of swallowing it. One miss is a hiccup; two in a row is a
+// problem worth interrupting someone over.
+let heartbeatFailures = 0;
+const HEARTBEAT_FAIL_LIMIT = 2;
+
+function setHeartbeatError(message) {
+    const next = message ?? null;
+    if (sharedTimerData.heartbeatError === next) return;
+    sharedTimerData.heartbeatError = next;
+    try {
+        if (next) {
+            fs.appendFileSync(path.join(app.getPath("userData"), "server.log"),
+                `Heartbeat write failing (${heartbeatFailures} consecutive): ${next}\n`);
+        }
+    } catch { /* logging must never break the timer */ }
+    broadcastNonTimer(sharedTimerData);
+}
+
+async function writeHeartbeat() {
+    if (!currentSegmentId) return false;
+    const out = await postJson("/api/heartbeat", {
         segmentId: currentSegmentId,
         accumSeconds: segmentSeconds(),
         state: sharedTimerData.isRunning ? "RUN" : "PAUSE",
     });
+    if (out.ok) {
+        heartbeatFailures = 0;
+        setHeartbeatError(null);
+        return true;
+    }
+    heartbeatFailures++;
+    if (heartbeatFailures >= HEARTBEAT_FAIL_LIMIT) setHeartbeatError(out.error || "unknown error");
+    return false;
 }
 
 function startHeartbeat() {
@@ -97,6 +139,9 @@ let sharedTimerData = {
     // Set once at boot by the recovery scan; null when there is nothing to
     // recover. Detection only - no database writes happen at boot.
     recovery: null,
+    // Non-null while heartbeat writes are failing repeatedly: the timer is
+    // running but nothing is reaching the database.
+    heartbeatError: null,
 };
 
 // --------------------
@@ -255,6 +300,10 @@ ipcMain.on("timer-reset", () => {
     currentSegmentId = null;
     segmentBase = 0;
     heartbeatTicks = 0;
+    heartbeatFailures = 0;
+    // Nothing is being heartbeated any more, so the warning would just sit there
+    // unable to clear itself. A failing submit reports itself on its own path.
+    setHeartbeatError(null);
     sharedTimerData.recovery = null;
 });
 

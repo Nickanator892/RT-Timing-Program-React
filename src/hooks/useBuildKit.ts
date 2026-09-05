@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useSharedState } from "./useSharedState";
 
 export interface BuildKit {
@@ -26,12 +25,18 @@ export interface SQLBuildKitReturn {
 
 export function useBuildKit() {
     const [buildKit, setBuildKit] = useSharedState<BuildKit | null>("selectedBuildKit", null);
-    const [buildKits, setBuildKits] = useSharedState<BuildKit[] | null>("AllBuildKits", null);
 
-    async function fetchKit(rev: number): Promise<BuildKit | undefined> {
+    /**
+     * @param phkid Restrict to ONE kit inside the rev. A rev can carry several
+     *  scheduled jobs - rev 5450 holds both the Schellvac Variable (9 harnesses)
+     *  and Constant (15) kits - and loading the rev whole drops all 24 into one
+     *  undifferentiated list. Null keeps the old whole-rev behaviour, which is
+     *  what crash recovery needs: it only knows the rev.
+     */
+    async function fetchKit(rev: number, phkid: number | null = null): Promise<BuildKit | undefined> {
         const result = await execQuery(
-            `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf('%.2f',PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf('%.2f',PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf('%.2f',PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf('%.2f',PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID WHERE BKL.REV=(?) ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC;`,
-            [rev]
+            `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf('%.2f',PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf('%.2f',PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf('%.2f',PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf('%.2f',PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID WHERE BKL.REV=(?) AND ((?) IS NULL OR BKL.PHKID = (?)) ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC;`,
+            [rev, phkid, phkid]
         );
 
         if (!Array.isArray(result) || result.length === 0) return undefined;
@@ -91,58 +96,16 @@ export function useBuildKit() {
         }
     };
 
-    async function fetchKits() {
-        const result: SQLBuildKitReturn[] | undefined = (await execQuery(
-            `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf('%.2f',PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf('%.2f',PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf('%.2f',PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf('%.2f',PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID ORDER BY BKL.REV DESC`,
-            []
-        )) as SQLBuildKitReturn[] | undefined;
-        if (Array.isArray(result) && result.length > 0) {
-            const kitMap = new Map<number, BuildKit>();
-
-            result.forEach((row) => {
-                const totalSeconds = Math.floor(row.targetBuildTime * 60);
-                const hours = Math.floor(totalSeconds / 3600);
-                const minutes = Math.floor((totalSeconds % 3600) / 60);
-                const seconds = totalSeconds % 60;
-                const formattedTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(
-                    2,
-                    "0"
-                )}:${String(seconds).padStart(2, "0")}`;
-
-                const harness = {
-                    partNum: row.harnNumber,
-                    buildNumber: row.qty,
-                    buildTargetTime: {
-                        seconds: row.targetBuildTime * 60,
-                        formattedTime: formattedTime,
-                    },
-                };
-
-                if (kitMap.has(row.REV)) {
-                    // REV already exists, just push the new harness into it
-                    kitMap.get(row.REV)!.harnesses.push(harness);
-                } else {
-                    // First time seeing this REV, create a new entry
-                    kitMap.set(row.REV, {
-                        REV: row.REV,
-                        harnesses: [harness],
-                    });
-                }
-            });
-
-            setBuildKits(Array.from(kitMap.values()));
-        }
-    }
-
-    useEffect(() => {
-        fetchKits();
-    }, []);
+    // fetchKits() lived here: it read EVERY kit of EVERY rev in the database and
+    // ran from a useEffect on every mount of this hook - so on the timer page,
+    // the harness page and the recovery page, none of which ever looked at the
+    // result. Its only consumer was the old rev-number picker, replaced by the
+    // job list, which reads the schedule instead. Removed rather than left to
+    // scan BUILDKITLIST x PROJHARN across the network share on every screen.
 
     return {
         buildKit,
-        buildKits,
         fetchKit,
-        fetchKits,
         setBuildKit,
     };
 }

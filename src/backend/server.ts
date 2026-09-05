@@ -78,6 +78,25 @@ function validateSQLitePath(candidate: string): void {
   }
 }
 
+/**
+ * Can SQLite actually WRITE here right now?
+ *
+ * validateSQLitePath only reads the file header, so a read-only share sails
+ * straight through it and the app reports itself healthy while every INSERT
+ * fails. That is not hypothetical: after the 2026-08-31 site-wide power cut the
+ * Pi was up before the file server, and a builder was able to press Start and
+ * be told "attempt to write a readonly database".
+ *
+ * Opening the database r+ is exactly what SQLite does, and the directory has to
+ * be writable too because the rollback journal is created alongside the file.
+ * Neither check writes anything.
+ */
+function checkWritable(candidate: string): void {
+  const fd = fs.openSync(candidate, "r+");
+  fs.closeSync(fd);
+  fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
+}
+
 // --------------------
 // Worker thread runner
 // --------------------
@@ -327,17 +346,30 @@ async function migrate() {
 // Routes
 // --------------------
 
+/**
+ * `ready` deliberately keeps its old meaning - configured, present and a real
+ * SQLite file - because App.tsx sends the operator to the database SETUP screen
+ * when it is false. A share that is merely read-only is not a reason to ask
+ * anyone to re-type the path, so writability is reported separately and the
+ * timer page is what acts on it.
+ */
 app.get("/api/db-status", (_req, res) => {
-  console.log("DBPATH", dbPath)
   if (!dbPath) {
-    return res.json({ ready: false, error: "No database path configured" });
+    return res.json({ ready: false, writable: false, error: "No database path configured" });
   }
   try {
     validateSQLitePath(dbPath);
-    res.json({ ready: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    res.json({ ready: false, error: message });
+    return res.json({ ready: false, writable: false, error: message });
+  }
+  try {
+    checkWritable(dbPath);
+    res.json({ ready: true, writable: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("Database is not writable:", message);
+    res.json({ ready: true, writable: false, writeError: message });
   }
 });
 

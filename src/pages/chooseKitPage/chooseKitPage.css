@@ -1,55 +1,210 @@
-.modal-overlay {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background-color: #242424;
-    border: 4px solid white;
-    padding: 2em;
-    width: 400px;
-    z-index: 9999;
+/* Job cards. Colours are lifted from the RtMcs schedule page so the bench panel
+   and the office screen read as one system - same chips, same meanings. */
+.job-page {
+    --surface: #1e2426;
+    --surface2: #242b2e;
+    --line: #31393c;
+    --dim: #9aa6a9;
+    --accent: #14958a;
+    --nav: #0a2e2b;
+    --ready: #27ae60;
+    --short: #e74c3c;
+    --warn: #f39c12;
+    --prog: #3498db;
+
     display: flex;
     flex-direction: column;
-    gap: 1em;
-}
-
-.modal {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75em;
-}
-
-.modal h3 {
-    text-align: center;
-    margin: 0;
-    padding: 0;
-}
-
-.modal p {
-    font-size: 0.95rem;
-    margin: 0;
-    padding: 0.4em 0;
-    border-bottom: 1px solid #444;
-    font-family: "Orbitron";
-}
-
-.modal-buttons {
-    display: flex;
-    flex-direction: row;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5em;
-    margin-top: 0.5em;
+    width: 100%;
+    padding: 0 1.5em;
+    box-sizing: border-box;
 }
 
-.modal-buttons button {
-    height: 2.5em;
-    width: auto;
-    flex: 1;
+.job-header {
+    font-family: "Orbitron";
+    margin: 0.4em 0 0.6em;
 }
 
-.modal-buttons span {
+.job-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 1180px;
+}
+
+/* A button, not a div: the whole card is the touch target on a panel with no
+   mouse, and it stays keyboard- and screen-reader-reachable. */
+.job-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    text-align: left;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 16px;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.job-card:hover:not(:disabled),
+.job-card:focus-visible {
+    background: var(--surface2);
+    border-color: var(--accent);
+}
+
+.job-card:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.job-done {
+    opacity: 0.7;
+}
+
+.job-seq {
+    flex: 0 0 auto;
+    min-width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    background: var(--nav);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Orbitron";
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.job-main {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.job-name {
+    font-size: 21px;
+    font-weight: 700;
+    font-family: "Orbitron";
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.job-sub,
+.job-progress {
+    font-size: 14px;
+    color: var(--dim);
+    font-family: "RobotoMono";
+}
+
+.job-progress b {
+    color: #e8eced;
+}
+
+.job-bar {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+    max-width: 320px;
+    margin: 3px 0 1px;
+}
+
+.job-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--prog);
+}
+
+.job-done .job-bar-fill {
+    background: var(--ready);
+}
+
+.job-chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    flex: 0 1 auto;
+}
+
+.chip {
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    font-family: "RobotoMono";
+}
+
+.c-run {
+    background: color-mix(in srgb, var(--warn) 22%, transparent);
+    color: var(--warn);
+}
+.c-short {
+    background: color-mix(in srgb, var(--short) 22%, transparent);
+    color: var(--short);
+}
+.c-stock {
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent);
+}
+.c-ready {
+    background: color-mix(in srgb, var(--ready) 22%, transparent);
+    color: var(--ready);
+}
+
+.job-dates {
+    flex: 0 0 auto;
+    text-align: right;
+    min-width: 110px;
+    font-size: 14px;
+    color: var(--dim);
+    font-family: "RobotoMono";
+}
+
+.job-completed {
+    width: 100%;
+    max-width: 1180px;
+    margin-top: 12px;
+}
+
+.job-completed-toggle {
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-family: "Orbitron";
+    font-size: 16px;
+    padding: 6px 2px;
+    cursor: pointer;
+}
+
+.job-completed-toggle:hover {
+    color: #e8eced;
+}
+
+.job-completed .job-list {
+    margin-top: 8px;
+}
+
+.job-empty {
+    color: var(--dim);
+    font-size: 17px;
+    max-width: 46em;
     text-align: center;
-    min-width: 3em;
-    flex-shrink: 0;
+}
+
+.job-error {
+    color: var(--short);
+    font-size: 18px;
+    min-height: 1.2em;
+    margin: 0.3em 0;
 }
