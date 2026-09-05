@@ -28,11 +28,36 @@ function LoginPage({ setUser }: loginProps) {
     const nav = useNavigate();
 
     useEffect(() => {
-        window.electron.getRecovery().then(setRecovery).catch(() => setRecovery(null));
+        let cancelled = false;
+        const poll = () =>
+            window.electron
+                .getRecovery()
+                .then((r) => {
+                    if (!cancelled) setRecovery(r);
+                    return r;
+                })
+                .catch(() => null);
+
+        poll();
+        // The boot scan can come back empty because the file share is slower to
+        // return than the Pi after a power cut; main keeps scanning for a couple
+        // of minutes. Without this the operator would have logged in during that
+        // window and never been offered the build. Reading a variable over IPC.
+        const id = setInterval(async () => {
+            if ((await poll()) || cancelled) clearInterval(id);
+        }, 10000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
     }, []);
 
     /** An interrupted build needs a logged-in builder before anything is
-     *  written, so recovery is offered on the way through login. */
+     *  written, so recovery runs on the way through login. EVERY login path has
+     *  to come through here: the password-less path used to jump straight to
+     *  /choose-kit, which is how a builder walked past his own open build,
+     *  started a new one instead and hit a write error (2026-08-31). */
     function afterLogin() {
         nav(recovery ? "/recover" : "/choose-kit");
     }
@@ -82,7 +107,7 @@ function LoginPage({ setUser }: loginProps) {
 
         setUser(found);
         setTimeout(() => {
-            nav("/choose-kit");
+            afterLogin();
         }, 500);
     }
 
@@ -105,8 +130,10 @@ function LoginPage({ setUser }: loginProps) {
                 <div className="login-recovery-banner">
                     Unfinished build found: <strong>{recovery.harnNumber}</strong>
                     {recovery.builderName ? ` - started by ${recovery.builderName}` : ""}
-                    {recovery.heartbeatAt ? `, last active ${recovery.heartbeatAt}` : ""}. Log in to
-                    restore it.
+                    {recovery.heartbeatAt ? `, last active ${recovery.heartbeatAt}` : ""}.{" "}
+                    {recovery.builderName
+                        ? `${recovery.builderName} logs in and it opens straight up, paused.`
+                        : "Log in to restore it."}
                 </div>
             )}
             <RTLogo />

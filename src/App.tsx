@@ -85,7 +85,15 @@ function TimerLayout() {
                 <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
                 <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
                 <Route path="/choose-kit" element={<ChooseKitPage />} />
-                <Route path="/recover" element={<RecoveryPage setPauseStart={setPauseStart} />} />
+                <Route
+                    path="/recover"
+                    element={
+                        <RecoveryPage
+                            setPauseStart={setPauseStart}
+                            setActiveButton={setActiveButton}
+                        />
+                    }
+                />
             </Routes>
             {/* Mounted once for the whole app: the panel has no physical
                 keyboard, and the screen would otherwise burn in overnight. */}
