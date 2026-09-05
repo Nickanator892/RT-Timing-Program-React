@@ -414,8 +414,14 @@ useEffect(() => {
             setDbSuccess("Submit");
 
             // Batch runs write nothing at start - all rows are created at
-            // submit, when the total window and unit count are known.
-            if (batchMode) return;
+            // submit, when the total window and unit count are known. The pause
+            // queue is emptied here rather than only on a successful submit: a
+            // batch that was abandoned, or whose submit failed, would otherwise
+            // hand its pauses to whatever batch ran next.
+            if (batchMode) {
+                batchPauses.current = [];
+                return;
+            }
 
             // One transaction: a crash between these inserts used to leave a
             // build row with no segment, which carries no time and is invisible
@@ -454,7 +460,13 @@ useEffect(() => {
         window.electron.timerPause();
         const pauseStartTime = formatTimestamp(new Date().toISOString())
         setPauseStart(pauseStartTime);
-        setEndTime(new Date().toISOString());
+        // Local "YYYY-MM-DD HH:mm:ss" like every other timestamp. This was the
+        // one writer still emitting an ISO/UTC string, and a Submit straight
+        // from a pause (Submit is enabled again when the pause-reason page
+        // returns here) wrote that UTC instant into HARNBUILDSEGMENTS.endTime -
+        // hours off the local stamps around it, and unparseable to the server's
+        // parseLocalStamp.
+        setEndTime(formatTimestamp(new Date().toISOString()));
         setIsRunning(false);
         setTimeout(() => {
             nav("/pause-reason-page");
@@ -482,6 +494,31 @@ useEffect(() => {
             if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
                 throw new Error("Bad time window - end the timer before submitting");
             }
+
+            // A pause that was never resumed - pause, End, Submit - is still
+            // open and was never queued, because queuing happens on Resume.
+            // Without this the break sits inside the window with nothing to
+            // show for it.
+            const pauses = [...batchPauses.current];
+            if (pauseStart) {
+                pauses.push({
+                    start: pauseStart,
+                    end: endTime,
+                    reasonId: sharedPauseReason?.Id,
+                });
+            }
+
+            // A batch's duration comes from the wall clock, so unlike a normal
+            // build it is NOT pause-free - start-to-end covers every break in
+            // between. The main-process timer IS pause-free (it freezes on
+            // pause), so take the earned total from there. Otherwise a 30-minute
+            // lunch is divided up and added to every unit in the batch, and the
+            // total no longer matches the clock the operator was watching.
+            const shared = await window.electron.getSharedData();
+            const elapsedMs = Number(shared?.elapsedTime ?? 0);
+            const windowMs = endMs - startMs;
+            const workedMs = elapsedMs > 0 ? Math.min(elapsedMs, windowMs) : windowMs;
+
             const buildIds = await writeDistributedTimes({
                 harnNumber: selectedHarn,
                 rev: buildKit?.REV,
@@ -490,12 +527,13 @@ useEffect(() => {
                 units,
                 startMs,
                 endMs,
+                workedMs,
                 numberOfBuilders: secondaryBuilders.length + 1,
                 secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
             });
             // execWrite, not execQuery: a dropped pause row here would silently
             // inflate the batch's times, and submitBatch's catch reports it.
-            for (const pause of batchPauses.current) {
+            for (const pause of pauses) {
                 await execWrite(
                     "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                     [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]

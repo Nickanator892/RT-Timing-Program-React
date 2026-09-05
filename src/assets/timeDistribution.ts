@@ -31,6 +31,17 @@ export interface DistributedTimeArgs {
     /** Wall-clock window of the whole batch operation. */
     startMs: number;
     endMs: number;
+    /**
+     * Pause-free worked time across that window. Defaults to the whole span,
+     * which is only right when nothing was paused.
+     *
+     * The two are deliberately separate. The segment STAMPS stay wall-clock so
+     * each row sits where the work actually happened, while accumSeconds - the
+     * duration the analytics view sums - carries only the earned time. A normal
+     * build already has exactly this shape: its segment span covers the pause,
+     * its accumSeconds does not.
+     */
+    workedMs?: number;
     numberOfBuilders: number;
     secondaryBuilderIds: number[];
 }
@@ -47,6 +58,10 @@ export interface DistributedTimeArgs {
 export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<number[]> {
     const buildIds: number[] = [];
     const sliceMs = (args.endMs - args.startMs) / args.units;
+    // The share of EARNED time each unit gets. Falls back to the wall-clock
+    // slice for callers that have no separate worked total (manual entry, where
+    // the operator types the time they actually worked).
+    const workedSlice = (args.workedMs ?? args.endMs - args.startMs) / args.units;
     for (let k = 0; k < args.units; k++) {
         const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
             args.harnNumber,
@@ -70,7 +85,7 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
                 formatTimestamp(new Date(args.startMs + k * sliceMs)),
                 formatTimestamp(new Date(args.startMs + (k + 1) * sliceMs)),
                 args.numberOfBuilders,
-                Math.max(0, Math.round(sliceMs / 1000)),
+                Math.max(0, Math.round(workedSlice / 1000)),
             ]
         );
         for (const secondaryId of args.secondaryBuilderIds) {
