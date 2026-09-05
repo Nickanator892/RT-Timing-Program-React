@@ -1,39 +1,154 @@
-.harn-choice-header {
-    position: absolute;
-    top: 0px;
-    right: 413px;
-    font-size: 50px;
-    text-decoration: underline;
-    font-family: "Orbitron";
-}
+/* Same palette as the job cards - one system across both screens. */
+.harn-page {
+    --surface: #1e2426;
+    --surface2: #242b2e;
+    --line: #31393c;
+    --dim: #9aa6a9;
+    --accent: #14958a;
+    --ready: #27ae60;
+    --warn: #f39c12;
+    --prog: #3498db;
 
-#harn-list div {
-    display: flex;
-    flex-direction: row;
-    border: 3px solid white;
-    height: 3em;
-    width: 40em;
-    padding-bottom: 1.5em;
-}
-
-#harn-list {
     display: flex;
     flex-direction: column;
-    gap: 1em;
+    align-items: center;
+    width: 100%;
+    padding: 0 1.5em;
+    box-sizing: border-box;
 }
 
-#harn-list div button {
-    height: 4em;
-    width: 10em;
-    margin-top: 0.4em;
-    margin-right: 1em;
+.harn-head {
+    text-align: center;
+    margin-bottom: 0.5em;
 }
 
-#harn-list div p {
-    font-size: 30px;
+.harn-title {
     font-family: "Orbitron";
-    width: 30em;
-    margin-left: 0.3em;
+    font-size: 40px;
+    text-decoration: underline;
+    margin: 0.2em 0 0.1em;
+}
+
+.harn-job {
+    margin: 0;
+    font-family: "RobotoMono";
+    font-size: 17px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.harn-job span {
+    font-size: 14px;
+    color: var(--dim);
+}
+
+.harn-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 900px;
+}
+
+/* Whole row is the touch target - no mouse on the panel. */
+.harn-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    text-align: left;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 16px;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.harn-row:hover,
+.harn-row:focus-visible {
+    background: var(--surface2);
+    border-color: var(--accent);
+}
+
+/* The one you are mid-run on. Pinned to the top of the list by sortRows. */
+.harn-running {
+    border-color: var(--warn);
+}
+
+.harn-done {
+    opacity: 0.6;
+}
+
+.harn-main {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.harn-pn {
+    font-family: "Orbitron";
+    font-size: 28px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.harn-bar {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+    max-width: 420px;
+}
+
+.harn-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--prog);
+}
+
+.harn-done .harn-bar-fill {
+    background: var(--ready);
+}
+
+.harn-count {
+    flex: 0 0 auto;
+    font-family: "RobotoMono";
+    font-size: 24px;
+    color: var(--dim);
+    min-width: 4.5em;
+    text-align: right;
+}
+
+.harn-count b {
+    color: #e8eced;
+    font-size: 28px;
+}
+
+.harn-tag {
+    flex: 0 0 auto;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: "RobotoMono";
+    white-space: nowrap;
+}
+
+.tag-run {
+    background: color-mix(in srgb, var(--warn) 22%, transparent);
+    color: var(--warn);
+}
+
+.tag-done {
+    background: color-mix(in srgb, var(--ready) 22%, transparent);
+    color: var(--ready);
 }
 
 .pagination-buttons {
