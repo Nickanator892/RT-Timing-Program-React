@@ -1,7 +1,8 @@
 import "./qbTimeMapping.css";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { execQuery } from "../../assets/execQueryFunction";
 import { parseTimestamp } from "../../assets/timeDistribution";
+import { matchQbUser, isAutoLinkable, type QbMatch } from "../../assets/qbUserMatch";
 
 /**
  * Links shop builders to QuickBooks Time users, and controls who is affected
@@ -25,6 +26,9 @@ interface Builder {
 interface QbUser {
     qbTimeUserId: number;
     displayName: string;
+    /** Login (often an email) - the matcher uses the part before the @. */
+    username: string | null;
+    active: number | null;
 }
 
 interface ClockRow {
@@ -46,7 +50,7 @@ function QbTimeMapping({ onClose }: qbTimeMappingProps) {
             "SELECT Id, userName, qbTimeUserId, qbAutoPause FROM HARNBUILDERS WHERE active != 0 ORDER BY userName"
         )) as Builder[] | undefined;
         const u = (await execQuery(
-            "SELECT qbTimeUserId, displayName FROM QBTIMEUSERS ORDER BY displayName"
+            "SELECT qbTimeUserId, displayName, username, active FROM QBTIMEUSERS ORDER BY displayName"
         )) as QbUser[] | undefined;
         const s = (await execQuery("SELECT qbTimeUserId, onTheClock FROM QBTIMESTATUS")) as
             | ClockRow[]
@@ -84,6 +88,41 @@ function QbTimeMapping({ onClose }: qbTimeMappingProps) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // A suggestion per unlinked builder. Recomputed from whatever is currently
+    // linked, so a person can never be proposed for two builders at once.
+    const suggestions = useMemo(() => {
+        const taken = builders
+            .map((b) => Number(b.qbTimeUserId))
+            .filter((id) => Number.isFinite(id) && id > 0);
+        const out = new Map<number, QbMatch>();
+        for (const b of builders) {
+            if (b.qbTimeUserId) continue;
+            const m = matchQbUser(b.userName, qbUsers, taken);
+            if (m) out.set(b.Id, m);
+        }
+        return out;
+    }, [builders, qbUsers]);
+
+    const autoCount = Array.from(suggestions.values()).filter(isAutoLinkable).length;
+
+    /** Apply only the confident suggestions; anything weaker stays a question. */
+    async function autoLinkAll() {
+        const confident = Array.from(suggestions.entries()).filter(([, m]) => isAutoLinkable(m));
+        if (confident.length === 0) return;
+        for (const [builderId, m] of confident) {
+            await execQuery("UPDATE HARNBUILDERS SET qbTimeUserId = ? WHERE Id = ?", [
+                m.qbTimeUserId,
+                builderId,
+            ]);
+        }
+        const left = suggestions.size - confident.length;
+        setMsg(
+            `Linked ${confident.length} builder${confident.length === 1 ? "" : "s"}.` +
+                (left > 0 ? ` ${left} still needs picking by hand.` : "")
+        );
+        load();
+    }
+
     async function link(builderId: number, qbTimeUserId: string) {
         await execQuery("UPDATE HARNBUILDERS SET qbTimeUserId = ? WHERE Id = ?", [
             qbTimeUserId === "" ? null : Number(qbTimeUserId),
@@ -107,6 +146,12 @@ function QbTimeMapping({ onClose }: qbTimeMappingProps) {
                     Clock feed: {pollAge}
                 </p>
 
+                {autoCount > 0 && (
+                    <button type="button" className="qbtime-autolink" onClick={autoLinkAll}>
+                        Link {autoCount} builder{autoCount === 1 ? "" : "s"} automatically
+                    </button>
+                )}
+
                 <div className="qbtime-rows">
                     <div className="qbtime-row qbtime-head">
                         <span>Builder</span>
@@ -116,20 +161,34 @@ function QbTimeMapping({ onClose }: qbTimeMappingProps) {
                     </div>
                     {builders.map((b) => {
                         const on = b.qbTimeUserId ? clock[Number(b.qbTimeUserId)] : undefined;
+                        const sug = suggestions.get(b.Id);
                         return (
                             <div className="qbtime-row" key={b.Id}>
                                 <span className="qbtime-name">{b.userName}</span>
-                                <select
-                                    value={b.qbTimeUserId ?? ""}
-                                    onChange={(e) => link(b.Id, e.target.value)}
-                                >
-                                    <option value="">(not linked)</option>
-                                    {qbUsers.map((u) => (
-                                        <option key={u.qbTimeUserId} value={u.qbTimeUserId}>
-                                            {u.displayName}
-                                        </option>
-                                    ))}
-                                </select>
+                                <span className="qbtime-pick">
+                                    <select
+                                        value={b.qbTimeUserId ?? ""}
+                                        onChange={(e) => link(b.Id, e.target.value)}
+                                    >
+                                        <option value="">(not linked)</option>
+                                        {qbUsers.map((u) => (
+                                            <option key={u.qbTimeUserId} value={u.qbTimeUserId}>
+                                                {u.displayName}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    {sug && (
+                                        <span className={`qbtime-suggest ${sug.confidence}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => link(b.Id, String(sug.qbTimeUserId))}
+                                            >
+                                                Link {sug.displayName}
+                                            </button>
+                                            <em>{sug.why}</em>
+                                        </span>
+                                    )}
+                                </span>
                                 <span className={`qbtime-clock ${on === 1 ? "in" : on === 0 ? "out" : ""}`}>
                                     {on === 1 ? "IN" : on === 0 ? "OUT" : "-"}
                                 </span>

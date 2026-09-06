@@ -62,10 +62,58 @@
 
 .qbtime-name { font-size: 19px; }
 
+.qbtime-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4vh;
+    min-width: 0;
+}
+
 .qbtime-row select {
     font-family: "Orbitron", monospace;
     font-size: 16px;
     height: 2.2em;
+    width: 100%;
+}
+
+/* A proposed link the operator has not accepted yet. Green for the confident
+   ones, amber for a nickname guess - the colour is the whole point: nobody
+   should accept "nicky -> Nicholas Martens" without noticing they did. */
+.qbtime-suggest {
+    display: flex;
+    align-items: center;
+    gap: 0.6vw;
+    font-family: "RobotoMono", monospace;
+    font-size: 13px;
+}
+
+.qbtime-suggest button {
+    font-family: "RobotoMono", monospace;
+    font-size: 13px;
+    padding: 0.3em 0.8em;
+    border: 1px solid #27f546;
+    color: #27f546;
+    background: transparent;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.qbtime-suggest.weak button {
+    border-color: #f5d327;
+    color: #f5d327;
+}
+
+.qbtime-suggest em {
+    opacity: 0.75;
+    font-style: normal;
+}
+
+.qbtime-autolink {
+    align-self: center;
+    font-family: "RobotoMono", monospace;
+    font-size: 15px;
+    min-height: 2.4em;
+    padding: 0 1.2em;
 }
 
 .qbtime-row input[type="checkbox"] {
