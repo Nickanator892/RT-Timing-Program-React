@@ -97,6 +97,28 @@ function checkWritable(candidate: string): void {
   fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
 }
 
+/**
+ * The journal mode SQLite recorded in the file itself: header byte 18 is the
+ * write-format version, and 2 means WAL.
+ *
+ * Read straight from the header because when this matters we cannot ask the
+ * database - the query is what is failing. It turns "disk I/O error" into a
+ * sentence that names the actual problem.
+ */
+function journalModeFromHeader(candidate: string): "wal" | "rollback" | "unknown" {
+  try {
+    const fd = fs.openSync(candidate, "r");
+    const buf = Buffer.alloc(20);
+    fs.readSync(fd, buf, 0, 20, 0);
+    fs.closeSync(fd);
+    if (buf[18] === 2) return "wal";
+    if (buf[18] === 1) return "rollback";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 // --------------------
 // Worker thread runner
 // --------------------
@@ -353,7 +375,7 @@ async function migrate() {
  * anyone to re-type the path, so writability is reported separately and the
  * timer page is what acts on it.
  */
-app.get("/api/db-status", (_req, res) => {
+app.get("/api/db-status", async (_req, res) => {
   if (!dbPath) {
     return res.json({ ready: false, writable: false, error: "No database path configured" });
   }
@@ -363,6 +385,24 @@ app.get("/api/db-status", (_req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     return res.json({ ready: false, writable: false, error: message });
   }
+
+  // Opening the file is not proof the database can be USED, so actually ask it
+  // something. On 2026-09-06 the shared database was switched to WAL journal
+  // mode by a desktop tool; WAL needs shared memory an SMB mount cannot give,
+  // so every query died with "disk I/O error" while this endpoint cheerfully
+  // reported ready AND writable - both of its file checks pass under WAL. The
+  // bench showed an empty builder list all morning and nothing here noticed.
+  const probe = await runQuery("SELECT 1 AS ok", []);
+  if (!probe?.success) {
+    const mode = journalModeFromHeader(dbPath);
+    const detail =
+      mode === "wal"
+        ? "the database is in WAL journal mode, which does not work over a network share - switch it back with PRAGMA journal_mode=DELETE"
+        : String(probe?.error ?? "the database did not answer a test query");
+    console.warn("Database not usable:", detail);
+    return res.json({ ready: true, writable: false, writeError: detail, journalMode: mode });
+  }
+
   try {
     checkWritable(dbPath);
     res.json({ ready: true, writable: true });
