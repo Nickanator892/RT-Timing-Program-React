@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { matchQbUser, isAutoLinkable } from "../assets/qbUserMatch";
 
 interface PauseReason {
     Id: string;
@@ -53,6 +54,42 @@ const execQuery = async (query: string, params: unknown[] = []): Promise<any> =>
         return undefined;
     }
 };
+
+/**
+ * Link a newly added builder to their QuickBooks Time user, when the match is
+ * unambiguous.
+ *
+ * Best effort and silent: a station whose roster has not been polled yet, or a
+ * name nobody on it resembles, simply leaves the builder unlinked - the
+ * QuickBooks Time screen then offers it as a one-click suggestion. Adding a
+ * builder must never fail because of this.
+ *
+ * Linking is NOT opting in: qbAutoPause stays 0 until someone ticks the box, so
+ * nobody starts getting their timer paused merely because they were matched.
+ */
+async function tryAutoLinkQbUser(builderId: number, userName: string): Promise<void> {
+    try {
+        const roster = await execQuery(
+            "SELECT qbTimeUserId, displayName, username, active FROM QBTIMEUSERS"
+        );
+        if (!Array.isArray(roster) || roster.length === 0) return;
+
+        const taken = await execQuery(
+            "SELECT qbTimeUserId FROM HARNBUILDERS WHERE qbTimeUserId IS NOT NULL"
+        );
+        const takenIds = Array.isArray(taken) ? taken.map((r: any) => Number(r.qbTimeUserId)) : [];
+
+        const match = matchQbUser(userName, roster, takenIds);
+        if (!isAutoLinkable(match)) return;
+
+        await execQuery("UPDATE HARNBUILDERS SET qbTimeUserId = ? WHERE Id = ?", [
+            match.qbTimeUserId,
+            builderId,
+        ]);
+    } catch (err) {
+        console.log("QuickBooks auto-link skipped:", err);
+    }
+}
 
 export function useSettings() {
     const [settings, setSettings] = useState<Settings | null>(null);
@@ -171,6 +208,14 @@ useEffect(() => {
             [name, password, privLevel, 1]
         );
         if (result !== undefined) {
+            // Best effort: link the new builder to their QuickBooks Time user
+            // straight away, but only on a confident match. A nickname that
+            // merely looks like someone ("nicky" / "Nicholas") is left for a
+            // human on the QuickBooks Time screen, which shows it as a
+            // one-click suggestion. Linking never opts anyone into auto-pause -
+            // that stays a separate, deliberate tick.
+            await tryAutoLinkQbUser(result.lastID, name);
+
             const newUser: User = {
                 Id: result.lastID,
                 name,
