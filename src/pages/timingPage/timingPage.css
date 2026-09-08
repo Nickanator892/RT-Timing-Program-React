@@ -8,7 +8,9 @@ body {
 /* The whole screen is one row: the button stack, then the timer column. Both
    columns size themselves to the panel rather than to fixed pixels - the bench
    Pi, a 1080p desk monitor and the 1280x720 default window are all in use, and
-   the old fixed heights ran the Close button off the bottom of the short one. */
+   the old fixed heights ran the Close button off the bottom of the short one.
+   Everything is sized in vh because the panel is short (1280 x ~735 once the
+   taskbar and title bar take their share) and height is what runs out first. */
 .timing-page {
     display: flex;
     flex-direction: row;
@@ -18,13 +20,11 @@ body {
 }
 
 #timer {
-    /* Was margin-left 10% + margin-top 6% + an ignored negative padding. The
-       size now tracks the panel so the column below it always has room. */
-    margin: 0.2em 0 0.1em 0;
+    margin: 0.05em 0 0 0;
     /* min-width, not width: at 8ch exactly, an Orbitron string wider than its
        box spills out of it. The box must always contain its own digits. */
     min-width: 8ch;
-    font-size: clamp(44px, 11vh, 90px);
+    font-size: clamp(56px, 13.5vh, 112px);
     line-height: 1.1;
     font-family: "Orbitron";
     text-align: center;
@@ -48,8 +48,8 @@ body {
 #start-button,
 #submit-time-button {
     width: clamp(200px, 26vw, 360px);
-    height: clamp(56px, 13vh, 105px);
-    font-size: clamp(22px, 3.2vh, 40px);
+    height: clamp(60px, 15vh, 112px);
+    font-size: clamp(24px, 5.5vh, 42px);
     border-radius: 20px;
     align-content: center;
 }
@@ -163,12 +163,12 @@ hr {
 }
 
 /* Grid, not flex column, deliberately: grid rows cannot overlap each other.
-   On the bench panel the nav icons ended up drawn over the timer digits even
-   though the flex column said otherwise (Randy's photo, 2026-09-08 - not
-   reproducible off the panel). Whatever the cause, a row track each removes
-   the possibility rather than arguing with it. */
+   nav | timer | the job/mode stack, which takes whatever height is left; any
+   warning / error rows after that at min-content. */
 #error-timer {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     grid-auto-rows: min-content;
     align-content: start;
     justify-items: center;
@@ -180,9 +180,29 @@ hr {
     overflow: hidden;
 }
 
-#error-message {
+/* Every stylesheet in this app is global (Vite bundles them all), and rules
+   written for other pages float things this page needs in flow:
+   settingsPage.css puts #nav-buttons and #error-message at position:absolute
+   and RTLogo.css does the same to #RT-logo-static. On the panel that lifted the
+   nav row out of the grid above and drew the icons over the timer digits (1.0.9
+   and 1.0.10, Randy's photos - a bench harness without those stylesheets could
+   not reproduce it). Two ids outrank one whatever the bundle order, so these
+   pin the timing page's copies back into flow. */
+#error-timer #nav-buttons,
+#error-timer #RT-logo-static,
+#error-timer #error-message {
+    position: static;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    left: auto;
+}
+
+#error-timer #error-message {
+    display: block;
+    width: auto;
     color: red;
-    font-size: clamp(14px, 2.4vh, 25px);
+    font-size: clamp(16px, 2.8vh, 25px);
     margin: 0.2em 0;
 }
 
@@ -196,15 +216,13 @@ hr {
     padding: 10px 16px;
     margin: 6px 0;
     max-width: 40em;
-    font-size: clamp(14px, 2.2vh, 22px);
+    font-size: clamp(16px, 2.6vh, 24px);
     font-weight: bold;
     text-align: center;
 }
 
-/* Top row: navigation on the left, logo on the right. The logo used to be
-   absolutely positioned over this row and sat on top of the Harness and Job
-   buttons on any panel narrower than about 1100px. In the row, space-between
-   cannot overlap. */
+/* Top row: navigation on the left, logo on the right. In the row, space-between
+   cannot overlap them. */
 #nav-buttons {
     /* Full width of its grid track, so the logo sits at the far right. */
     justify-self: stretch;
@@ -214,14 +232,11 @@ hr {
     justify-content: space-between;
     flex-wrap: wrap;
     width: 100%;
-    padding-top: 1%;
+    padding-top: 0;
     gap: 1em;
-    flex: 0 0 auto;
     /* The nav buttons are sized in em, so the row's font-size is the dial that
-       fits four icon buttons AND the logo across the panel. At the old fixed
-       16px they needed ~620px of a ~550px column, which silently pushed the
-       Job button out of the row. */
-    font-size: clamp(8px, 1.7vh, 16px);
+       fits four icon buttons AND the logo across the panel. */
+    font-size: clamp(11px, 2.3vh, 18px);
 }
 
 #nav-button-group {
@@ -232,39 +247,44 @@ hr {
     flex-wrap: wrap;
 }
 
-#RT-logo {
+/* The logo component's own ids, sized to the panel here: RTLogo.css has fixed
+   pixels and a padding-top percentage that resolves against width. */
+#error-timer #RT-logo-static {
     display: flex;
     flex-direction: row;
     align-items: baseline;
     flex: 0 0 auto;
 }
 
-#RT-part-one {
-    font-size: clamp(18px, 3vh, 30px);
-    font-family: "RT-Text";
+#error-timer #RT-part-one-static {
+    font-size: clamp(20px, 4vh, 36px);
     padding-right: 0.4em;
 }
 
-#RT-part-two {
-    font-size: clamp(10px, 1.6vh, 15px);
-    font-family: "RT-Text";
+#error-timer #RT-part-two-static {
+    font-size: clamp(11px, 2.2vh, 20px);
+    padding-top: 0;
 }
 
 #db-success {
     font-size: 15px;
 }
 
-/* The job/mode column under the timer. Everything in it is sized in vh so the
-   Close button stays on screen on the short bench panel. */
+/* The job/mode column under the timer. It owns the rest of the height. */
 .harn-info-and-close-button {
     justify-self: center;
+    align-self: stretch;
     display: flex;
     flex-direction: column;
-    gap: clamp(0.35em, 1.4vh, 1.4em);
+    justify-content: flex-start;
+    gap: clamp(8px, 1.6vh, 22px);
     width: 100%;
-    max-width: 34em;
+    max-width: 720px;
     align-items: stretch;
     min-height: 0;
+    /* Only reachable with a second operator loaded AND the database warning up
+       on the short panel: scroll rather than paint over the warning. */
+    overflow-y: auto;
 }
 
 .harn-build-info {
@@ -278,7 +298,7 @@ hr {
 }
 
 .harn-build-info p {
-    font-size: clamp(12px, 2.2vh, 20px);
+    font-size: clamp(18px, 3.2vh, 28px);
     font-family: "RobotoMono";
     margin: 0.25em 0;
     white-space: nowrap;
@@ -288,15 +308,17 @@ hr {
 
 .close-button {
     width: 100% !important;
-    height: clamp(40px, 7vh, 70px) !important;
-    font-size: clamp(16px, 2.6vh, 28px) !important;
+    height: clamp(52px, 10vh, 84px) !important;
+    font-size: clamp(22px, 4vh, 36px) !important;
     margin: 0;
 }
 
-.timer-mode-dropdown {
+/* id + class, because timerModeDropdown.css sets its own 2em font-size and is
+   bundled after this file. */
+#error-timer .timer-mode-dropdown {
     width: 100%;
-    height: clamp(40px, 7vh, 64px);
-    font-size: clamp(16px, 2.6vh, 30px);
+    height: clamp(52px, 10vh, 84px);
+    font-size: clamp(22px, 4vh, 36px);
     box-sizing: border-box;
 }
 
@@ -305,7 +327,7 @@ hr {
     flex-direction: column;
     gap: 0.4em;
     font-family: "RobotoMono";
-    font-size: clamp(12px, 2vh, 18px);
+    font-size: clamp(18px, 3.1vh, 24px);
 }
 
 .batch-controls input[type="checkbox"] {
@@ -322,6 +344,20 @@ hr {
     font-size: 1em;
 }
 
-.second-operator {
-    font-size: clamp(12px, 2.1vh, 19px);
+#error-timer .second-operator {
+    font-size: clamp(18px, 3.3vh, 26px);
+}
+
+/* Nothing in the stack may be squeezed to make room (flex shrinks the mode
+   button to a sliver before the container scrolls); scrolling is the fallback. */
+.harn-info-and-close-button > * {
+    flex-shrink: 0;
+}
+
+/* Whatever else grows above it - the operator badge, an error line, the
+   database warning below - Close stays in reach at the bottom of the stack. */
+.harn-info-and-close-button .close-button {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
 }

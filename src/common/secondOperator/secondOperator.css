@@ -76,3 +76,29 @@
     color: #ffd9d9;
     cursor: pointer;
 }
+
+/* Loaded, the badge and the Drop button share one row: the badge stack was
+   186px tall against the add button's 59px, and with the database warning up
+   on the short panel that pushed Close off the bottom of the column. */
+.second-operator.loaded {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0.6em;
+}
+
+.second-operator.loaded .second-operator-badge {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.4em 0.8em;
+    /* One line - label, name, rate - so the loaded state is barely taller than
+       the button it replaces and the column below it does not move. */
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 0.7em;
+    row-gap: 0;
+}
+
+.second-operator.loaded .second-operator-drop {
+    flex: 0 0 auto;
+}

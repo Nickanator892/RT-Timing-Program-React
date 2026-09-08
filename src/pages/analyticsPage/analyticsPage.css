@@ -218,9 +218,14 @@ body:has(.analytics-root) {
     font-family: "Orbitron", monospace;
 }
 #RT-part-one {
+    /* RT-Text, the brand face every other page uses for the logo. It used to
+       arrive here by accident from timingPage.css, whose #RT-part-* rules
+       leaked across the global bundle; now stated where it is used. */
+    font-family: "RT-Text";
     font-size: clamp(26px, 2.8vw, 60px);
 }
 #RT-part-two {
+    font-family: "RT-Text";
     font-size: clamp(15px, 1.1vw, 35px);
 }
 

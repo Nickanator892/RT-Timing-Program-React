@@ -3,7 +3,7 @@
     flex-direction: row;
 }
 
-#nav-buttons {
+.settings-page #nav-buttons {
     display: flex;
     position: absolute;
     left: 580px;
@@ -22,7 +22,7 @@ button {
     font-family: "Orbitron";
 }
 
-#error-message {
+.settings-page #error-message {
     /* width 100% + left 100px pushed this 100px past the viewport edge
        (horizontal scrollbar on every page - these stylesheets are global) */
     width: calc(100% - 120px);
