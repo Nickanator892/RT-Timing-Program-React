@@ -115,13 +115,19 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         // The span fallback covers rows written before this
                         // release, using the tolerant parser because the legacy
                         // dd/mm/yyyy format is not parseable by new Date().
-                        let seconds = Math.round(Number(t.workedSeconds ?? 0));
+                        // laborSeconds is workedSeconds weighted by the crew on
+                        // each segment: an hour worked by two people charts as
+                        // two hours, which is the labour the shop actually
+                        // spent. It equals workedSeconds on a solo build, so
+                        // every existing row is unaffected.
+                        let seconds = Math.round(Number(t.laborSeconds ?? t.workedSeconds ?? 0));
                         if (!seconds) {
                             const start = parseTimestamp(t.startTime);
                             const end = parseTimestamp(t.endTime);
                             const gross =
                                 start && end ? Math.round((end.getTime() - start.getTime()) / 1000) : 0;
-                            seconds = Math.max(0, gross - Math.round(Number(t.pausedSeconds ?? 0)));
+                            const worked = Math.max(0, gross - Math.round(Number(t.pausedSeconds ?? 0)));
+                            seconds = worked * Math.max(1, Number(t.numberOfBuilders ?? 1));
                         }
                         const h = Math.floor(seconds / 3600);
                         const m = Math.floor((seconds % 3600) / 60);
