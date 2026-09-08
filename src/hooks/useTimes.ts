@@ -13,6 +13,14 @@ export interface LoggedTime {
      *  pausedSeconds from it. Gap-safe, so a build interrupted overnight and
      *  resumed the next morning reports the work, not the wall clock. */
     workedSeconds?: number;
+    /** workedSeconds weighted by the crew that worked each segment: an hour
+     *  worked by two people is two labour hours. That is the figure the shop
+     *  pays for, so it is the one the analytics charts. Equal to workedSeconds
+     *  for a solo build. */
+    laborSeconds?: number;
+    /** Crew on the build. > 1 means a second operator was loaded for at least
+     *  part of it - laborSeconds carries the exact per-segment weighting. */
+    numberOfBuilders?: number;
     /** Segments still open; > 0 means the build is in progress. */
     openSegments?: number;
 }

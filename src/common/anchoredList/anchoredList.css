@@ -1,0 +1,86 @@
+/* Pop-up list shared by the timer-mode picker and the second-operator picker.
+   Positioned by anchoredList.tsx; everything here is appearance only. */
+
+/* Sits under the list and over the page: a tap anywhere else closes it.
+   Below the on-screen keyboard's 10000 - the keyboard is never open with this. */
+.anchored-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    background: transparent;
+}
+
+.anchored-panel {
+    position: fixed;
+    z-index: 9001;
+    margin: 0;
+    padding: 0.3em 0;
+    list-style: none;
+    box-sizing: border-box;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    background: #101010;
+    border: 3px solid #555;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    font-family: "Orbitron", monospace;
+    color: #f0f0f0;
+    outline: none;
+}
+
+.anchored-option {
+    /* Finger-sized: the panel is driven by hand, often gloved. */
+    min-height: 2.2em;
+    display: flex;
+    align-items: center;
+    padding: 0.35em 0.8em;
+    font-size: 1.6em;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.anchored-option.is-active {
+    background: #2a2a2a;
+}
+
+.anchored-option.is-selected {
+    background: #3a5a3a;
+    font-weight: bold;
+}
+
+.anchored-option.is-selected.is-active {
+    background: #47704a;
+}
+
+.anchored-empty {
+    padding: 0.8em;
+    font-size: 1.3em;
+    color: #aaa;
+    white-space: nowrap;
+}
+
+/* A thumb wide enough to grab, and always visible - on a touchscreen an
+   invisible scrollbar is the same as no scrollbar. */
+.anchored-panel::-webkit-scrollbar {
+    width: 16px;
+}
+
+.anchored-panel::-webkit-scrollbar-track {
+    background: #1c1c1c;
+}
+
+.anchored-panel::-webkit-scrollbar-thumb {
+    background: #6a6a6a;
+    border-radius: 8px;
+    border: 3px solid #1c1c1c;
+}
+
+/* The second-operator picker is blue, matching its badge. */
+.anchored-panel.operator-panel {
+    border-color: #2f6fd0;
+}
+
+.anchored-panel.operator-panel .anchored-option.is-active {
+    background: #1d3a63;
+}

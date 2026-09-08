@@ -1,5 +1,24 @@
+/* Timer mode picker. The list itself is AnchoredList (anchoredList.css); this
+   is just the button that opens it, which keeps the footprint the native
+   <select> it replaced had. */
+
 .timer-mode-dropdown {
     font-size: 2em;
     font-family: "Orbitron";
     border-radius: 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6em;
+    padding: 0.1em 0.4em;
+    background: #f0f0f0;
+    color: #101010;
+    border: 2px solid #555;
+    cursor: pointer;
+    text-align: left;
+}
+
+.timer-mode-caret {
+    font-size: 0.6em;
+    line-height: 1;
 }

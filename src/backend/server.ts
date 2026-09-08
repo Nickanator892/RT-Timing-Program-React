@@ -326,8 +326,16 @@ async function migrate() {
   // row id) keeps pause rows (same buildId, timeTypeId 4) from collapsing
   // into their build row and randomly hijacking its timeTypeId.
   //
-  // -- HBTV v3 (keep byte-identical with the copy in HPP's
+  // -- HBTV v4 (keep byte-identical with the copy in HPP's
   //             BuildTimerScheduleForm.EnsureTimingTables; bump both together)
+  //
+  // laborSeconds (v4) is the same time weighted by how many people worked it:
+  // two builders on one harness for an hour earn two labour hours, and a build
+  // can change crew mid-run, so the weighting is per SEGMENT rather than per
+  // build. workedSeconds stays the honest wall-clock figure - the two answer
+  // different questions and neither replaces the other. Costing and per-person
+  // analytics want laborSeconds; "how long will this take on the bench" wants
+  // workedSeconds.
   await runQuery(`DROP VIEW IF EXISTS HARNBUILDTIMES_VIEW`);
   await runQuery(`
       CREATE VIEW HARNBUILDTIMES_VIEW AS
@@ -344,6 +352,7 @@ async function migrate() {
           MAX(s.endTime) as endTime,
           SUM(CASE WHEN COALESCE(s.endTime, '') = '' THEN 1 ELSE 0 END) AS openSegments,
           SUM(COALESCE(s.accumSeconds, 0)) AS workedSeconds,
+          SUM(COALESCE(s.accumSeconds, 0) * COALESCE(s.numberOfBuilders, 1)) AS laborSeconds,
           (SELECT COALESCE(SUM((julianday(p.endTime) - julianday(p.startTime)) * 86400), 0)
              FROM HARNBUILDTIMES p
             WHERE p.buildId = h.buildId

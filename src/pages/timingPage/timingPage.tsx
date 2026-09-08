@@ -1,5 +1,5 @@
 import "./timingPage.css";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import SettingsButton from "../../common/buttons/settingsButton/settingsButton";
 import TimerButton from "../../common/buttons/timerButton/timerButton";
 import { useNavigate } from "react-router-dom";
@@ -9,6 +9,7 @@ import useTimes, { type LoggedTime } from "../../hooks/useTimes";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import TimerModeDropdown from "../../common/timerModeDropdown/timerModeDropdown";
+import SecondOperator from "../../common/secondOperator/secondOperator";
 import TimeSetupButton from "../../common/buttons/timeSetupButton/timeSetupButton";
 import TimeTeardownButton from "../../common/buttons/timeTeardownButton/timeTeardownButton";
 import TimeBuildButton from "../../common/buttons/timeBuildButton/timeBuildButton";
@@ -67,7 +68,7 @@ function TimingPage({
         "pauseReason",
         undefined
     );
-    const [secondaryBuilders, _setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
+    const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
     // The segment rows are what carry the time; targeting them by id (rather
@@ -97,9 +98,14 @@ useEffect(() => {
         return;
     }
 
-    // Only react if builders actually changed and a build is in progress
+    // Only react if builders actually changed and a build is in progress.
+    // Compared by identity, not by count: swapping one second operator for
+    // another is still a crew change, and a count check would miss it and bill
+    // the rest of the segment to the person who left.
     if (timerDone) return;
-    if (secondaryBuilders.length === prevSecondaryBuilders.current.length) return;
+    const crew = (list: { Id: Number; name: string }[]) =>
+        list.map((b) => Number(b.Id)).sort((a, b) => a - b).join(",");
+    if (crew(secondaryBuilders) === crew(prevSecondaryBuilders.current)) return;
     prevSecondaryBuilders.current = secondaryBuilders;
 
     // Batch runs have no rows to segment yet - the final builder count is
@@ -296,6 +302,37 @@ useEffect(() => {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedUser?.Id, isRunning, timerDone]);
+
+    // --- Second operator: back to one crew member, on its own ------------
+    // Two people on one harness record double time, and the expensive failure
+    // is forgetting to drop the pairing: every later harness then bills twice
+    // the labour, silently, until someone questions the numbers. So the pairing
+    // is released whenever the operation that justified it is over - a
+    // submitted time, a different harness, or the shift ending - and NEVER
+    // mid-run, which would under-record work two people are actually doing.
+    const releaseSecondOperator = useCallback(
+        (why: string) => {
+            setSecondaryBuilders((prev) => {
+                if (prev.length === 0) return prev;
+                console.log(`Second operator released: ${why}`);
+                return [];
+            });
+        },
+        [setSecondaryBuilders]
+    );
+
+    // Shift end. The same clock-out that pauses the timer ends the pairing:
+    // whoever was helping is not on the clock either.
+    useEffect(() => {
+        if (clockBlocked) releaseSecondOperator("clocked out of QuickBooks");
+    }, [clockBlocked, releaseSecondOperator]);
+
+    // A different harness PN is a different operation. Only while idle - a
+    // harness cannot change mid-run, and rolling a segment here would be wrong.
+    useEffect(() => {
+        if (timerDone) releaseSecondOperator("harness changed");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedHarn]);
 
     // --- Database writability -------------------------------------------
     // A read-only share is invisible until something tries to write: the app
@@ -600,6 +637,12 @@ useEffect(() => {
             setErr("");
             setPauseStart(null);
 
+            // The operation is over, so the pairing is too (Randy's rule: back
+            // to one at the end of any timing operation - setup, build, final
+            // test, teardown). Safe here: timerDone is already true, so the
+            // builder-change effect will not try to roll a segment.
+            releaseSecondOperator("timing operation submitted");
+
             if (harnBuilt + 1 >= harnTotal) {
                 setDbSuccess("ALL BUILT ✅");
             }
@@ -670,11 +713,18 @@ useEffect(() => {
                 </button>
             </div>
             <div id="error-timer">
+                {/* The logo lives IN the top row rather than absolutely
+                    positioned over it: as an overlay it sat on top of the
+                    Harness and Job buttons on any panel narrower than about
+                    1100px (Randy, 2026-09-08). space-between cannot overlap. */}
                 <div id="nav-buttons">
-                    <TimerButton />
-                    <SettingsButton />
-                    <ChooseHarnessButton />
-                    <ChooseKitButton />
+                    <div id="nav-button-group">
+                        <TimerButton />
+                        <SettingsButton />
+                        <ChooseHarnessButton />
+                        <ChooseKitButton />
+                    </div>
+                    <RTLogo />
                 </div>
                 <p id="timer">{displayTimer}</p>
 
@@ -684,6 +734,7 @@ useEffect(() => {
                         <p id="timer-mode">Timer Mode: {timerMode.header}</p>
                     </div>
                     <TimerModeDropdown/>
+                    <SecondOperator />
                     <div className="batch-controls">
                         <label className="batch-toggle">
                             <input
@@ -723,7 +774,6 @@ useEffect(() => {
                     </p>
                 )}
                 <p id="error-message">{err}</p>
-                <RTLogo />
             </div>
         </div>
     );
