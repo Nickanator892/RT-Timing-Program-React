@@ -21,8 +21,11 @@ body {
     /* Was margin-left 10% + margin-top 6% + an ignored negative padding. The
        size now tracks the panel so the column below it always has room. */
     margin: 0.2em 0 0.1em 0;
-    width: 8ch;
+    /* min-width, not width: at 8ch exactly, an Orbitron string wider than its
+       box spills out of it. The box must always contain its own digits. */
+    min-width: 8ch;
     font-size: clamp(44px, 11vh, 90px);
+    line-height: 1.1;
     font-family: "Orbitron";
     text-align: center;
 }
@@ -159,10 +162,16 @@ hr {
     color: gray;
 }
 
+/* Grid, not flex column, deliberately: grid rows cannot overlap each other.
+   On the bench panel the nav icons ended up drawn over the timer digits even
+   though the flex column said otherwise (Randy's photo, 2026-09-08 - not
+   reproducible off the panel). Whatever the cause, a row track each removes
+   the possibility rather than arguing with it. */
 #error-timer {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+    display: grid;
+    grid-auto-rows: min-content;
+    align-content: start;
+    justify-items: center;
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -197,6 +206,8 @@ hr {
    buttons on any panel narrower than about 1100px. In the row, space-between
    cannot overlap. */
 #nav-buttons {
+    /* Full width of its grid track, so the logo sits at the far right. */
+    justify-self: stretch;
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -246,6 +257,7 @@ hr {
 /* The job/mode column under the timer. Everything in it is sized in vh so the
    Close button stays on screen on the short bench panel. */
 .harn-info-and-close-button {
+    justify-self: center;
     display: flex;
     flex-direction: column;
     gap: clamp(0.35em, 1.4vh, 1.4em);
