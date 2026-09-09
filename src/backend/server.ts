@@ -53,6 +53,26 @@ const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/bac
 let dbPath: string | null = null;
 
 // --------------------
+// RtMcs write proxy
+// --------------------
+// Every WRITE goes to RtMcs on the database's Windows host instead of into the
+// SQLite file over CIFS. Proven 2026-09-08 on a copy of the database: with the
+// mount's nobrl option our locks are invisible to Windows, so HPP/RtMcs treat
+// our in-flight journal as abandoned and roll it back ("recovered 2 pages from
+// ...-journal") and we end in "disk I/O error"; without nobrl we cannot commit
+// at all (SQLite's unix VFS upgrades its shared lock in place at commit, which
+// Windows refuses). A Windows-side writer has real locks and a busy timeout,
+// so writers queue instead of colliding. Reads stay local.
+//
+// There is deliberately NO fallback to direct writes when RtMcs is down: that
+// would bring the collision straight back. The timer page already holds Start
+// while db-status reports not writable, and that is the right behaviour here.
+// Contract: docs/RTMCS-TIMER-WRITE-ENDPOINT.md in the Harness Pricing Program repo.
+const DEFAULT_RTMCS_URL = "http://192.168.0.199:8322";
+let rtmcsUrl: string = process.env.RTMCS_URL ?? DEFAULT_RTMCS_URL;
+let rtmcsKey: string | null = null;
+
+// --------------------
 // Helpers
 // --------------------
 
@@ -76,25 +96,6 @@ function validateSQLitePath(candidate: string): void {
   if (buf.toString("utf8", 0, 6) !== "SQLite") {
     throw new Error("File is not a valid SQLite database");
   }
-}
-
-/**
- * Can SQLite actually WRITE here right now?
- *
- * validateSQLitePath only reads the file header, so a read-only share sails
- * straight through it and the app reports itself healthy while every INSERT
- * fails. That is not hypothetical: after the 2026-08-31 site-wide power cut the
- * Pi was up before the file server, and a builder was able to press Start and
- * be told "attempt to write a readonly database".
- *
- * Opening the database r+ is exactly what SQLite does, and the directory has to
- * be writable too because the rollback journal is created alongside the file.
- * Neither check writes anything.
- */
-function checkWritable(candidate: string): void {
-  const fd = fs.openSync(candidate, "r+");
-  fs.closeSync(fd);
-  fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
 }
 
 /**
@@ -122,7 +123,8 @@ function journalModeFromHeader(candidate: string): "wal" | "rollback" | "unknown
 // --------------------
 // Worker thread runner
 // --------------------
-function runWorker(workerPayload: any): Promise<any> {
+/** Local better-sqlite3 worker - reads only, now that writes are proxied. */
+function runWorkerLocal(workerPayload: any): Promise<any> {
     return new Promise((resolve, reject) => {
       console.log("Worker path exists:", fs.existsSync(WORKER_PATH), WORKER_PATH);
         const worker = new Worker(WORKER_PATH, {
@@ -145,6 +147,84 @@ function runWorker(workerPayload: any): Promise<any> {
             if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
         });
     });
+}
+
+/** A batch is always a write; a single statement is a read only if it SELECTs. */
+function isWrite(payload: any): boolean {
+    if (Array.isArray(payload?.statements)) return true;
+    return !/^\s*(SELECT|WITH|PRAGMA)\b/i.test(String(payload?.query ?? ""));
+}
+
+/**
+ * The shared machine key HPP also presents to RtMcs. RtMcs mints it into
+ * MSAPIKEY on its first start, so a plain local read is all it takes.
+ */
+async function loadRtmcsKey(): Promise<void> {
+    rtmcsKey = null;
+    const out = await runWorkerLocal({
+        query: "SELECT KEYVAL FROM MSAPIKEY WHERE KEYNAME = 'HPP'",
+        params: [],
+    });
+    const key = out?.success ? out.result?.[0]?.KEYVAL : null;
+    if (typeof key === "string" && key !== "") {
+        rtmcsKey = key;
+        console.log("RtMcs write proxy:", rtmcsUrl, "(key loaded)");
+    } else {
+        console.warn("RtMcs key not found in MSAPIKEY - writes are held until it is:", out?.error ?? "no row");
+    }
+}
+
+/**
+ * Forward the worker payload unchanged and hand back RtMcs's reply, which is
+ * the worker's own {success, result} / {success:false, error} envelope.
+ */
+async function runWorkerRemote(workerPayload: any): Promise<any> {
+    if (!rtmcsKey) {
+        return { success: false, error: "RtMcs key not loaded - the write was not attempted" };
+    }
+    try {
+        const r = await fetch(`${rtmcsUrl}/api/timer/exec`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
+            body: JSON.stringify(workerPayload),
+            signal: AbortSignal.timeout(20_000),
+        });
+        const out: any = await r.json().catch(() => null);
+        if (!out || typeof out.success !== "boolean") {
+            return { success: false, error: `RtMcs answered HTTP ${r.status} without a result envelope` };
+        }
+        if (!out.success) console.warn("RtMcs refused a write:", out.error);
+        return out;
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("RtMcs unreachable:", message);
+        return { success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
+    }
+}
+
+/** Reads run in the local worker; every write goes through RtMcs. */
+function runWorker(workerPayload: any): Promise<any> {
+    return isWrite(workerPayload) ? runWorkerRemote(workerPayload) : runWorkerLocal(workerPayload);
+}
+
+/** Can the Windows side take a write lock right now? Nothing is written. */
+async function rtmcsHealth(): Promise<{ writable: boolean; writeError?: string }> {
+    if (!rtmcsKey) return { writable: false, writeError: "RtMcs key not loaded from MSAPIKEY" };
+    try {
+        const r = await fetch(`${rtmcsUrl}/api/timer/health`, {
+            headers: { "X-RtMcs-Key": rtmcsKey },
+            signal: AbortSignal.timeout(5_000),
+        });
+        if (r.status === 401) return { writable: false, writeError: "RtMcs rejected the machine key" };
+        const out: any = await r.json().catch(() => null);
+        if (!out) return { writable: false, writeError: `RtMcs answered HTTP ${r.status}` };
+        return out.writable
+            ? { writable: true }
+            : { writable: false, writeError: String(out.writeError ?? "RtMcs cannot take a write lock") };
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { writable: false, writeError: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
+    }
 }
 
 function runQuery(query: string, params: any[] = []): Promise<any> {
@@ -180,12 +260,25 @@ async function mustRun(
 
     validateSQLitePath(config.dbPath);
     dbPath = config.dbPath;
+    if (typeof config.rtmcsUrl === "string" && config.rtmcsUrl !== "" && !process.env.RTMCS_URL) {
+      rtmcsUrl = config.rtmcsUrl;
+    }
     console.log("Loaded DB path:", dbPath);
-
-    await migrate();
   } catch (err) {
     console.warn("Saved DB path invalid, ignoring:", err);
     dbPath = null;
+    return;
+  }
+
+  // Schema upkeep is a set of writes, so it runs through RtMcs. If RtMcs is
+  // down at boot the schema is simply left as the last start made it - that
+  // must NOT unconfigure the database and send the operator to the setup
+  // screen, which is what the old single try/catch would have done.
+  try {
+    await loadRtmcsKey();
+    await migrate();
+  } catch (err) {
+    console.warn("migrate skipped - schema left as-is until the next start:", err);
   }
 })();
 
@@ -412,14 +505,12 @@ app.get("/api/db-status", async (_req, res) => {
     return res.json({ ready: true, writable: false, writeError: detail, journalMode: mode });
   }
 
-  try {
-    checkWritable(dbPath);
-    res.json({ ready: true, writable: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn("Database is not writable:", message);
-    res.json({ ready: true, writable: false, writeError: message });
-  }
+  // Writes happen on the Windows host, so ask RtMcs whether IT can take a
+  // write lock right now. The old r+ open of the file only proved the share
+  // was not read-only, which says nothing about the writer we actually use.
+  const remote = await rtmcsHealth();
+  if (!remote.writable) console.warn("Database is not writable:", remote.writeError);
+  res.json({ ready: true, writable: remote.writable, writeError: remote.writeError, writer: rtmcsUrl });
 });
 
 // --------------------
@@ -607,8 +698,9 @@ app.post("/api/set-db-path", (req, res) => {
   try {
     validateSQLitePath(incomingPath);
     dbPath = incomingPath;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath }, null, 2), "utf-8");
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath, rtmcsUrl }, null, 2), "utf-8");
     console.log("Database path saved:", dbPath);
+    void loadRtmcsKey();
     res.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
