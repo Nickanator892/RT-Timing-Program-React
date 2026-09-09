@@ -182,23 +182,34 @@ async function runWorkerRemote(workerPayload: any): Promise<any> {
     if (!rtmcsKey) {
         return { success: false, error: "RtMcs key not loaded - the write was not attempted" };
     }
-    try {
-        const r = await fetch(`${rtmcsUrl}/api/timer/exec`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
-            body: JSON.stringify(workerPayload),
-            signal: AbortSignal.timeout(20_000),
-        });
-        const out: any = await r.json().catch(() => null);
-        if (!out || typeof out.success !== "boolean") {
-            return { success: false, error: `RtMcs answered HTTP ${r.status} without a result envelope` };
+    // RtMcs waits up to 15 s for another writer before answering "database
+    // busy" (nothing written). Measured on the live file 2026-09-09: an engine
+    // refresh holds the lock for up to 16 s, so one busy answer is normal and
+    // a single retry after a short pause covers it. Two in a row is reported.
+    for (let attempt = 1; ; attempt++) {
+        try {
+            const r = await fetch(`${rtmcsUrl}/api/timer/exec`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
+                body: JSON.stringify(workerPayload),
+                signal: AbortSignal.timeout(20_000),
+            });
+            const out: any = await r.json().catch(() => null);
+            if (!out || typeof out.success !== "boolean") {
+                return { success: false, error: `RtMcs answered HTTP ${r.status} without a result envelope` };
+            }
+            if (!out.success && attempt === 1 && /^database busy/.test(String(out.error ?? ""))) {
+                console.warn("RtMcs busy, retrying once:", out.error);
+                await new Promise((res) => setTimeout(res, 3_000));
+                continue;
+            }
+            if (!out.success) console.warn("RtMcs refused a write:", out.error);
+            return out;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn("RtMcs unreachable:", message);
+            return { success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
         }
-        if (!out.success) console.warn("RtMcs refused a write:", out.error);
-        return out;
-    } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn("RtMcs unreachable:", message);
-        return { success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
     }
 }
 
