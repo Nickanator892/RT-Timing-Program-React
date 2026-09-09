@@ -69,7 +69,7 @@ function TimingPage({
         undefined
     );
     const [secondaryBuilders, setSecondaryBuilders, crewLoaded] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
-    const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
+    const [timerMode, _setTimerMode, timerModeLoaded] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
     // The segment rows are what carry the time; targeting them by id (rather
     // than by "whichever one is open") is what makes recovery and multi-segment
@@ -91,6 +91,21 @@ function TimingPage({
     );
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
+
+    // Randy's rule (2026-09-09): every timing operation other than Build defaults
+    // to batch - setup, teardown, final test and the rest are normally done for
+    // every unit at once, a Build is one harness. Applied when the MODE changes
+    // (and once when the page first sees it), only while idle, so a deliberate
+    // un-tick survives until the next mode change, and a mode change mid-run
+    // cannot flip a timer that already has rows.
+    const batchDefaultedForMode = useRef<number | null>(null);
+    useEffect(() => {
+        if (!timerModeLoaded || !timerDoneLoaded) return;
+        if (batchDefaultedForMode.current === timerMode.id) return;
+        batchDefaultedForMode.current = timerMode.id;
+        if (timerDone) setBatchMode(timerMode.id !== 1);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [timerMode.id, timerModeLoaded, timerDoneLoaded, timerDone]);
 
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
