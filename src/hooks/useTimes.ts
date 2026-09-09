@@ -118,7 +118,7 @@ export function useTimes() {
             const changes = Number((result as any)?.changes ?? 0);
             if (!changes) {
                 console.error("writeTime matched no open segment", { buildId, segmentId });
-                return false;
+                return "nomatch";
             }
             return result;
         } catch (err: any) {

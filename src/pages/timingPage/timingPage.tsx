@@ -45,14 +45,14 @@ function TimingPage({
     const [harnBuilt, setHarnBuilt] = useState(0);
     const [harnTotal, setHarnTotal] = useState(0);
     const [isRunning, setIsRunning] = useSharedState<boolean>("isRunning", false);
-    const [timerDone, setTimerDone] = useSharedState<boolean>("timerDone", true);
+    const [timerDone, setTimerDone, timerDoneLoaded] = useSharedState<boolean>("timerDone", true);
     // Set by the main process when heartbeats stop landing: the clock is
     // counting but nothing is being written.
     const [heartbeatError] = useSharedState<string | null>("heartbeatError", null);
     const displayTimer = useSyncedTimer();
     const [startTime, setStartTime] = useSharedState<string>("startTime", "");
     const [endTime, setEndTime] = useSharedState<string>("endTime", "");
-    const [selectedHarn] = useSharedState<string>("selectedHarn", "");
+    const [selectedHarn, , selectedHarnLoaded] = useSharedState<string>("selectedHarn", "");
     const [disableButtons, setDisabledButtons] = useState<boolean>(false);
     const [disableSubmit, setDisableSubmit] = useState<boolean>(true);
     const [refreshTrigger, setRefreshTrigger] = useSharedState<number>("refreshTrigger", 0);
@@ -68,7 +68,7 @@ function TimingPage({
         "pauseReason",
         undefined
     );
-    const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
+    const [secondaryBuilders, setSecondaryBuilders, crewLoaded] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
     // The segment rows are what carry the time; targeting them by id (rather
@@ -78,69 +78,129 @@ function TimingPage({
     // Batch mode: one timed window covers `batchUnits` physical units of the PN
     // (e.g. stripping every cable for all harnesses at once). No rows are
     // written at start - submit slices the window across the units.
-    const [batchMode, setBatchMode] = useState<boolean>(false);
-    const [batchUnits, setBatchUnits] = useState<number>(1);
-    const batchPauses = useRef<{ start: string; end: string; reasonId: string | undefined }[]>([]);
+    //
+    // Shared state, not page state: this page unmounts on every trip to the
+    // pause-reason screen, and on 2026-09-09 a batch Final Test came back from
+    // one with the flag silently off - the crew-change roll and the Submit then
+    // both aimed at the previous build's closed segment and nothing was written.
+    const [batchMode, setBatchMode] = useSharedState<boolean>("batchMode", false);
+    const [batchUnits, setBatchUnits] = useSharedState<number>("batchUnits", 1);
+    const [batchPauses, setBatchPauses] = useSharedState<{ start: string; end: string; reasonId: string | undefined }[]>(
+        "batchPauses",
+        []
+    );
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
 
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
 
+    // --- Crew change: roll the live segment ---------------------------------
+    // Shared state is not a clean event stream. Every broadcast from the main
+    // process (each timer tick included) rewrites every key with main's snapshot
+    // at send time, so for a few milliseconds after any local change the page
+    // renders OLD values again - old roster, old timerDone, old segment ids.
+    // Deciding on the render in which something changed is what produced
+    // phantom rolls against segments that were already closed, and the roster
+    // itself arrives a moment after mount as a placeholder-to-real transition
+    // (this page remounts on every trip to the pause-reason screen). So: on any
+    // change, wait for the values to settle, then decide from the LATEST ones.
+    const latest = useRef({ secondaryBuilders, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId });
+    latest.current = { secondaryBuilders, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId };
     const isFirstRender = useRef(true);
-const prevSecondaryBuilders = useRef(secondaryBuilders);
-
-useEffect(() => {
-    // Skip on first render or if timer isn't running
-    if (isFirstRender.current) {
-        isFirstRender.current = false;
-        prevSecondaryBuilders.current = secondaryBuilders;
-        return;
-    }
-
-    // Only react if builders actually changed and a build is in progress.
-    // Compared by identity, not by count: swapping one second operator for
-    // another is still a crew change, and a count check would miss it and bill
-    // the rest of the segment to the person who left.
-    if (timerDone) return;
-    const crew = (list: { Id: Number; name: string }[]) =>
-        list.map((b) => Number(b.Id)).sort((a, b) => a - b).join(",");
-    if (crew(secondaryBuilders) === crew(prevSecondaryBuilders.current)) return;
-    prevSecondaryBuilders.current = secondaryBuilders;
-
-    // Batch runs have no rows to segment yet - the final builder count is
-    // recorded when submit writes the distributed rows.
-    if (batchMode) return;
+    const prevSecondaryBuilders = useRef(secondaryBuilders);
+    const crewCheck = useRef<number | null>(null);
+    const rolling = useRef(false);
+    const CREW_SETTLE_MS = 400;
 
     // handleBuilderChange - close the live segment and open its replacement in
     // ONE transaction. Between those two writes the build has no open segment,
     // and RtMcs's timer sweep reads that as a finished build and proposes
     // consuming inventory for it.
-    async function handleBuilderChange() {
-        window.electron.timerPause();
-        setIsRunning(false);
+    //
+    // The clock is left exactly as it was found. This used to pause and then
+    // unconditionally restart it, so a crew change made during a pause set the
+    // build running again with Pause still lit (2026-09-09).
+    async function handleBuilderChange(L: typeof latest.current) {
+        if (!L.currentBuildId || !L.currentSegmentId) {
+            setErr(
+                "This timer has no open segment on record, so the crew change is not saved yet. " +
+                    "Both operators will be recorded when this time is submitted."
+            );
+            return;
+        }
 
+        const wasRunning = L.isRunning;
+        if (wasRunning) {
+            window.electron.timerPause();
+            setIsRunning(false);
+        }
+
+        rolling.current = true;
         try {
             const rolled = await postApi("/api/build/segment-roll", {
-                buildId: currentBuildId,
-                segmentId: currentSegmentId,
+                buildId: L.currentBuildId,
+                segmentId: L.currentSegmentId,
                 accumSeconds: await window.electron.getSegmentSeconds(),
-                numberOfBuilders: secondaryBuilders.length + 1,
-                secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+                numberOfBuilders: L.secondaryBuilders.length + 1,
+                secondaryBuilderIds: L.secondaryBuilders.map((b) => Number(b.Id)),
             });
             setCurrentSegmentStart(rolled.startTime);
             setCurrentSegmentId(rolled.segmentId);
             window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
         } catch (e: any) {
             setErr(`Could not record the builder change: ${e?.message ?? e}`);
+        } finally {
+            rolling.current = false;
+            if (wasRunning) {
+                window.electron.timerStart();
+                setIsRunning(true);
+            }
         }
-
-        window.electron.timerStart();
-        setIsRunning(true);
     }
 
-    handleBuilderChange();
-}, [secondaryBuilders, currentBuildId, currentSegmentStart, selectedHarn, buildKit, selectedUser, timerMode, timerDone, batchMode]);
+    useEffect(() => {
+        if (!crewLoaded) return;
+        if (crewCheck.current) window.clearTimeout(crewCheck.current);
+        crewCheck.current = window.setTimeout(function check() {
+            crewCheck.current = null;
+            const L = latest.current;
+            const crew = (list: { Id: Number; name: string }[]) =>
+                list.map((b) => Number(b.Id)).sort((a, b) => a - b).join(",");
+
+            if (isFirstRender.current) {
+                isFirstRender.current = false;
+                prevSecondaryBuilders.current = L.secondaryBuilders;
+                return;
+            }
+            // Idle: nothing to roll, but keep following the roster. Otherwise
+            // the release at Submit is never seen, and the next Start on this
+            // same page reads the stale roster as a crew change.
+            if (L.timerDone) {
+                prevSecondaryBuilders.current = L.secondaryBuilders;
+                return;
+            }
+            // Compared by identity, not by count: swapping one second operator
+            // for another is still a crew change, and a count check would miss
+            // it and bill the rest of the segment to the person who left.
+            if (crew(L.secondaryBuilders) === crew(prevSecondaryBuilders.current)) return;
+            if (rolling.current) {
+                crewCheck.current = window.setTimeout(check, CREW_SETTLE_MS);
+                return;
+            }
+            // Marked as handled before the attempt, success or not: a failed
+            // roll is reported once, not retried on every later render.
+            prevSecondaryBuilders.current = L.secondaryBuilders;
+
+            // Batch runs have no rows to segment yet - the final builder count
+            // is recorded when submit writes the distributed rows.
+            if (L.batchMode) return;
+            void handleBuilderChange(L);
+        }, CREW_SETTLE_MS);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [crewLoaded, secondaryBuilders, currentBuildId, currentSegmentId, timerDone, batchMode, isRunning]);
+
+    useEffect(() => () => { if (crewCheck.current) window.clearTimeout(crewCheck.current); }, []);
 
     // Default the batch unit count to the PN's qty-to-build.
     useEffect(() => {
@@ -329,10 +389,16 @@ useEffect(() => {
 
     // A different harness PN is a different operation. Only while idle - a
     // harness cannot change mid-run, and rolling a segment here would be wrong.
+    //
+    // Not before the shared values have arrived: this page remounts on every
+    // trip to the pause-reason screen, and the placeholder timerDone (true)
+    // seen on that first render released the second operator mid-build, every
+    // time, with the segment still recorded as two people (2026-09-09).
     useEffect(() => {
+        if (!timerDoneLoaded || !selectedHarnLoaded) return;
         if (timerDone) releaseSecondOperator("harness changed");
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedHarn]);
+    }, [selectedHarn, timerDoneLoaded, selectedHarnLoaded]);
 
     // --- Database writability -------------------------------------------
     // A read-only share is invisible until something tries to write: the app
@@ -418,11 +484,12 @@ useEffect(() => {
             if (batchMode && !timerDone) {
                 // No build row exists yet - queue the pause; submit attaches it
                 // to the batch's first build row.
-                batchPauses.current.push({
+                const queued = {
                     start: pauseStart,
                     end: formatTimestamp(new Date().toISOString()),
                     reasonId: sharedPauseReason?.Id,
-                });
+                };
+                setBatchPauses((prev) => [...prev, queued]);
                 setPauseStart(null);
             } else {
                 try {
@@ -456,7 +523,7 @@ useEffect(() => {
             // batch that was abandoned, or whose submit failed, would otherwise
             // hand its pauses to whatever batch ran next.
             if (batchMode) {
-                batchPauses.current = [];
+                setBatchPauses([]);
                 return;
             }
 
@@ -536,7 +603,7 @@ useEffect(() => {
             // open and was never queued, because queuing happens on Resume.
             // Without this the break sits inside the window with nothing to
             // show for it.
-            const pauses = [...batchPauses.current];
+            const pauses = [...batchPauses];
             if (pauseStart) {
                 pauses.push({
                     start: pauseStart,
@@ -576,22 +643,55 @@ useEffect(() => {
                     [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
                 );
             }
-            batchPauses.current = [];
+            setBatchPauses([]);
 
             const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
             if (Array.isArray(updatedTimes)) {
                 setHarnBuilt(updatedTimes.length);
             }
             window.electron.timerReset();
+            setCurrentBuildId(0);
+            setCurrentSegmentId(0);
             setRefreshTrigger((prev) => prev + 1);
             setTimerDone(true);
             setDbSuccess(`${units} units ✅`);
             setErr("");
             setPauseStart(null);
+            // Same rule as a single submit: the pairing ends with the operation.
+            releaseSecondOperator("batch submitted");
         } catch (e: any) {
             setErr(String(e?.message ?? e));
             setDbSuccess("Submit");
         }
+    }
+
+    /** Record the time on screen as a build of its own: the build row, its
+     *  time row and ONE closed segment carrying the pause-free elapsed seconds
+     *  from the main-process clock. Used when Submit finds no open segment to
+     *  close, so the operator's time is written instead of abandoned. */
+    async function recordAsNewBuild() {
+        const shared = await window.electron.getSharedData();
+        const elapsedSeconds = Math.max(1, Math.round(Number(shared?.elapsedTime ?? 0) / 1000));
+        const end = endTime || formatTimestamp(new Date().toISOString());
+        const start =
+            startTime ||
+            formatTimestamp(new Date(new Date(end).getTime() - elapsedSeconds * 1000).toISOString());
+        setDbSuccess("Recording...");
+        const created = await postApi("/api/build/start", {
+            harnNumber: selectedHarn,
+            rev: buildKit?.REV,
+            builderId: selectedUser?.Id,
+            timeTypeId: timerMode.id,
+            numberOfBuilders: secondaryBuilders.length + 1,
+            secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+            startTime: start,
+        });
+        await execWrite(
+            `UPDATE HARNBUILDSEGMENTS
+                SET endTime = ?, accumSeconds = ?, heartbeatAt = ?, heartbeatState = 'PAUSE'
+              WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
+            [end, elapsedSeconds, end, created.segmentId]
+        );
     }
 
     async function submitTime() {
@@ -618,11 +718,20 @@ useEffect(() => {
                 endTime: endTime,
                 harnNumber: selectedHarn,
             };
-            if (typeof currentBuildId == "number") {
-                const result = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
-                if (!result) {
-                    return;
-                }
+            // Close the segment this timer has been heartbeating. When there is
+            // none on record, or the one on record is already closed, the time
+            // on screen is still real work: record it as a build of its own.
+            // This used to return silently with the button stuck on
+            // "Fetching..." and nothing written (2026-09-09: a 28-minute Final
+            // Test whose ids still pointed at the previous, submitted build).
+            let closed: unknown = "nomatch";
+            if (typeof currentBuildId == "number" && currentBuildId > 0 && currentSegmentId > 0) {
+                closed = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
+            }
+            if (closed === "nomatch") {
+                await recordAsNewBuild();
+            } else if (!closed) {
+                throw new Error("Could not close the segment - nothing was written. Check the database and Submit again.");
             }
 
             const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
@@ -631,6 +740,10 @@ useEffect(() => {
             }
 
             window.electron.timerReset();
+            // The ids belong to the build just closed. Left in place, the next
+            // timer that has no build of its own would write into this one.
+            setCurrentBuildId(0);
+            setCurrentSegmentId(0);
             setRefreshTrigger((prev) => prev + 1); // ← triggers analytics to refresh
             setTimerDone(true);
             setDbSuccess("Success✅");
