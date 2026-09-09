@@ -496,9 +496,13 @@ function TimingPage({
         }
         window.electron.timerStart();
         if (pauseStart) {
-            if (batchMode && !timerDone) {
+            // Decided by whether rows exist, not by the Batch box: the box can be
+            // ticked or cleared mid-run now, so a build that started as a single
+            // keeps writing its pause rows, and a batch that turns single keeps
+            // queueing until Submit creates its build.
+            if (!currentBuildId && !timerDone) {
                 // No build row exists yet - queue the pause; submit attaches it
-                // to the batch's first build row.
+                // to the build row(s) it creates.
                 const queued = {
                     start: pauseStart,
                     end: formatTimestamp(new Date().toISOString()),
@@ -509,6 +513,9 @@ function TimingPage({
             } else {
                 try {
                     await insertPause();
+                    // Consumed: it is on record now. Left set, a later batch
+                    // Submit counted it a second time as "never resumed".
+                    setPauseStart(null);
                 } catch (e: any) {
                     // Without this row the paused window is charged to the build
                     // as worked time. Refuse the resume rather than quietly
@@ -532,15 +539,13 @@ function TimingPage({
             setErr("");
             setDbSuccess("Submit");
 
+            // The pause queue is emptied at EVERY start rather than only on a
+            // successful submit: a run that was abandoned, or whose submit
+            // failed, would otherwise hand its pauses to whatever ran next.
+            setBatchPauses([]);
             // Batch runs write nothing at start - all rows are created at
-            // submit, when the total window and unit count are known. The pause
-            // queue is emptied here rather than only on a successful submit: a
-            // batch that was abandoned, or whose submit failed, would otherwise
-            // hand its pauses to whatever batch ran next.
-            if (batchMode) {
-                setBatchPauses([]);
-                return;
-            }
+            // submit, when the total window and unit count are known.
+            if (batchMode) return;
 
             // One transaction: a crash between these inserts used to leave a
             // build row with no segment, which carries no time and is invisible
@@ -627,6 +632,25 @@ function TimingPage({
                 });
             }
 
+            // Started as a single build and switched to batch mid-run: that
+            // build already has rows (its open segment, pause rows, crew
+            // segments). Take its pauses over, drop it, and let the batch write
+            // its units fresh. The pauses go into the shared queue BEFORE the
+            // drop, so a failed batch write below still has them for the retry.
+            if (currentBuildId) {
+                const dropped = await postApi("/api/build/discard", { buildId: currentBuildId });
+                const carried = (dropped?.pauses ?? []).map((p: any) => ({
+                    start: String(p.startTime ?? ""),
+                    end: String(p.endTime ?? ""),
+                    reasonId: p.pauseReasonId == null ? undefined : String(p.pauseReasonId),
+                }));
+                pauses.unshift(...carried);
+                setBatchPauses((prev) => [...carried, ...prev]);
+                setCurrentBuildId(0);
+                setCurrentSegmentId(0);
+                window.electron.timerSegment({ segmentId: undefined, segmentAccumSeconds: 0 });
+            }
+
             // A batch's duration comes from the wall clock, so unlike a normal
             // build it is NOT pause-free - start-to-end covers every break in
             // between. The main-process timer IS pause-free (it freezes on
@@ -707,6 +731,17 @@ function TimingPage({
               WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
             [end, elapsedSeconds, end, created.segmentId]
         );
+        // Pauses taken while there was no build row to hang them on (a batch
+        // that turned single mid-run, or the pause that was never resumed).
+        const pauses = [...batchPauses];
+        if (pauseStart) pauses.push({ start: pauseStart, end, reasonId: sharedPauseReason?.Id });
+        for (const pause of pauses) {
+            await execWrite(
+                "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                [created.buildId, pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
+            );
+        }
+        setBatchPauses([]);
     }
 
     async function submitTime() {
@@ -865,10 +900,12 @@ function TimingPage({
                     <SecondOperator />
                     <div className="batch-controls">
                         <label className="batch-toggle">
+                            {/* Usable mid-run (Randy, 2026-09-09): a single build
+                                switched to batch is converted at Submit, a batch
+                                switched to single is recorded as one build. */}
                             <input
                                 type="checkbox"
                                 checked={batchMode}
-                                disabled={!timerDone}
                                 onChange={(e) => setBatchMode(e.target.checked)}
                             />
                             Batch: one time across all units
@@ -880,7 +917,6 @@ function TimingPage({
                                     type="number"
                                     min={1}
                                     value={batchUnits}
-                                    disabled={!timerDone}
                                     onChange={(e) => setBatchUnits(Number(e.target.value))}
                                 />
                             </label>

@@ -699,6 +699,44 @@ app.post("/api/build/segment-roll", async (req, res) => {
   }
 });
 
+/**
+ * Drop a build that is still LIVE on this station - the single-build rows
+ * written at Start - because the operator switched it to a batch mid-run and
+ * Submit is about to write the batch's units instead. Hands back the build's
+ * pause rows so the batch can carry them. One transaction, and the guard on the
+ * HARNBUILDS delete (an OPEN segment on this station) means a build that was
+ * already submitted, or belongs to another station, can never be discarded.
+ */
+app.post("/api/build/discard", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const buildId = Number(req.body?.buildId);
+  if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
+  try {
+    const out = await mustRun([
+      {
+        query: `SELECT startTime, endTime, pauseReasonId FROM HARNBUILDTIMES
+                 WHERE buildId = ? AND timeTypeId = 4 ORDER BY startTime`,
+        params: [buildId],
+      },
+      {
+        query: `DELETE FROM HARNBUILDS
+                 WHERE buildId = ?
+                   AND EXISTS (SELECT 1 FROM HARNBUILDSEGMENTS s
+                                WHERE s.buildId = HARNBUILDS.buildId
+                                  AND COALESCE(s.endTime, '') = '' AND s.stationId = ?)`,
+        params: [buildId, STATION_ID],
+        requireChanges: 1,
+      },
+      { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
+      { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
+      { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
+    ]);
+    res.json({ success: true, result: { pauses: Array.isArray(out[0]) ? out[0] : [] } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 app.post("/api/set-db-path", (req, res) => {
   const incomingPath = req.body?.path;
 
@@ -753,4 +791,4 @@ app.listen(port, () => {
   console.log("Worker path:", WORKER_PATH);
 });
 
-setInterval(() => {}, 1000 * 60 * 60);
+setInterval(() => {}, 1000 * 60 * 60);
