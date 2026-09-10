@@ -123,12 +123,23 @@ function journalModeFromHeader(candidate: string): "wal" | "rollback" | "unknown
 // --------------------
 // Worker thread runner
 // --------------------
-/** Local better-sqlite3 worker - reads only, now that writes are proxied. */
+/**
+ * Local better-sqlite3 worker - reads only, now that writes are proxied.
+ *
+ * Opened READ-ONLY on purpose. The share is mounted with nobrl, so this side
+ * never sees the pricing program's locks: a read that arrives while HPP is
+ * mid-commit finds HPP's rollback journal with (apparently) nobody behind it,
+ * and a read-write connection would "recover" it - overwriting pages HPP has
+ * already committed (seen 2026-09-10: a SUPPBGROUP row and two SPPATHS rows
+ * vanished under a live pricing run). A read-only connection refuses instead
+ * (SQLITE_READONLY_ROLLBACK, "attempt to write a readonly database"), and
+ * runWorker re-serves that read through RtMcs, which holds real locks.
+ */
 function runWorkerLocal(workerPayload: any): Promise<any> {
     return new Promise((resolve, reject) => {
       console.log("Worker path exists:", fs.existsSync(WORKER_PATH), WORKER_PATH);
         const worker = new Worker(WORKER_PATH, {
-            workerData: { dbPath, ...workerPayload },
+            workerData: { dbPath, readonly: true, ...workerPayload },
             env: {
                 ...process.env,
                 BETTER_SQLITE3_PATH: process.env.BETTER_SQLITE3_PATH ?? 'better-sqlite3'
@@ -202,9 +213,29 @@ async function runWorkerRemote(workerPayload: any): Promise<any> {
     }
 }
 
-/** Reads run in the local worker; every write goes through RtMcs. */
-function runWorker(workerPayload: any): Promise<any> {
-    return isWrite(workerPayload) ? runWorkerRemote(workerPayload) : runWorkerLocal(workerPayload);
+/**
+ * Reads run in the local worker; every write goes through RtMcs. A local read
+ * that fails (hot-journal refusal, "unable to open database file", disk I/O
+ * error - all seen during pricing runs) is re-served by RtMcs, whose
+ * /api/timer/exec accepts SELECTs. Errors from the SQL itself are not retried:
+ * the same statement would fail the same way over there.
+ */
+async function runWorker(workerPayload: any): Promise<any> {
+    if (isWrite(workerPayload)) return runWorkerRemote(workerPayload);
+    let local: any;
+    try {
+        local = await runWorkerLocal(workerPayload);
+    } catch (err) {
+        local = { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (local?.success || !rtmcsKey) return local;
+    const reason = String(local?.error ?? "");
+    if (!/readonly|unable to open|disk I[/]O|database is locked|busy|SQLITE_(READONLY|CANTOPEN|IOERR|BUSY)/i.test(reason)) {
+        return local;
+    }
+    console.warn("local read failed (" + reason + ") - re-serving through RtMcs");
+    const remote = await runWorkerRemote(workerPayload);
+    return remote?.success ? remote : local;
 }
 
 /** Can the Windows side take a write lock right now? Nothing is written. */
