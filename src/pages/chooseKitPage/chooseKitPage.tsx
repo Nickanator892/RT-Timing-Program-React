@@ -5,6 +5,7 @@ import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSharedState } from "../../hooks/useSharedState";
 import { useJobs, jobIsComplete, type Job } from "../../hooks/useJobs";
 import RTLogo from "../../components/RTLogo/RTLogo";
+import BackButton from "../../common/buttons/backButton/backButton";
 
 /**
  * Pick the job to work on.
@@ -123,6 +124,7 @@ function ChooseKitPage() {
 
     return (
         <div className="job-page">
+            <BackButton />
             <h2 className="job-header">Select Job</h2>
 
             {loading && <p className="job-empty">Loading the schedule...</p>}

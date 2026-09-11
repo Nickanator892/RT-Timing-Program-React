@@ -4,6 +4,7 @@ import useSettings from "../../hooks/useSettings";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import RTLogo from "../../components/RTLogo/RTLogo";
+import { recentOperatorsFirst, rememberOperator } from "../../assets/operatorOrder";
 
 interface User {
     Id: number;
@@ -68,9 +69,12 @@ function LoginPage({ setUser }: loginProps) {
     const endIndex = startIndex + itemsPerPage;
     const hasNextPage = users.length > endIndex;
     const hasPreviousPage = currentPage > 0;
+    // Three at a time, so whoever built here last must not be on page two
+    // (Randy, 2026-09-11: ashley was, on the panel she had worked all morning).
+    const ordered = recentOperatorsFirst(users);
 
     function populateUserList() {
-        return users.slice(startIndex, endIndex).map((user) => (
+        return ordered.slice(startIndex, endIndex).map((user) => (
             <div key={user.Id} className="user-list-object">
                 <p className="user-name-p">{user.name}</p>
                 <button type="button" id="user-list-button" onClick={() => selectUser(user.Id)}>
@@ -82,6 +86,7 @@ function LoginPage({ setUser }: loginProps) {
 
     function selectPasswordProtected() {
         if (password == localSelectedUser?.password) {
+            rememberOperator(localSelectedUser?.Id);
             setUser(localSelectedUser);
             setTimeout(() => {
                 afterLogin();
@@ -105,6 +110,7 @@ function LoginPage({ setUser }: loginProps) {
             return;
         }
 
+        rememberOperator(found.Id);
         setUser(found);
         setTimeout(() => {
             afterLogin();

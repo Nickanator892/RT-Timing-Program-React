@@ -361,3 +361,38 @@ hr {
     bottom: 0;
     z-index: 1;
 }
+
+
+/* Clocked out of QuickBooks. The timer has paused itself and Start is held, so
+   the state belongs on Pause - where the clock is - rather than on a green
+   Start button (Randy, 2026-09-11).
+
+   Slow on purpose. This can sit on screen for a whole lunch break, and the
+   0.25s flash the pressed states use is punishing to sit beside; the second
+   operator badge settled on the same ~1Hz for the same reason. !important
+   because the button is disabled while it shows, and the disabled rule would
+   otherwise win. */
+#pause-button.clocked-out {
+    animation: clockedOutFlash 1.2s ease-in-out infinite !important;
+    border: 3px solid #ffd34d;
+}
+
+@keyframes clockedOutFlash {
+    0%   { background-color: #3a3320; color: #ffd34d; }
+    50%  { background-color: #ffd34d; color: #1a1a1a; }
+    100% { background-color: #3a3320; color: #ffd34d; }
+}
+
+/* A disabled button is normally dimmed; this one is an indicator and has to
+   stay readable across the bench. */
+#pause-button.clocked-out:disabled {
+    opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #pause-button.clocked-out {
+        animation: none !important;
+        background-color: #ffd34d;
+        color: #1a1a1a;
+    }
+}

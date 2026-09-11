@@ -1,0 +1,43 @@
+/* Back control. Deliberately laid out IN FLOW rather than positioned over the
+   page: every page stylesheet in this app is global once Vite bundles it, and
+   an absolutely positioned element in one of them has twice drawn on top of the
+   timing screen. A plain row cannot do that. */
+
+.back-row {
+    display: flex;
+    justify-content: flex-start;
+    padding: 0.4em 0 0;
+    /* Both host pages are centring flex columns, so without an explicit width
+       the row shrinks to the button and gets centred with everything else.
+       align-self keeps it hard left whatever the parent's alignment is. */
+    width: 100%;
+    align-self: flex-start;
+    box-sizing: border-box;
+}
+
+.back-button {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    font-family: "Orbitron", monospace;
+    font-size: 20px;
+    padding: 0.45em 1.1em;
+    /* Finger-sized, matching the other bench controls. */
+    min-height: 2.2em;
+    border: 2px solid #6b7683;
+    border-radius: 8px;
+    background: #1b2027;
+    color: #dfe6ee;
+    cursor: pointer;
+}
+
+.back-button:active {
+    background: #2a323c;
+}
+
+.back-chevron {
+    font-size: 1.4em;
+    line-height: 1;
+    /* Optically centred: the glyph sits high in its box. */
+    margin-top: -0.12em;
+}

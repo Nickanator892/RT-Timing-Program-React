@@ -17,7 +17,6 @@ import TimeBuildButton from "../../common/buttons/timeBuildButton/timeBuildButto
 import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
-import CloseButton from "../../common/buttons/closeButton/closeButton";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
 
@@ -387,6 +386,9 @@ function TimingPage({
                 autoPausedRef.current = true;
                 window.electron.timerPause();
                 setIsRunning(false);
+                // Move the lit indicator to Pause, which is where the timer now
+                // is. Left on Start it stayed green through the whole break.
+                setActiveButton("pause");
                 setPauseStart(formatTimestamp(new Date().toISOString()));
                 setEndTime(formatTimestamp(new Date().toISOString()));
                 // Preset the reason so the existing resume path writes a proper
@@ -865,10 +867,13 @@ function TimingPage({
                     onClick={() => handleButtonClick("start")}
                     disabled={disableButtons || clockBlocked || dbBlocked}
                 >
+                    {/* "Clocked Out" used to be this button's label, which put
+                        the words on a GREEN button - the colour that means go -
+                        while Start was refusing to work (Randy, 2026-09-11).
+                        Start now just says what it would do, and the clocked-out
+                        state is shown on Pause, where the timer actually is. */}
                     {dbBlocked
                         ? "No Database"
-                        : clockBlocked
-                        ? "Clocked Out"
                         : isRunning
                         ? "Running"
                         : displayTimer === "00:00:00"
@@ -877,11 +882,13 @@ function TimingPage({
                 </button>
                 <button
                     id="pause-button"
-                    className={activeButton === "pause" ? "pressed" : ""}
+                    className={`${activeButton === "pause" ? "pressed" : ""}${
+                        clockBlocked ? " clocked-out" : ""
+                    }`.trim()}
                     onClick={() => handleButtonClick("pause")}
                     disabled={!isRunning || disableButtons}
                 >
-                    Pause
+                    {clockBlocked ? "Clocked Out" : "Pause"}
                 </button>
                 <button
                     id="end-button"
@@ -926,7 +933,11 @@ function TimingPage({
                 <div className="harn-info-and-close-button">
                     <div className="harn-build-info">
                         <p id="current-build-pn">Part #: {selectedHarn}</p>
-                        <p id="timer-mode">Timer Mode: {timerMode.header}</p>
+                        {/* The "Timer Mode: ..." line that used to sit here said
+                            the same thing as the dropdown immediately below it.
+                            Dropped rather than duplicated: this column has to
+                            fit a 735px panel with a warning banner up, and the
+                            Builder row needed the space more. */}
                     </div>
                     <TimerModeDropdown/>
                     <PrimaryOperator />
@@ -955,7 +966,6 @@ function TimingPage({
                             </label>
                         )}
                     </div>
-                    <CloseButton />
                 </div>
 
                 {dbBlocked && (
