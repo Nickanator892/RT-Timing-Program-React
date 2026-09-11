@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { useSharedState } from "../../hooks/useSharedState"
 import { useSettings } from "../../hooks/useSettings"
 import AnchoredList from "../anchoredList/anchoredList"
+import { recentOperatorsFirst, rememberOperator } from "../../assets/operatorOrder"
 import "./secondOperator.css"
 
 interface User {
@@ -36,11 +37,14 @@ function SecondOperator() {
 
     const second = secondaryBuilders[0];
 
-    // Anyone active except whoever is already on this timer.
-    const candidates = (users ?? []).filter(
-        (u: User) =>
-            Number(u.Id) !== Number(selectedUser?.Id ?? -1) &&
-            !secondaryBuilders.some((s) => Number(s.Id) === Number(u.Id))
+    // Anyone active except whoever is already on this timer, the people who
+    // work this bench first.
+    const candidates = recentOperatorsFirst(
+        (users ?? []).filter(
+            (u: User) =>
+                Number(u.Id) !== Number(selectedUser?.Id ?? -1) &&
+                !secondaryBuilders.some((s) => Number(s.Id) === Number(u.Id))
+        )
     );
 
     if (second) {
@@ -83,7 +87,10 @@ function SecondOperator() {
                     items={candidates.map((u: User) => ({ key: u.Id, label: u.name }))}
                     onPick={(key) => {
                         const picked = candidates.find((u: User) => Number(u.Id) === Number(key));
-                        if (picked) setSecondaryBuilders((prev) => [...prev, { Id: picked.Id, name: picked.name }]);
+                        if (picked) {
+                            rememberOperator(picked.Id);
+                            setSecondaryBuilders((prev) => [...prev, { Id: picked.Id, name: picked.name }]);
+                        }
                         setOpen(false);
                     }}
                     onClose={() => setOpen(false)}

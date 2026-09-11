@@ -6,6 +6,7 @@ import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSharedState } from "../../hooks/useSharedState";
 import { fetchHarnProgress, type HarnProgress, type Job } from "../../hooks/useJobs";
 import RTLogo from "../../components/RTLogo/RTLogo";
+import BackButton from "../../common/buttons/backButton/backButton";
 
 interface harnProps {
     setHarn: React.Dispatch<React.SetStateAction<string>>;
@@ -92,6 +93,7 @@ function ChooseHarnPage({ setHarn }: harnProps) {
 
     return (
         <div className="harn-page">
+            <BackButton />
             <div className="harn-head">
                 <h2 className="harn-title">Select Harness</h2>
                 {selectedJob && (

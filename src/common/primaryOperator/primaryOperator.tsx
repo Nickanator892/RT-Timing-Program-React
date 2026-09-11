@@ -3,6 +3,7 @@ import { useSharedState } from "../../hooks/useSharedState";
 import { useSettings } from "../../hooks/useSettings";
 import AnchoredList from "../anchoredList/anchoredList";
 import type { User } from "../../assets/types/UserType";
+import { recentOperatorsFirst, rememberOperator } from "../../assets/operatorOrder";
 import "./primaryOperator.css";
 
 /**
@@ -40,12 +41,14 @@ function PrimaryOperator() {
     const [err, setErr] = useState("");
     const buttonRef = useRef<HTMLButtonElement>(null);
 
-    // Anyone active except whoever already has it.
-    const candidates = (users ?? []).filter(
-        (u: User) => Number(u.Id) !== Number(selectedUser?.Id ?? -1)
+    // Anyone active except whoever already has it, the people who work this
+    // bench first.
+    const candidates = recentOperatorsFirst(
+        (users ?? []).filter((u: User) => Number(u.Id) !== Number(selectedUser?.Id ?? -1))
     );
 
     function handOver(to: User) {
+        rememberOperator(to.Id);
         // Nobody is the builder AND the second operator: that is one pair of
         // hands recorded as two, and the segment would bill at double.
         setSecondaryBuilders((prev) => prev.filter((s) => Number(s.Id) !== Number(to.Id)));

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, screen } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -419,6 +419,16 @@ function createMainWindow() {
 
     windows.push(mainWindow);
 
+    // The title-bar X and Alt+F4 come through here, so the confirmation lives
+    // on the window rather than only on a button the page used to render.
+    mainWindow.on("close", (e) => {
+        if (closeConfirmed) return;
+        e.preventDefault();
+        confirmClose(mainWindow).then((ok) => {
+            if (ok && mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+        });
+    });
+
     mainWindow.on("closed", () => {
         windows = windows.filter((w) => w !== mainWindow);
         mainWindow = null;
@@ -486,8 +496,38 @@ function createAnalyticsWindow() {
 // App lifecycle
 // --------------------
 
-ipcMain.on("quit-app", () => {
-    app.quit();
+// --- Closing always asks -------------------------------------------------
+// Randy, 2026-09-11. The panel is a touchscreen with a title-bar X a few
+// millimetres from the controls, and closing mid-build ends the shift's timing
+// with one stray tap. The in-app Close button is gone; this covers every
+// remaining way out - the X, Alt+F4, and any quit the app asks for itself.
+let closeConfirmed = false;
+
+async function confirmClose(win) {
+    if (closeConfirmed) return true;
+    const mid = sharedTimerData.timerDone === false;
+    const { response } = await dialog.showMessageBox(win ?? mainWindow ?? undefined, {
+        type: "question",
+        buttons: ["Keep timing", "Close the timer"],
+        // Both default and cancel point at "Keep timing", so Escape, the window
+        // manager's own close, and a mis-tap on Enter all keep the build alive.
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: "Close RT Timing?",
+        message: mid ? "A build is still open on this station." : "Close the timer?",
+        detail: mid
+            ? "Closing now leaves it unfinished. The time it has earned is kept and the build can be picked up again when the app is reopened, but nobody can time on this panel until someone does."
+            : "Nothing is being timed right now.",
+    });
+    if (response !== 1) return false;
+    closeConfirmed = true;
+    return true;
+}
+
+ipcMain.on("quit-app", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (await confirmClose(win)) app.quit();
 });
 
 function waitForServer(url, maxAttempts = 30, interval = 500) {
