@@ -8,6 +8,19 @@
     justify-content: center;
     overflow: hidden;
     cursor: none;
+    /* No pan, pinch or double-tap zoom on the idle screen: a touch here only
+       ever means "wake up". */
+    touch-action: none;
+}
+
+/* Dismissing: kept in the DOM, and still the topmost hit target, until the
+   gesture that woke the panel has finished. Taking it out of the DOM on the
+   first event of that gesture is what pressed the button underneath it
+   (Randy, 2026-09-11). */
+.screensaver.dismissing {
+    opacity: 0;
+    background: transparent;
+    transition: opacity 150ms linear;
 }
 
 /* Drift the whole block slowly around the panel so no pixel holds the same

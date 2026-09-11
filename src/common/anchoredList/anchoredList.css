@@ -20,6 +20,8 @@
     overflow-y: auto;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    /* Vertical finger drags scroll the list; nothing else. */
+    touch-action: pan-y;
     background: #101010;
     border: 3px solid #555;
     border-radius: 6px;

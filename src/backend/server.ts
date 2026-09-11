@@ -193,23 +193,34 @@ async function runWorkerRemote(workerPayload: any): Promise<any> {
     if (!rtmcsKey) {
         return { success: false, error: "RtMcs key not loaded - the write was not attempted" };
     }
-    try {
-        const r = await fetch(`${rtmcsUrl}/api/timer/exec`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
-            body: JSON.stringify(workerPayload),
-            signal: AbortSignal.timeout(20_000),
-        });
-        const out: any = await r.json().catch(() => null);
-        if (!out || typeof out.success !== "boolean") {
-            return { success: false, error: `RtMcs answered HTTP ${r.status} without a result envelope` };
+    // RtMcs waits up to 15 s for another writer before answering "database
+    // busy" (nothing written). Measured on the live file 2026-09-09: an engine
+    // refresh holds the lock for up to 16 s, so one busy answer is normal and
+    // a single retry after a short pause covers it. Two in a row is reported.
+    for (let attempt = 1; ; attempt++) {
+        try {
+            const r = await fetch(`${rtmcsUrl}/api/timer/exec`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
+                body: JSON.stringify(workerPayload),
+                signal: AbortSignal.timeout(20_000),
+            });
+            const out: any = await r.json().catch(() => null);
+            if (!out || typeof out.success !== "boolean") {
+                return { success: false, error: `RtMcs answered HTTP ${r.status} without a result envelope` };
+            }
+            if (!out.success && attempt === 1 && /^database busy/.test(String(out.error ?? ""))) {
+                console.warn("RtMcs busy, retrying once:", out.error);
+                await new Promise((res) => setTimeout(res, 3_000));
+                continue;
+            }
+            if (!out.success) console.warn("RtMcs refused a write:", out.error);
+            return out;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn("RtMcs unreachable:", message);
+            return { success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
         }
-        if (!out.success) console.warn("RtMcs refused a write:", out.error);
-        return out;
-    } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn("RtMcs unreachable:", message);
-        return { success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` };
     }
 }
 
@@ -343,6 +354,26 @@ async function migrate() {
   // The station that owns the segment. Recovery only ever scans and writes its
   // OWN station's rows, so two Pis can never close each other's live work.
   await ensureColumn("HARNBUILDSEGMENTS", "stationId", "TEXT");
+  // Who was the PRIMARY builder on this segment. HARNBUILDTIMES.builderId can
+  // only name one person per build, so before this column a build handed from
+  // one builder to another mid-run had to credit all of it to one of them. The
+  // segment rows already split on every crew change, so they are the right
+  // place for the answer. Additive on purpose: HARNBUILDTIMES_VIEW is NOT
+  // changed here (it is kept byte-identical with HPP's copy), so nothing
+  // downstream moves - the per-person split is recorded and available, and
+  // teaching the view to use it is a separate, cross-repo change.
+  await ensureColumn("HARNBUILDSEGMENTS", "builderId", "INTEGER");
+
+  // Historical segments belong to their build's primary builder - the only
+  // builder they could have had before handovers were possible.
+  await runQuery(`
+    UPDATE HARNBUILDSEGMENTS
+       SET builderId = (SELECT t.builderId FROM HARNBUILDTIMES t
+                         WHERE t.buildId = HARNBUILDSEGMENTS.buildId
+                           AND t.timeTypeId <> 4
+                         ORDER BY t.harnBuildTimeId LIMIT 1)
+     WHERE builderId IS NULL
+  `);
 
   // --- backfill: give historical closed segments an accumSeconds ---------
   // Span minus the pauses that fall inside it, matching what the old
@@ -660,9 +691,9 @@ app.post("/api/build/start", async (req, res) => {
       },
       {
         query: `INSERT INTO HARNBUILDSEGMENTS
-                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId)
-                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?)`,
-        params: [buildId, start, builders, start, STATION_ID],
+                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId, builderId)
+                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?, ?)`,
+        params: [buildId, start, builders, start, STATION_ID, builderId ?? null],
         requireChanges: 1,
       },
       ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
@@ -681,15 +712,26 @@ app.post("/api/build/start", async (req, res) => {
  * builder roster changes mid-build). Between the two statements the build has
  * NO open segment, and RtMcs's timer sweep reads that as a finished build and
  * proposes consuming inventory for it - hence one transaction.
+ *
+ * `builderId` is the PRIMARY builder from here on. Send it when the build has
+ * been handed to someone else: the segment that just closed keeps the builder
+ * it was worked by, the new one is stamped with the new primary, and the build
+ * row follows the person who is on it now. Omit it and only the second-operator
+ * roster changes, which is the older crew-change case.
  */
 app.post("/api/build/segment-roll", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
-  const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds } = req.body ?? {};
+  const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds, builderId } =
+    req.body ?? {};
   if (!buildId || !segmentId) {
     return res.status(400).json({ success: false, error: "buildId and segmentId are required" });
   }
   const now = nowLocal();
   const builders = Math.max(1, Number(numberOfBuilders) || 1);
+  // A handover names the incoming builder; a plain crew change does not, and
+  // must leave both the build row and the new segment on whoever is already
+  // recorded - never NULL them.
+  const newPrimary = Number(builderId) > 0 ? Number(builderId) : null;
   try {
     const out = await mustRun([
       {
@@ -700,13 +742,23 @@ app.post("/api/build/segment-roll", async (req, res) => {
         requireChanges: 1,
       },
       {
+        // COALESCE, not the raw value: on a plain crew change newPrimary is
+        // null and the new segment inherits the builder the build already has.
         query: `INSERT INTO HARNBUILDSEGMENTS
-                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId)
-                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?)`,
-        params: [buildId, now, builders, now, STATION_ID],
+                  (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId, builderId)
+                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?,
+                        COALESCE(?, (SELECT t.builderId FROM HARNBUILDTIMES t
+                                      WHERE t.buildId = ? AND t.timeTypeId <> 4
+                                      ORDER BY t.harnBuildTimeId LIMIT 1)))`,
+        params: [buildId, now, builders, now, STATION_ID, newPrimary, buildId],
         requireChanges: 1,
       },
-      { query: `UPDATE HARNBUILDTIMES SET numberOfBuilders = ? WHERE buildId = ?`, params: [builders, buildId] },
+      {
+        query: `UPDATE HARNBUILDTIMES
+                   SET numberOfBuilders = ?, builderId = COALESCE(?, builderId)
+                 WHERE buildId = ? AND timeTypeId <> 4`,
+        params: [builders, newPrimary, buildId],
+      },
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
         query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
@@ -714,6 +766,44 @@ app.post("/api/build/segment-roll", async (req, res) => {
       })),
     ]);
     res.json({ success: true, result: { segmentId: Number(out[1].lastID), startTime: now } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * Drop a build that is still LIVE on this station - the single-build rows
+ * written at Start - because the operator switched it to a batch mid-run and
+ * Submit is about to write the batch's units instead. Hands back the build's
+ * pause rows so the batch can carry them. One transaction, and the guard on the
+ * HARNBUILDS delete (an OPEN segment on this station) means a build that was
+ * already submitted, or belongs to another station, can never be discarded.
+ */
+app.post("/api/build/discard", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const buildId = Number(req.body?.buildId);
+  if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
+  try {
+    const out = await mustRun([
+      {
+        query: `SELECT startTime, endTime, pauseReasonId FROM HARNBUILDTIMES
+                 WHERE buildId = ? AND timeTypeId = 4 ORDER BY startTime`,
+        params: [buildId],
+      },
+      {
+        query: `DELETE FROM HARNBUILDS
+                 WHERE buildId = ?
+                   AND EXISTS (SELECT 1 FROM HARNBUILDSEGMENTS s
+                                WHERE s.buildId = HARNBUILDS.buildId
+                                  AND COALESCE(s.endTime, '') = '' AND s.stationId = ?)`,
+        params: [buildId, STATION_ID],
+        requireChanges: 1,
+      },
+      { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
+      { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
+      { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
+    ]);
+    res.json({ success: true, result: { pauses: Array.isArray(out[0]) ? out[0] : [] } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }

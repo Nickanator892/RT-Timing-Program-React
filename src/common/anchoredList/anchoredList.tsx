@@ -81,7 +81,15 @@ function AnchoredList({ anchorRef, items, onPick, onClose, ariaLabel, className,
     useLayoutEffect(place, [place, items.length]);
 
     useEffect(() => {
-        const onReflow = () => place();
+        const onReflow = (e?: Event) => {
+            // The capture-phase listener also hears the panel's OWN scrolling.
+            // Re-placing on that produced a fresh placement object, which re-ran
+            // the open-onto-selection effect below, which scrolled the current
+            // choice back into view - so a finger dragging the list down watched
+            // it bounce straight back to the top (Randy, 2026-09-09).
+            if (e && panelRef.current && e.target instanceof Node && panelRef.current.contains(e.target)) return;
+            place();
+        };
         window.addEventListener("resize", onReflow);
         // Capture phase: the page itself scrolls, not the panel's parent.
         window.addEventListener("scroll", onReflow, true);
@@ -93,8 +101,12 @@ function AnchoredList({ anchorRef, items, onPick, onClose, ariaLabel, className,
 
     // Open onto the current choice and bring it into view even when the list had
     // to be clamped - otherwise an entry near the end opens off-scroll, which is
-    // the same complaint in a smaller box.
+    // the same complaint in a smaller box. Once, when the panel first lands:
+    // a later re-placement must never yank a list the operator has scrolled.
+    const openedOntoSelection = useRef(false);
     useEffect(() => {
+        if (!placement || openedOntoSelection.current) return;
+        openedOntoSelection.current = true;
         panelRef.current?.focus();
         panelRef.current?.querySelector<HTMLElement>('[data-selected="true"]')?.scrollIntoView({ block: "nearest" });
     }, [placement]);
