@@ -503,6 +503,29 @@ function createAnalyticsWindow() {
 // remaining way out - the X, Alt+F4, and any quit the app asks for itself.
 let closeConfirmed = false;
 
+// Only a PERSON gets asked. Anything that shuts the app down from outside - the
+// updater restarting the service, systemd stopping it, a signal - must never be
+// held up by a dialog nobody is standing in front of.
+//
+// Found the hard way on 2026-09-11: the v1.0.16 update left the v1.0.15 process
+// alive and holding a window, because its close handler put the confirmation up
+// and waited. The station ran two instances of the timer at once.
+function allowShutdown(why) {
+    if (!closeConfirmed) console.log(`shutdown allowed without asking: ${why}`);
+    closeConfirmed = true;
+}
+
+// before-quit runs BEFORE any window gets its close event, so a programmatic
+// app.quit() - including the one window-all-closed does - is already waved
+// through by the time the window handler looks.
+app.on("before-quit", () => allowShutdown("app.quit()"));
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.on(sig, () => {
+        allowShutdown(sig);
+        app.quit();
+    });
+}
+
 async function confirmClose(win) {
     if (closeConfirmed) return true;
     const mid = sharedTimerData.timerDone === false;
