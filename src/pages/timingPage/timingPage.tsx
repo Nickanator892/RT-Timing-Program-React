@@ -10,6 +10,7 @@ import { useBuildKit } from "../../hooks/useBuildKit";
 import ChooseKitButton from "../../common/buttons/chooseKitButton/chooseKitButton";
 import TimerModeDropdown from "../../common/timerModeDropdown/timerModeDropdown";
 import SecondOperator from "../../common/secondOperator/secondOperator";
+import PrimaryOperator from "../../common/primaryOperator/primaryOperator";
 import TimeSetupButton from "../../common/buttons/timeSetupButton/timeSetupButton";
 import TimeTeardownButton from "../../common/buttons/timeTeardownButton/timeTeardownButton";
 import TimeBuildButton from "../../common/buttons/timeBuildButton/timeBuildButton";
@@ -60,7 +61,7 @@ function TimingPage({
         "currentBuildId",
         0
     );
-    const [selectedUser, _setSelectedUser] = useSharedState<User | undefined>(
+    const [selectedUser, _setSelectedUser, selectedUserLoaded] = useSharedState<User | undefined>(
         "selectedUser",
         undefined
     );
@@ -120,10 +121,17 @@ function TimingPage({
     // itself arrives a moment after mount as a placeholder-to-real transition
     // (this page remounts on every trip to the pause-reason screen). So: on any
     // change, wait for the values to settle, then decide from the LATEST ones.
-    const latest = useRef({ secondaryBuilders, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId });
-    latest.current = { secondaryBuilders, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId };
+    //
+    // The primary builder is watched here too, not in an effect of its own: a
+    // handover to whoever was the second operator changes BOTH at once, and two
+    // effects would race to roll the same segment. One settle window coalesces
+    // them into a single roll.
+    const primaryId = Number(selectedUser?.Id ?? 0);
+    const latest = useRef({ secondaryBuilders, primaryId, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId });
+    latest.current = { secondaryBuilders, primaryId, timerDone, batchMode, isRunning, currentBuildId, currentSegmentId };
     const isFirstRender = useRef(true);
     const prevSecondaryBuilders = useRef(secondaryBuilders);
+    const prevPrimaryId = useRef(primaryId);
     const crewCheck = useRef<number | null>(null);
     const rolling = useRef(false);
     const CREW_SETTLE_MS = 400;
@@ -136,11 +144,14 @@ function TimingPage({
     // The clock is left exactly as it was found. This used to pause and then
     // unconditionally restart it, so a crew change made during a pause set the
     // build running again with Pause still lit (2026-09-09).
-    async function handleBuilderChange(L: typeof latest.current) {
+    async function handleBuilderChange(L: typeof latest.current, handover: boolean) {
         if (!L.currentBuildId || !L.currentSegmentId) {
             setErr(
-                "This timer has no open segment on record, so the crew change is not saved yet. " +
-                    "Both operators will be recorded when this time is submitted."
+                handover
+                    ? "This timer has no open segment on record, so the handover is not saved yet. " +
+                          "The builder on screen is the one this time will be recorded against."
+                    : "This timer has no open segment on record, so the crew change is not saved yet. " +
+                          "Both operators will be recorded when this time is submitted."
             );
             return;
         }
@@ -159,12 +170,18 @@ function TimingPage({
                 accumSeconds: await window.electron.getSegmentSeconds(),
                 numberOfBuilders: L.secondaryBuilders.length + 1,
                 secondaryBuilderIds: L.secondaryBuilders.map((b) => Number(b.Id)),
+                // Only on a handover. Sent on every roll it would be harmless
+                // today, but it is the one field that rewrites who owns the
+                // build, so it travels only when that is what happened.
+                builderId: handover ? L.primaryId : undefined,
             });
             setCurrentSegmentStart(rolled.startTime);
             setCurrentSegmentId(rolled.segmentId);
             window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
         } catch (e: any) {
-            setErr(`Could not record the builder change: ${e?.message ?? e}`);
+            setErr(
+                `Could not record the ${handover ? "handover" : "builder change"}: ${e?.message ?? e}`
+            );
         } finally {
             rolling.current = false;
             if (wasRunning) {
@@ -175,45 +192,60 @@ function TimingPage({
     }
 
     useEffect(() => {
-        if (!crewLoaded) return;
+        // selectedUserLoaded as well as crewLoaded: the logged-in builder
+        // arrives over IPC a moment after mount, and the undefined placeholder
+        // before it would read as a handover away from nobody.
+        if (!crewLoaded || !selectedUserLoaded) return;
         if (crewCheck.current) window.clearTimeout(crewCheck.current);
         crewCheck.current = window.setTimeout(function check() {
             crewCheck.current = null;
             const L = latest.current;
             const crew = (list: { Id: Number; name: string }[]) =>
                 list.map((b) => Number(b.Id)).sort((a, b) => a - b).join(",");
+            const track = () => {
+                prevSecondaryBuilders.current = L.secondaryBuilders;
+                prevPrimaryId.current = L.primaryId;
+            };
 
             if (isFirstRender.current) {
                 isFirstRender.current = false;
-                prevSecondaryBuilders.current = L.secondaryBuilders;
+                track();
                 return;
             }
             // Idle: nothing to roll, but keep following the roster. Otherwise
             // the release at Submit is never seen, and the next Start on this
-            // same page reads the stale roster as a crew change.
+            // same page reads the stale roster as a crew change. The same goes
+            // for the primary - logging in as someone else between builds is
+            // not a handover.
             if (L.timerDone) {
-                prevSecondaryBuilders.current = L.secondaryBuilders;
+                track();
                 return;
             }
             // Compared by identity, not by count: swapping one second operator
             // for another is still a crew change, and a count check would miss
             // it and bill the rest of the segment to the person who left.
-            if (crew(L.secondaryBuilders) === crew(prevSecondaryBuilders.current)) return;
+            const crewChanged = crew(L.secondaryBuilders) !== crew(prevSecondaryBuilders.current);
+            // A handover to whoever was the second operator drops them from the
+            // roster in the same breath, so both of these fire at once and the
+            // roll below records the new pairing and the new owner together.
+            const handover = L.primaryId > 0 && L.primaryId !== prevPrimaryId.current;
+            if (!crewChanged && !handover) return;
             if (rolling.current) {
                 crewCheck.current = window.setTimeout(check, CREW_SETTLE_MS);
                 return;
             }
             // Marked as handled before the attempt, success or not: a failed
             // roll is reported once, not retried on every later render.
-            prevSecondaryBuilders.current = L.secondaryBuilders;
+            track();
 
-            // Batch runs have no rows to segment yet - the final builder count
-            // is recorded when submit writes the distributed rows.
+            // Batch runs have no rows to segment yet - the final builder count,
+            // and the builder it is recorded against, come from the page when
+            // submit writes the distributed rows.
             if (L.batchMode) return;
-            void handleBuilderChange(L);
+            void handleBuilderChange(L, handover);
         }, CREW_SETTLE_MS);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [crewLoaded, secondaryBuilders, currentBuildId, currentSegmentId, timerDone, batchMode, isRunning]);
+    }, [crewLoaded, selectedUserLoaded, secondaryBuilders, primaryId, currentBuildId, currentSegmentId, timerDone, batchMode, isRunning]);
 
     useEffect(() => () => { if (crewCheck.current) window.clearTimeout(crewCheck.current); }, []);
 
@@ -897,6 +929,7 @@ function TimingPage({
                         <p id="timer-mode">Timer Mode: {timerMode.header}</p>
                     </div>
                     <TimerModeDropdown/>
+                    <PrimaryOperator />
                     <SecondOperator />
                     <div className="batch-controls">
                         <label className="batch-toggle">

@@ -1,0 +1,103 @@
+/* Primary-builder control. Deliberately quieter than the second-operator badge
+   next to it: this one is always loaded, so a flashing treatment would be
+   background noise within a shift. Green, and the same shape and row height as
+   the second-operator button, so the pair read as one block. */
+
+.primary-operator {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0.6em;
+    font-family: "RobotoMono", monospace;
+}
+
+.primary-operator-badge {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 0.7em;
+    row-gap: 0;
+    padding: 0.4em 0.8em;
+    border: 2px solid #2f8f5a;
+    border-radius: 8px;
+    background: #102a1c;
+    color: #dff5e8;
+}
+
+.primary-operator-label {
+    font-family: "Orbitron", monospace;
+    font-size: 0.75em;
+    letter-spacing: 0.12em;
+    opacity: 0.9;
+}
+
+.primary-operator-name {
+    font-family: "Orbitron", monospace;
+    font-size: 1.5em;
+    font-weight: bold;
+    line-height: 1.1;
+    /* A long name shortens rather than pushing Hand Over off the panel. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.primary-operator-switch,
+.primary-operator-confirm,
+.primary-operator-cancel {
+    flex: 0 0 auto;
+    font-size: 0.95em;
+    font-family: "Orbitron", monospace;
+    padding: 0.45em 0.9em;
+    min-height: 2.2em;      /* finger-sized, like every other bench control */
+    border-radius: 8px;
+    cursor: pointer;
+    border: 2px solid #2f8f5a;
+    background: #16331f;
+    color: #dff5e8;
+}
+
+.primary-operator-cancel {
+    border-color: #8a5a5a;
+    background: #2a1616;
+    color: #ffd9d9;
+}
+
+/* Handing over: the name being taken over by, the password, and the two
+   answers - all on the one row the badge normally occupies, so nothing below
+   it moves while the prompt is up. */
+.primary-operator.handing-over {
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.primary-operator-prompt {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    column-gap: 0.7em;
+    min-width: 0;
+}
+
+.primary-operator-password {
+    flex: 1 1 8em;
+    min-width: 6em;
+    font-size: 1.1em;
+    font-family: "RobotoMono", monospace;
+    padding: 0.4em 0.6em;
+    border-radius: 8px;
+    border: 2px solid #2f8f5a;
+    background: #0b1a11;
+    color: #dff5e8;
+}
+
+.primary-operator-error {
+    flex: 1 0 100%;
+    margin: 0;
+    color: #ff9d9d;
+    font-size: 0.9em;
+}
