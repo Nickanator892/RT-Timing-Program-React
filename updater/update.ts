@@ -1,6 +1,7 @@
 import { execSync, exec, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 import ora from "ora";
 
@@ -227,8 +228,14 @@ async function buildInProgress(): Promise<boolean> {
         const res = await fetch(`http://localhost:${serverPort}/api/query`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            // Scoped to THIS station. Segments are stamped with the hostname
+            // that opened them, and the updater runs on that same host, so
+            // another panel's open build can never hold this one's update.
             body: JSON.stringify({
-                query: "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS WHERE COALESCE(endTime,'') = ''",
+                query:
+                    "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS " +
+                    "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
+                params: [os.hostname()],
             }),
             signal: AbortSignal.timeout(8000),
         });

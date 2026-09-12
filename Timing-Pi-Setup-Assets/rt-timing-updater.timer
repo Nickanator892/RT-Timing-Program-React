@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily check for a new RT Timing release
+# Randy, 2026-09-12: check every morning at 07:30 rather than only at boot.
+# The updater itself refuses to touch a station with an open build, so a timer
+# firing while someone is mid-harness is a no-op, not an interruption.
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+# A Pi that was switched off at 07:30 runs the check once it is back, instead
+# of silently skipping a day.
+Persistent=true
+AccuracySec=1min
+Unit=rt-timing-updater.service
+
+[Install]
+WantedBy=timers.target
