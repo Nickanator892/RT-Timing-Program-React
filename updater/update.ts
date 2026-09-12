@@ -81,20 +81,70 @@ async function getLatestVersion() {
     }
 }
 
+/**
+ * Stop the running timer before replacing it on disk.
+ *
+ * This used to run `killall -q electron`, which matched NOTHING: the installed
+ * binary is named `rt-timing`, not `electron`. The `|| true` then swallowed the
+ * miss and the updater reported "Application stopped" while the old app kept
+ * running. dpkg replaced the binary underneath it, a second instance started,
+ * and the station ended up with two timers on screen - found 2026-09-11 with a
+ * v1.0.15 process (its /proc/<pid>/exe reading "(deleted)") still alive
+ * alongside the fresh v1.0.16 one.
+ *
+ * Now: ask it to go with SIGTERM, wait, and only then insist. SIGTERM matters -
+ * the app writes a final heartbeat on the way out, so a build in progress keeps
+ * the time it earned. SIGKILL loses at most one heartbeat interval, and is only
+ * used if the app is still there after the grace period.
+ */
+const APP_PROCESS = 'rt-timing';
+
 async function killApplication() {
     const spinner = ora('Stopping application...').start();
     try {
         await run(`fuser -k ${serverPort}/tcp`);
-        spinner.text = 'Killed server, stopping Electron...';
+        spinner.text = 'Killed server, stopping the app...';
     } catch {
-        spinner.text = 'Server not running, stopping Electron...';
+        spinner.text = 'Server not running, stopping the app...';
     }
+
+    // `pkill -x` matches the executable NAME exactly, so it cannot catch the
+    // updater's own `node`/`npx` processes the way a -f pattern could.
+    const stillRunning = async () => {
+        try {
+            await run(`pgrep -x ${APP_PROCESS}`);
+            return true;
+        } catch {
+            return false;   // pgrep exits non-zero when nothing matches
+        }
+    };
+
     try {
-        await run(`killall -q electron || true`);
-        spinner.succeed('Application stopped');
-    } catch {
-        spinner.succeed('Application was not running');
+        await run(`pkill -TERM -x ${APP_PROCESS} || true`);
+    } catch { /* nothing to signal */ }
+
+    for (let i = 0; i < 15; i++) {
+        if (!(await stillRunning())) {
+            spinner.succeed('Application stopped');
+            return;
+        }
+        spinner.text = `Waiting for the app to exit (${i + 1}/15)...`;
+        await new Promise((r) => setTimeout(r, 1000));
     }
+
+    spinner.text = 'App did not exit, forcing it...';
+    try {
+        await run(`pkill -KILL -x ${APP_PROCESS} || true`);
+    } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 1000));
+
+    if (await stillRunning()) {
+        // Never report a stop that did not happen: installing over a running
+        // app is how the station ends up with two of them.
+        spinner.fail('Could NOT stop the running app - not installing over it');
+        throw new Error(`${APP_PROCESS} is still running after SIGTERM and SIGKILL`);
+    }
+    spinner.succeed('Application stopped (forced)');
 }
 
 async function installFiles(newVersion: any) {
@@ -169,7 +219,15 @@ async function updateApplication() {
             exec("/opt/rt-timing/rt-timing")
             return false;
         }
-        await killApplication();
+        try {
+            await killApplication();
+        } catch (e) {
+            // The old app is still up, so the station is NOT left without a
+            // timer - it simply stays on the version it has. Installing over a
+            // running app is what produced two instances on one panel.
+            console.error(`Update aborted - could not stop the running app: ${e}`);
+            return false;
+        }
         await installFiles(latestVersion);
         await fixSQLite();
         console.log("Update Complete!")
