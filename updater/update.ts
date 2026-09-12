@@ -207,6 +207,44 @@ async function fixSQLite() {
     }
 }
 
+/**
+ * Is somebody timing a build on this station right now?
+ *
+ * Asked of the app's own backend rather than the database directly, so the
+ * updater never opens the shared SQLite file. An unreachable backend means the
+ * app is not serving, which is not a reason to hold off - only a definite OPEN
+ * segment is.
+ *
+ * Set RT_TIMING_FORCE_UPDATE=1 to update anyway (used when the time on screen
+ * has already been captured by hand).
+ */
+async function buildInProgress(): Promise<boolean> {
+    if (process.env.RT_TIMING_FORCE_UPDATE === "1") {
+        console.log("RT_TIMING_FORCE_UPDATE=1 - not checking for an open build.");
+        return false;
+    }
+    try {
+        const res = await fetch(`http://localhost:${serverPort}/api/query`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                query: "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS WHERE COALESCE(endTime,'') = ''",
+            }),
+            signal: AbortSignal.timeout(8000),
+        });
+        const data: any = await res.json();
+        const rows = Array.isArray(data?.result) ? data.result : [];
+        if (rows.length > 0) {
+            console.log(`A build is in progress (segment ${rows[0].segmentId}) - leaving the app alone.`);
+            return true;
+        }
+        return false;
+    } catch (e) {
+        console.log(`Could not ask the app about open builds (${e}) - continuing.`);
+        return false;
+    }
+}
+
 async function updateApplication() {
     console.log("Updating Application!")
     if (!acquireLock()) {
@@ -219,6 +257,10 @@ async function updateApplication() {
             exec("/opt/rt-timing/rt-timing")
             return false;
         }
+        // Checked AFTER we know an update is even available, so a routine daily
+        // poll with nothing new never touches a running build at all. The app
+        // is already up here, so returning leaves the station working.
+        if (await buildInProgress()) return false;
         try {
             await killApplication();
         } catch (e) {

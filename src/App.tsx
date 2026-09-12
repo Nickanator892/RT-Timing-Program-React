@@ -36,9 +36,22 @@ function TimerLayout() {
     const [selectedHarn, setSelectedHarn] = useSharedState<string>("selectedHarn", "");
 
     useEffect(() => {
-        window.electron.getWindowType().then((type) => {
+        window.electron.getWindowType().then(async (type) => {
             if (type === "analytics") {
                 navigate("/analytics");
+                return;
+            }
+            // Collected, not pushed. Main sets restoreRoute when it has brought
+            // the session back after a restart; a "navigate-to" SENT at that
+            // moment arrives before React has mounted and subscribed, so it
+            // lands on nobody and the panel sits on the login screen with the
+            // operator's own build already loaded behind it. Cleared straight
+            // away so a later navigation is never yanked back here.
+            const shared = await window.electron.getSharedData();
+            const route = shared?.restoreRoute;
+            if (typeof route === "string" && route) {
+                window.electron.updateSharedData({ restoreRoute: null });
+                navigate(route);
             }
         });
 
