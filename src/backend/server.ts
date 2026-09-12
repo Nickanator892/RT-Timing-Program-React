@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import cors from "cors";
 import { Worker } from "worker_threads";
-import { WriteQueue } from "./writeQueue";
+import { WriteQueue } from "./writeQueue.js";
 
 const app = express();
 const port = 5000;

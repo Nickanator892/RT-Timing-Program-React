@@ -30,7 +30,7 @@ function PrimaryOperator() {
         "selectedUser",
         undefined
     );
-    const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{ Id: Number; name: string }[]>(
+    const [, setSecondaryBuilders] = useSharedState<{ Id: Number; name: string }[]>(
         "secondaryBuilders",
         []
     );

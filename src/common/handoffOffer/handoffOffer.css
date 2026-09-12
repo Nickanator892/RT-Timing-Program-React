@@ -1,0 +1,109 @@
+/* Offer from the test station to stage a timer. Modal, because it is a question
+   that has to be answered - a claimed row is resolved by this app or by nobody
+   - but it only ever appears on an IDLE panel, never over a running clock. */
+
+.handoff-backdrop {
+    position: fixed;
+    inset: 0;
+    /* Under the screensaver (20000) on purpose: a sleeping panel should wake
+       before it argues with anyone. */
+    z-index: 15000;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4vh 4vw;
+}
+
+.handoff-card {
+    background: #16233a;
+    border: 3px solid #4da3ff;
+    border-radius: 14px;
+    padding: 2.2vh 2.4vw;
+    max-width: 34em;
+    width: 100%;
+    color: #eaf4ff;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.handoff-from {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(13px, 1.8vh, 18px);
+    letter-spacing: 0.1em;
+    opacity: 0.85;
+    margin: 0 0 0.4em;
+}
+
+.handoff-pn {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(26px, 4.6vh, 46px);
+    font-weight: bold;
+    margin: 0 0 0.4em;
+    /* A long part number shortens rather than widening the card off-screen. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.handoff-detail {
+    list-style: none;
+    margin: 0 0 0.6em;
+    padding: 0;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(15px, 2.2vh, 22px);
+}
+
+.handoff-detail li {
+    margin: 0.15em 0;
+}
+
+.handoff-note {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(12px, 1.7vh, 17px);
+    opacity: 0.8;
+    margin: 0 0 0.6em;
+}
+
+.handoff-hint {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(12px, 1.8vh, 18px);
+    color: #ffd98a;
+    margin: 0 0 1em;
+}
+
+.handoff-buttons {
+    display: flex;
+    gap: 1em;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.handoff-accept,
+.handoff-decline {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(16px, 2.4vh, 24px);
+    padding: 0.6em 1.4em;
+    /* Finger-sized, like every other bench control. */
+    min-height: 2.4em;
+    min-width: 8em;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.handoff-accept {
+    border: 2px solid #2f8f5a;
+    background: #16331f;
+    color: #dff5e8;
+}
+
+.handoff-decline {
+    border: 2px solid #6b7683;
+    background: #1b2027;
+    color: #dfe6ee;
+}
+
+.handoff-accept:disabled,
+.handoff-decline:disabled {
+    opacity: 0.6;
+}

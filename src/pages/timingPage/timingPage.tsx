@@ -71,7 +71,7 @@ function TimingPage({
     );
     const [secondaryBuilders, setSecondaryBuilders, crewLoaded] = useSharedState<{Id: Number, name: string}[]>("secondaryBuilders", [])
     const [timerMode, _setTimerMode, timerModeLoaded] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
-    const [currentSegmentStart, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
+    const [, setCurrentSegmentStart] = useSharedState<string>("currentSegmentStart", "");
     // The segment rows are what carry the time; targeting them by id (rather
     // than by "whichever one is open") is what makes recovery and multi-segment
     // builds safe to close.
@@ -759,7 +759,7 @@ function TimingPage({
                 setBatchPauses((prev) => [...carried, ...prev]);
                 setCurrentBuildId(0);
                 setCurrentSegmentId(0);
-                window.electron.timerSegment({ segmentId: undefined, segmentAccumSeconds: 0 });
+                window.electron.timerSegment({ segmentId: null, segmentAccumSeconds: 0 });
             }
 
             // A batch's duration comes from the wall clock, so unlike a normal
