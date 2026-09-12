@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import cors from "cors";
 import { Worker } from "worker_threads";
+import { WriteQueue } from "./writeQueue.js";
 
 const app = express();
 const port = 5000;
@@ -290,6 +291,91 @@ async function mustRun(
 }
 
 // --------------------
+// Writes that could not reach the database
+// --------------------
+const writeQueue = new WriteQueue(path.dirname(CONFIG_FILE));
+writeQueue.load();
+
+/**
+ * Is this failure the database being out of REACH, or the database saying no?
+ *
+ * Only the first is worth keeping and retrying. A guard that did not match, or
+ * a constraint, will fail exactly the same way in ten minutes, and queueing it
+ * would tell the operator their work was safe when it never will be.
+ */
+function isUnreachable(error: unknown): boolean {
+    const s = String(error ?? "");
+    return /RtMcs unreachable|RtMcs key not loaded|database busy|fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|timed out|abort|readonly|unable to open|disk I[/]O|database is locked|SQLITE_(READONLY|CANTOPEN|IOERR|BUSY)|without a result envelope|HTTP 5\d\d/i.test(
+        s
+    );
+}
+
+let flushing = false;
+let lastFlushError: string | null = null;
+
+/**
+ * Send what is waiting, oldest first, stopping at the first one that still
+ * cannot get through. Order matters: a segment close replayed before the pause
+ * that belongs inside it would land on a row that is already finished.
+ */
+async function flushWriteQueue(): Promise<void> {
+    if (flushing || !dbPath || !rtmcsKey) return;
+    flushing = true;
+    try {
+        for (;;) {
+            const entry = writeQueue.peek();
+            if (!entry) {
+                lastFlushError = null;
+                break;
+            }
+            const out = await runWorkerRemote({ dbPath, statements: entry.statements });
+            if (out?.success) {
+                writeQueue.done(entry.id);
+                console.log(`write queue: uploaded ${entry.kind} from ${entry.createdAt}`);
+                continue;
+            }
+            const error = String(out?.error ?? "unknown error");
+            if (isUnreachable(error)) {
+                writeQueue.retryLater(entry.id, error);
+                lastFlushError = error;
+                break;      // still down; try the whole queue again next tick
+            }
+            // The database answered and refused. Setting it aside is the only
+            // way the rest of the queue ever drains.
+            writeQueue.park(entry.id, error);
+        }
+    } finally {
+        flushing = false;
+    }
+}
+
+/**
+ * Run a write, and if the only thing wrong is that the database is out of
+ * reach, keep it instead of losing it. Returns what the caller would have got,
+ * plus `queued` when it went to the queue.
+ */
+async function runOrQueue(
+    kind: string,
+    statements: { query: string; params?: any[]; requireChanges?: number }[]
+): Promise<any> {
+    const out = await runTransaction(statements);
+    if (out?.success) {
+        // Back in touch: anything waiting should go now, not in 15 seconds.
+        void flushWriteQueue();
+        return out;
+    }
+    const error = String(out?.error ?? "unknown error");
+    if (!isUnreachable(error)) return out;
+    const entry = writeQueue.add(kind, statements, nowLocal());
+    if (!entry) return out;
+    console.warn(`write queue: holding ${kind} locally (${error})`);
+    return { success: true, queued: true, pending: writeQueue.pending, error: null };
+}
+
+// Every 15s, and immediately after any write that gets through.
+setInterval(() => { void flushWriteQueue(); }, 15_000);
+
+// --------------------
 // Load DB path on startup
 // --------------------
 (async () => {
@@ -572,7 +658,40 @@ app.get("/api/db-status", async (_req, res) => {
   // was not read-only, which says nothing about the writer we actually use.
   const remote = await rtmcsHealth();
   if (!remote.writable) console.warn("Database is not writable:", remote.writeError);
-  res.json({ ready: true, writable: remote.writable, writeError: remote.writeError, writer: rtmcsUrl });
+  // Back in touch with something waiting: send it now rather than waiting for
+  // the next tick, so the warning on the panel clears as soon as it is true.
+  if (remote.writable && writeQueue.pending > 0) void flushWriteQueue();
+  res.json({
+    ready: true,
+    writable: remote.writable,
+    writeError: remote.writeError,
+    writer: rtmcsUrl,
+    // What the panel needs to say "held here, not lost". pending returns to 0
+    // only once every queued write has been confirmed by the database, which is
+    // what makes the warning self-clearing rather than time-based.
+    pendingWrites: writeQueue.pending,
+    pendingOldest: writeQueue.oldestAt,
+    // Writes the database actively REFUSED. These will not clear on their own
+    // and someone has to look at them, so they are reported separately.
+    rejectedWrites: writeQueue.parkedCount,
+    queueError: lastFlushError,
+  });
+});
+
+/** Detail for anyone diagnosing a queue that is not draining. */
+app.get("/api/write-queue", (_req, res) => {
+  res.json({
+    success: true,
+    result: {
+      file: writeQueue.path,
+      pending: writeQueue.pending,
+      oldest: writeQueue.oldestAt,
+      lastError: lastFlushError,
+      rejected: writeQueue.parkedEntries().map((e) => ({
+        kind: e.kind, createdAt: e.createdAt, attempts: e.attempts, error: e.lastError,
+      })),
+    },
+  });
 });
 
 // --------------------
@@ -589,15 +708,19 @@ app.post("/api/heartbeat", async (req, res) => {
   if (!segmentId) return res.status(400).json({ success: false, error: "segmentId is required" });
   try {
     // accumSeconds only ever moves forward: a stale/duplicate heartbeat can
-    // never claw back time the operator actually worked.
-    const out = await runQuery(
-      `UPDATE HARNBUILDSEGMENTS
+    // never claw back time the operator actually worked. That is also what
+    // makes a heartbeat safe to queue and replay late - an old one landing
+    // after a newer one changes nothing.
+    const out = await runOrQueue("heartbeat", [
+      {
+        query: `UPDATE HARNBUILDSEGMENTS
           SET heartbeatAt = ?, heartbeatState = ?,
               accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
               stationId = COALESCE(stationId, ?)
         WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
-      [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId]
-    );
+        params: [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId],
+      },
+    ]);
     res.json(out);
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
@@ -779,6 +902,155 @@ app.post("/api/build/segment-roll", async (req, res) => {
  * HARNBUILDS delete (an OPEN segment on this station) means a build that was
  * already submitted, or belongs to another station, can never be discarded.
  */
+// --------------------
+// Cirris handoff inbox
+// --------------------
+// The test station stages a timer rather than starting one: it writes a row to
+// RTCT_ShopHandoff, the panel offers it, and accepting preloads the harness,
+// mode and unit count so the operator only has to press Start. Contract:
+// RT-Cirris-Test-Program docs/whpp/HPP-STAGE-THE-TIMER-2026-09-12.md.
+//
+// Reads run locally like every other read. The two WRITES - claiming a row and
+// answering it - go through RtMcs, which since v1.0.2 allows this table
+// UPDATE-only. Both of ours are UPDATEs, and nothing here ever inserts or
+// deletes, which is also why it is safe for the proxy to refuse those.
+//
+// "Live offer" is Response IS NULL: the tester's sweep stamps EXPIRED on rows
+// nobody ever claimed. It never touches a row once SeenAt is set, so a row this
+// station claims is ours alone to resolve - see the stale-claim sweep below,
+// which is the ONLY thing that will ever resolve one left by an instance that
+// died holding it.
+const HANDOFF_KINDS = ["OFFER_TIMING_PN", "OFFER_TIMING"];
+
+/** Offers waiting for this station, newest first. Read-only. */
+app.get("/api/handoff/pending", async (_req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  try {
+    const out = await runQuery(
+      `SELECT HandoffId, Kind, FromApp, FromStation, HarnPn, Rev, TimeTypeId, BatchUnits, Note,
+              CreatedAt, ExpiresAt
+         FROM RTCT_ShopHandoff
+        WHERE ToApp = 'TIMING'
+          AND Kind IN (${HANDOFF_KINDS.map(() => "?").join(",")})
+          AND SeenAt IS NULL
+          AND Response IS NULL
+          AND (ExpiresAt IS NULL OR ExpiresAt > ?)
+        ORDER BY HandoffId DESC`,
+      [...HANDOFF_KINDS, nowLocal()]
+    );
+    if (!out?.success) return res.status(500).json({ success: false, error: out?.error });
+    res.json({ success: true, result: out.result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * Take ownership before anything is drawn. requireChanges 1 on SeenAt IS NULL
+ * is what stops two panels popping the same offer: the loser changes no rows
+ * and is told so, rather than both showing a dialog for one harness.
+ */
+app.post("/api/handoff/claim", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const handoffId = Number(req.body?.handoffId);
+  if (!handoffId) return res.status(400).json({ success: false, error: "handoffId is required" });
+  try {
+    await mustRun([
+      {
+        query: `UPDATE RTCT_ShopHandoff
+                   SET SeenAt = ?, ToStation = COALESCE(ToStation, ?)
+                 WHERE HandoffId = ? AND SeenAt IS NULL AND Response IS NULL`,
+        params: [nowLocal(), STATION_ID, handoffId],
+        requireChanges: 1,
+      },
+    ]);
+    res.json({ success: true, result: { handoffId, claimed: true } });
+  } catch (err) {
+    // Someone else got there first, or it was answered in between. Not an
+    // error worth showing anyone - the caller just drops the offer.
+    res.json({ success: true, result: { handoffId, claimed: false, reason: String(err) } });
+  }
+});
+
+/**
+ * Answer a claimed row. ACCEPTED, DECLINED, or EXPIRED when the dialog aged out
+ * or was dismissed - a claimed row left unanswered is resolved by nobody, and
+ * at a 30-minute lifetime that window is six times wider than it used to be.
+ */
+app.post("/api/handoff/respond", async (req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const handoffId = Number(req.body?.handoffId);
+  const response = String(req.body?.response ?? "").toUpperCase();
+  if (!handoffId) return res.status(400).json({ success: false, error: "handoffId is required" });
+  if (!["ACCEPTED", "DECLINED", "EXPIRED"].includes(response)) {
+    return res.status(400).json({ success: false, error: `bad response: ${response}` });
+  }
+  try {
+    const out = await runOrQueue(`handoff ${response.toLowerCase()}`, [
+      {
+        query: `UPDATE RTCT_ShopHandoff
+                   SET Response = ?, RespondedAt = ?
+                 WHERE HandoffId = ? AND Response IS NULL`,
+        params: [response, nowLocal(), handoffId],
+      },
+    ]);
+    if (!out?.success) return res.status(500).json({ success: false, error: out.error });
+    res.json({ success: true, result: { handoffId, response }, queued: out.queued === true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * Rows this station claimed and never answered - an instance that died holding
+ * one. Nothing on the Cirris side will ever resolve these, by their explicit
+ * guarantee, so if this does not do it nothing will. Run at startup AND
+ * periodically: the panel can be up for days, and a row claimed at 09:00 by a
+ * renderer that crashed should not wait for the next power cut.
+ */
+async function sweepStaleClaims(): Promise<number> {
+  if (!dbPath || !rtmcsKey) return 0;
+  try {
+    const stale = await runQuery(
+      // COLLATE NOCASE on the station: a hostname is not case-sensitive, and
+      // the same machine really does arrive spelled differently depending on
+      // who wrote the row - os.hostname() gives "RandyMartens-PC" where
+      // %COMPUTERNAME% gives "RANDYMARTENS-PC". Compared exactly, this sweep
+      // silently resolves nothing, which is the one failure nobody would
+      // notice: the rows it exists to clean up are invisible to begin with.
+      `SELECT HandoffId FROM RTCT_ShopHandoff
+        WHERE ToApp = 'TIMING' AND SeenAt IS NOT NULL AND Response IS NULL
+          AND (ToStation IS NULL OR ToStation = ? COLLATE NOCASE)
+          AND (ExpiresAt IS NULL OR ExpiresAt < ?)`,
+      [STATION_ID, nowLocal()]
+    );
+    const rows: any[] = stale?.success && Array.isArray(stale.result) ? stale.result : [];
+    for (const r of rows) {
+      await runOrQueue("handoff expired", [
+        {
+          query: `UPDATE RTCT_ShopHandoff SET Response = 'EXPIRED', RespondedAt = ?
+                   WHERE HandoffId = ? AND Response IS NULL`,
+          params: [nowLocal(), Number(r.HandoffId)],
+        },
+      ]);
+      console.log(`handoff: resolved stale claim ${r.HandoffId} as EXPIRED`);
+    }
+    return rows.length;
+  } catch (err) {
+    console.warn(`handoff sweep failed: ${err}`);
+    return 0;
+  }
+}
+
+app.post("/api/handoff/sweep", async (_req, res) => {
+  const n = await sweepStaleClaims();
+  res.json({ success: true, result: { resolved: n } });
+});
+
+// Every 5 minutes, and once shortly after startup.
+setTimeout(() => { void sweepStaleClaims(); }, 20_000);
+setInterval(() => { void sweepStaleClaims(); }, 5 * 60_000);
+
 app.post("/api/build/discard", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const buildId = Number(req.body?.buildId);
@@ -834,7 +1106,7 @@ app.post("/api/query", async (req, res) => {
     return res.status(400).json({ success: false, error: "Database not configured" });
   }
 
-  const { query, params } = req.body;
+  const { query, params, queueable, kind } = req.body;
 
   if (!query) {
     return res.status(400).json({ success: false, error: "Query is required" });
@@ -842,6 +1114,18 @@ app.post("/api/query", async (req, res) => {
 
   try {
     console.log(query, params);
+    // `queueable` is the caller saying "I do not need the result of this, and
+    // it is safe to apply late". Only writes whose parameters are already
+    // settled qualify - a pause row, closing a segment. Anything that hands
+    // back an id the page is about to use must keep failing loudly, because a
+    // build id that does not exist yet cannot be written against.
+    if (queueable === true) {
+      const out = await runOrQueue(typeof kind === "string" && kind ? kind : "write", [
+        { query, params: params ?? [] },
+      ]);
+      if (!out.success) return res.status(500).json({ success: false, error: out.error });
+      return res.json({ success: true, result: out.result, queued: out.queued === true });
+    }
     const result = await runQuery(query, params ?? []);
     if (!result.success) {
       return res.status(500).json({ success: false, error: result.error });

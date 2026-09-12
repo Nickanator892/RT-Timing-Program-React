@@ -412,3 +412,19 @@ hr {
     color: #7fd4a8;
     white-space: nowrap;
 }
+
+/* Writes held on the panel while the database is out of reach. Amber on dark,
+   NOT the red of .db-warning: nothing is lost and nobody has to do anything -
+   it clears itself once the database has taken them (Randy, 2026-09-12). */
+.db-pending {
+    color: #1f1200;
+    background: #e8a317;
+    border: 2px solid #ffd98a;
+    border-radius: 8px;
+    padding: 8px 16px;
+    margin: 6px 0;
+    max-width: 40em;
+    font-size: clamp(14px, 2.2vh, 21px);
+    font-weight: bold;
+    text-align: center;
+}

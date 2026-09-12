@@ -15,6 +15,7 @@ import ChooseKitPage from "./pages/chooseKitPage/chooseKitPage";
 import RecoveryPage from "./pages/recoveryPage/recoveryPage";
 import OnScreenKeyboard from "./common/onScreenKeyboard/onScreenKeyboard";
 import Screensaver from "./common/screensaver/screensaver";
+import HandoffOffer from "./common/handoffOffer/handoffOffer";
 
 const API_BASE = "http://localhost:5000";
 
@@ -112,6 +113,7 @@ function TimerLayout() {
                 keyboard, and the screen would otherwise burn in overnight. */}
             <OnScreenKeyboard />
             <Screensaver />
+            <HandoffOffer />
         </>
     );
 }
