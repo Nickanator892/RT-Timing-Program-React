@@ -372,11 +372,23 @@ function TimingPage({
      *  records time - use this instead, and let the caller decide what to tell
      *  the operator. The server's own message is preserved: "attempt to write a
      *  readonly database" is the sentence that explains the whole problem. */
-    const execWrite = async (query: string, params: unknown[] = []): Promise<any> => {
+    const execWrite = async (
+        query: string,
+        params: unknown[] = [],
+        // Randy, 2026-09-12: a write that only needs to LAND, not to hand
+        // anything back, must survive the database being out of reach - it is
+        // kept on the panel and uploaded when contact returns. Pass the kind so
+        // the queue can say what is waiting. Writes whose result the page uses
+        // next (a new build id) must NOT be queueable: the page cannot write
+        // against an id that does not exist yet.
+        queueable?: { kind: string }
+    ): Promise<any> => {
         const response = await fetch("http://localhost:5000/api/query", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query, params }),
+            body: JSON.stringify(
+                queueable ? { query, params, queueable: true, kind: queueable.kind } : { query, params }
+            ),
         });
         const data = await response.json();
         if (!data?.success) throw new Error(data?.error || "the database rejected the write");
@@ -511,12 +523,21 @@ function TimingPage({
     // not bad, and unknown must never stop the floor from working.
     const DB_POLL_MS = 30_000;
     const [dbBlocked, setDbBlocked] = useState(false);
+    // Writes being held on this panel because the database is out of reach.
+    // Randy, 2026-09-12: say so while it is happening, and stop saying it the
+    // moment the database has CONFIRMED them - the count comes back from the
+    // backend and only reaches zero once every one has been accepted, so the
+    // warning clears itself on the truth rather than on a timer.
+    const [pendingWrites, setPendingWrites] = useState(0);
+    const [rejectedWrites, setRejectedWrites] = useState(0);
 
     /** null when the database is writable (or unknown); otherwise the reason. */
     const checkDbWritable = async (): Promise<string | null> => {
         try {
             const response = await fetch("http://localhost:5000/api/db-status");
             const data = await response.json();
+            setPendingWrites(Number(data?.pendingWrites ?? 0));
+            setRejectedWrites(Number(data?.rejectedWrites ?? 0));
             if (data?.writable === false) {
                 const why = String(data?.writeError || data?.error || "the share is read-only");
                 setDbBlocked(true);
@@ -545,7 +566,11 @@ function TimingPage({
         if (!sharedPauseReason) return;
         await execWrite(
             "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id]
+            [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id],
+            // Held on the panel if the database is out of reach. Without this a
+            // break taken during an outage is charged to the build as worked
+            // time, which is the expensive direction to be wrong in.
+            { kind: "pause row" }
         );
     }
 
@@ -765,7 +790,8 @@ function TimingPage({
             for (const pause of pauses) {
                 await execWrite(
                     "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                    [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
+                    [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId],
+                    { kind: "pause row" }
                 );
             }
             setBatchPauses([]);
@@ -815,7 +841,10 @@ function TimingPage({
             `UPDATE HARNBUILDSEGMENTS
                 SET endTime = ?, accumSeconds = ?, heartbeatAt = ?, heartbeatState = 'PAUSE'
               WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
-            [end, elapsedSeconds, end, created.segmentId]
+            [end, elapsedSeconds, end, created.segmentId],
+            // Safe to hold and apply late: the build row above was created
+            // successfully, so this segment id is real and will still be there.
+            { kind: "closing a segment" }
         );
         // Pauses taken while there was no build row to hang them on (a batch
         // that turned single mid-run, or the pause that was never resumed).
@@ -824,7 +853,8 @@ function TimingPage({
         for (const pause of pauses) {
             await execWrite(
                 "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                [created.buildId, pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId]
+                [created.buildId, pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId],
+                { kind: "pause row" }
             );
         }
         setBatchPauses([]);
@@ -1027,6 +1057,24 @@ function TimingPage({
                     <p className="db-warning">
                         The database cannot be written to right now. Time started here would not be
                         recorded, so Start is held until it comes back.
+                    </p>
+                )}
+                {/* Held, not lost. Deliberately calmer than the two warnings
+                    above it: nothing has gone wrong that the operator has to
+                    act on, and it disappears on its own once the database has
+                    taken every one of them. */}
+                {pendingWrites > 0 && (
+                    <p className="db-pending">
+                        Database connection issue. {pendingWrites}{" "}
+                        {pendingWrites === 1 ? "change" : "changes"} saved on this panel, and will
+                        upload as soon as the database is back. Keep timing.
+                    </p>
+                )}
+                {rejectedWrites > 0 && (
+                    <p className="db-warning">
+                        {rejectedWrites} {rejectedWrites === 1 ? "change was" : "changes were"}{" "}
+                        refused by the database and will NOT upload. Get someone before this harness
+                        is submitted.
                     </p>
                 )}
                 {heartbeatError && (

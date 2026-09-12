@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import cors from "cors";
 import { Worker } from "worker_threads";
+import { WriteQueue } from "./writeQueue";
 
 const app = express();
 const port = 5000;
@@ -290,6 +291,91 @@ async function mustRun(
 }
 
 // --------------------
+// Writes that could not reach the database
+// --------------------
+const writeQueue = new WriteQueue(path.dirname(CONFIG_FILE));
+writeQueue.load();
+
+/**
+ * Is this failure the database being out of REACH, or the database saying no?
+ *
+ * Only the first is worth keeping and retrying. A guard that did not match, or
+ * a constraint, will fail exactly the same way in ten minutes, and queueing it
+ * would tell the operator their work was safe when it never will be.
+ */
+function isUnreachable(error: unknown): boolean {
+    const s = String(error ?? "");
+    return /RtMcs unreachable|RtMcs key not loaded|database busy|fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|timed out|abort|readonly|unable to open|disk I[/]O|database is locked|SQLITE_(READONLY|CANTOPEN|IOERR|BUSY)|without a result envelope|HTTP 5\d\d/i.test(
+        s
+    );
+}
+
+let flushing = false;
+let lastFlushError: string | null = null;
+
+/**
+ * Send what is waiting, oldest first, stopping at the first one that still
+ * cannot get through. Order matters: a segment close replayed before the pause
+ * that belongs inside it would land on a row that is already finished.
+ */
+async function flushWriteQueue(): Promise<void> {
+    if (flushing || !dbPath || !rtmcsKey) return;
+    flushing = true;
+    try {
+        for (;;) {
+            const entry = writeQueue.peek();
+            if (!entry) {
+                lastFlushError = null;
+                break;
+            }
+            const out = await runWorkerRemote({ dbPath, statements: entry.statements });
+            if (out?.success) {
+                writeQueue.done(entry.id);
+                console.log(`write queue: uploaded ${entry.kind} from ${entry.createdAt}`);
+                continue;
+            }
+            const error = String(out?.error ?? "unknown error");
+            if (isUnreachable(error)) {
+                writeQueue.retryLater(entry.id, error);
+                lastFlushError = error;
+                break;      // still down; try the whole queue again next tick
+            }
+            // The database answered and refused. Setting it aside is the only
+            // way the rest of the queue ever drains.
+            writeQueue.park(entry.id, error);
+        }
+    } finally {
+        flushing = false;
+    }
+}
+
+/**
+ * Run a write, and if the only thing wrong is that the database is out of
+ * reach, keep it instead of losing it. Returns what the caller would have got,
+ * plus `queued` when it went to the queue.
+ */
+async function runOrQueue(
+    kind: string,
+    statements: { query: string; params?: any[]; requireChanges?: number }[]
+): Promise<any> {
+    const out = await runTransaction(statements);
+    if (out?.success) {
+        // Back in touch: anything waiting should go now, not in 15 seconds.
+        void flushWriteQueue();
+        return out;
+    }
+    const error = String(out?.error ?? "unknown error");
+    if (!isUnreachable(error)) return out;
+    const entry = writeQueue.add(kind, statements, nowLocal());
+    if (!entry) return out;
+    console.warn(`write queue: holding ${kind} locally (${error})`);
+    return { success: true, queued: true, pending: writeQueue.pending, error: null };
+}
+
+// Every 15s, and immediately after any write that gets through.
+setInterval(() => { void flushWriteQueue(); }, 15_000);
+
+// --------------------
 // Load DB path on startup
 // --------------------
 (async () => {
@@ -572,7 +658,40 @@ app.get("/api/db-status", async (_req, res) => {
   // was not read-only, which says nothing about the writer we actually use.
   const remote = await rtmcsHealth();
   if (!remote.writable) console.warn("Database is not writable:", remote.writeError);
-  res.json({ ready: true, writable: remote.writable, writeError: remote.writeError, writer: rtmcsUrl });
+  // Back in touch with something waiting: send it now rather than waiting for
+  // the next tick, so the warning on the panel clears as soon as it is true.
+  if (remote.writable && writeQueue.pending > 0) void flushWriteQueue();
+  res.json({
+    ready: true,
+    writable: remote.writable,
+    writeError: remote.writeError,
+    writer: rtmcsUrl,
+    // What the panel needs to say "held here, not lost". pending returns to 0
+    // only once every queued write has been confirmed by the database, which is
+    // what makes the warning self-clearing rather than time-based.
+    pendingWrites: writeQueue.pending,
+    pendingOldest: writeQueue.oldestAt,
+    // Writes the database actively REFUSED. These will not clear on their own
+    // and someone has to look at them, so they are reported separately.
+    rejectedWrites: writeQueue.parkedCount,
+    queueError: lastFlushError,
+  });
+});
+
+/** Detail for anyone diagnosing a queue that is not draining. */
+app.get("/api/write-queue", (_req, res) => {
+  res.json({
+    success: true,
+    result: {
+      file: writeQueue.path,
+      pending: writeQueue.pending,
+      oldest: writeQueue.oldestAt,
+      lastError: lastFlushError,
+      rejected: writeQueue.parkedEntries().map((e) => ({
+        kind: e.kind, createdAt: e.createdAt, attempts: e.attempts, error: e.lastError,
+      })),
+    },
+  });
 });
 
 // --------------------
@@ -589,15 +708,19 @@ app.post("/api/heartbeat", async (req, res) => {
   if (!segmentId) return res.status(400).json({ success: false, error: "segmentId is required" });
   try {
     // accumSeconds only ever moves forward: a stale/duplicate heartbeat can
-    // never claw back time the operator actually worked.
-    const out = await runQuery(
-      `UPDATE HARNBUILDSEGMENTS
+    // never claw back time the operator actually worked. That is also what
+    // makes a heartbeat safe to queue and replay late - an old one landing
+    // after a newer one changes nothing.
+    const out = await runOrQueue("heartbeat", [
+      {
+        query: `UPDATE HARNBUILDSEGMENTS
           SET heartbeatAt = ?, heartbeatState = ?,
               accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
               stationId = COALESCE(stationId, ?)
         WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
-      [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId]
-    );
+        params: [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId],
+      },
+    ]);
     res.json(out);
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
@@ -834,7 +957,7 @@ app.post("/api/query", async (req, res) => {
     return res.status(400).json({ success: false, error: "Database not configured" });
   }
 
-  const { query, params } = req.body;
+  const { query, params, queueable, kind } = req.body;
 
   if (!query) {
     return res.status(400).json({ success: false, error: "Query is required" });
@@ -842,6 +965,18 @@ app.post("/api/query", async (req, res) => {
 
   try {
     console.log(query, params);
+    // `queueable` is the caller saying "I do not need the result of this, and
+    // it is safe to apply late". Only writes whose parameters are already
+    // settled qualify - a pause row, closing a segment. Anything that hands
+    // back an id the page is about to use must keep failing loudly, because a
+    // build id that does not exist yet cannot be written against.
+    if (queueable === true) {
+      const out = await runOrQueue(typeof kind === "string" && kind ? kind : "write", [
+        { query, params: params ?? [] },
+      ]);
+      if (!out.success) return res.status(500).json({ success: false, error: out.error });
+      return res.json({ success: true, result: out.result, queued: out.queued === true });
+    }
     const result = await runQuery(query, params ?? []);
     if (!result.success) {
       return res.status(500).json({ success: false, error: result.error });
