@@ -396,3 +396,19 @@ hr {
         color: #1a1a1a;
     }
 }
+
+/* "Harness 3 of 10" sits on the part-number line rather than taking a row of
+   its own: this column has to fit a 735px panel with a warning banner up. */
+#current-build-pn {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 1.2em;
+}
+
+#harn-units {
+    font-family: "Orbitron", monospace;
+    font-size: 0.9em;
+    color: #7fd4a8;
+    white-space: nowrap;
+}

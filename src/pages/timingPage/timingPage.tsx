@@ -19,6 +19,7 @@ import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
+import { fetchHarnProgress } from "../../hooks/useJobs";
 
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
@@ -109,6 +110,57 @@ function TimingPage({
 
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
+
+    // --- Where this harness is in its run -------------------------------
+    // Randy, 2026-09-12: show "Harness x of y" on the timing screen. Same two
+    // numbers the harness list uses, deliberately: the scheduled quantity from
+    // the kit (the Master Schedule figure) and the built count from
+    // fetchHarnProgress. Sourcing it any other way would let the two screens
+    // disagree about the same harness. Kept apart from harnBuilt/harnTotal,
+    // which count time ROWS for the current mode and drive "ALL BUILT" on the
+    // submit button.
+    const [unitsBuilt, setUnitsBuilt] = useState<number | null>(null);
+    const [selectedJob] = useSharedState<{ phkid?: number | null } | null>("selectedJob", null);
+
+    // Straight off the kit - no effect, no state. The scheduled quantity is
+    // already in hand the moment the kit is.
+    const unitsTotal = Number(
+        buildKit?.harnesses.find((h) => h.partNum === selectedHarn)?.buildNumber ?? 0
+    );
+
+    // Depends on the kit's REV, NOT the kit object: useBuildKit hands back a new
+    // object on every render, so an effect keyed on it re-ran forever, each pass
+    // cancelling a progress query that is slow enough to matter and never
+    // settling on an answer.
+    const kitRev = buildKit?.REV;
+    const jobKitId = selectedJob?.phkid ?? null;
+    useEffect(() => {
+        if (kitRev == null || !selectedHarn) {
+            setUnitsBuilt(null);
+            return;
+        }
+        let cancelled = false;
+        fetchHarnProgress(kitRev, jobKitId)
+            .then((m) => {
+                if (!cancelled) setUnitsBuilt(m.get(selectedHarn)?.built ?? 0);
+            })
+            .catch(() => {
+                // A count we cannot read is left blank rather than shown as 0,
+                // which would read as "none built" on a harness half finished.
+                if (!cancelled) setUnitsBuilt(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+        // refreshTrigger: submitting a unit has to move the number on.
+    }, [kitRev, jobKitId, selectedHarn, refreshTrigger]);
+
+    /** "Harness 3 of 10" while there is one to build, "All 10 built" at the end. */
+    const unitsLabel = (() => {
+        if (unitsBuilt === null || unitsTotal <= 0) return null;
+        if (unitsBuilt >= unitsTotal) return `All ${unitsTotal} built`;
+        return `Harness ${unitsBuilt + 1} of ${unitsTotal}`;
+    })();
 
     // --- Crew change: roll the live segment ---------------------------------
     // Shared state is not a clean event stream. Every broadcast from the main
@@ -932,7 +984,10 @@ function TimingPage({
 
                 <div className="harn-info-and-close-button">
                     <div className="harn-build-info">
-                        <p id="current-build-pn">Part #: {selectedHarn}</p>
+                        <p id="current-build-pn">
+                            Part #: {selectedHarn}
+                            {unitsLabel && <span id="harn-units">{unitsLabel}</span>}
+                        </p>
                         {/* The "Timer Mode: ..." line that used to sit here said
                             the same thing as the dropdown immediately below it.
                             Dropped rather than duplicated: this column has to

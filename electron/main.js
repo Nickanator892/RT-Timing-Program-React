@@ -114,6 +114,9 @@ function startHeartbeat() {
     if (heartbeatTimer) return;
     heartbeatTimer = setInterval(() => {
         heartbeatTicks++;
+        // Cheap, local, and the only copy that survives a SIGKILL: the tidy
+        // before-quit save never runs when the process is killed outright.
+        saveSession("heartbeat");
         // A long pause does not need minute-by-minute writes to a network share,
         // but it must still refresh liveness so "paused since 3h ago and alive"
         // stays distinguishable from "died 3h ago".
@@ -143,6 +146,88 @@ let sharedTimerData = {
     // running but nothing is reaching the database.
     heartbeatError: null,
 };
+
+// --------------------
+// Session state across a restart
+// --------------------
+// Randy, 2026-09-12: an update should put the operator back where they were -
+// same builder logged in, same harness, same mode, paused. The database already
+// knows what a build EARNED (heartbeat + accumSeconds); what it does not know
+// is what was on screen, and that is what sends someone back through login,
+// job list and harness list after every update.
+//
+// The clock is deliberately NOT resumed from here. Where a build is still open,
+// the restore is handed to the existing recovery flow, which reads accumSeconds
+// back out of the database and is the authority on time earned. This file only
+// ever carries what was on screen.
+const SESSION_FILE = () => path.join(app.getPath("userData"), "session-state.json");
+// A shift. Older than that and putting someone back on yesterday's harness is
+// more likely to be wrong than right.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const SESSION_KEYS = [
+    "selectedUser", "selectedHarn", "selectedJob", "timerMode",
+    "batchMode", "batchUnits", "batchPauses", "secondaryBuilders",
+    "currentBuildId", "currentSegmentId", "currentSegmentStart",
+    "startTime", "endTime", "timerDone", "pauseReason",
+];
+
+function saveSession(why) {
+    try {
+        // Nothing worth restoring before anyone has logged in.
+        if (!sharedTimerData.selectedUser) return;
+        const state = {};
+        for (const k of SESSION_KEYS) {
+            if (sharedTimerData[k] !== undefined) state[k] = sharedTimerData[k];
+        }
+        state.elapsedTime = timerElapsed;
+        state.segmentAccumSeconds = segmentSeconds();
+        fs.writeFileSync(
+            SESSION_FILE(),
+            JSON.stringify({ savedAt: new Date().toISOString(), why, state }, null, 2)
+        );
+    } catch (e) {
+        console.warn(`could not save session state: ${e}`);
+    }
+}
+
+/** The saved session, or null when there is none, it is unreadable, or it is stale. */
+function loadSession() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(SESSION_FILE(), "utf8"));
+        const age = Date.now() - new Date(parsed.savedAt).getTime();
+        if (!Number.isFinite(age) || age < 0 || age > SESSION_MAX_AGE_MS) {
+            console.log(`session state ignored (age ${Math.round(age / 60000)} min)`);
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;   // absent or unreadable is the normal case
+    }
+}
+
+function restoreSession(parsed) {
+    const s = parsed?.state ?? {};
+    for (const k of SESSION_KEYS) {
+        if (s[k] !== undefined) sharedTimerData[k] = s[k];
+    }
+    // Never start a clock nobody pressed. Anything the build earned while the
+    // app was down is not earned at all.
+    sharedTimerData.isRunning = false;
+    timerElapsed = Math.max(0, Number(s.elapsedTime) || 0);
+    timerStart = null;
+    segmentBase = timerElapsed - Math.max(0, Number(s.segmentAccumSeconds) || 0) * 1000;
+    sharedTimerData.elapsedTime = timerElapsed;
+    sharedTimerData.displayTimer = formatTime(timerElapsed);
+    // Consumed: the state is live in memory now and will be written again on
+    // the way out. Left on disk it would resurrect itself after an unrelated
+    // restart days later.
+    try { fs.unlinkSync(SESSION_FILE()); } catch { /* already gone */ }
+    console.log(
+        `session restored: ${sharedTimerData.selectedUser?.name ?? "?"} on ` +
+        `${sharedTimerData.selectedHarn || "no harness"} (saved ${parsed.savedAt}, ${parsed.why})`
+    );
+    return true;
+}
 
 // --------------------
 // Server management
@@ -661,12 +746,35 @@ app.whenReady().then(async () => {
         sharedTimerData.recovery = await scanForInterruptedBuild();
         logRecovery("boot");
     } catch { /* recovery is best-effort; never block startup */ }
+
+    // Put the screen back where it was before the restart. Read BEFORE the
+    // window exists so the first render already has the right user and harness
+    // and nothing flashes past.
+    const saved = loadSession();
+    const restored = saved ? restoreSession(saved) : false;
+
     createMainWindow();
     if (!sharedTimerData.recovery) retryRecoveryScan();
+
+    if (restored && sharedTimerData.selectedUser) {
+        // An open build goes to the recovery screen, NOT straight to the timer:
+        // that path reads accumSeconds back out of the database, which is the
+        // authority on what the build earned, and it auto-resumes without a tap
+        // because the builder it belongs to is already logged in. With nothing
+        // open there is no build to restore, so the timer page is correct.
+        // Left in shared state for the page to COLLECT, not pushed at it. A
+        // "navigate-to" sent on did-finish-load arrives before React has
+        // mounted and subscribed, so it lands on nobody and the panel sits on
+        // the login screen with every other scrap of the session restored.
+        sharedTimerData.restoreRoute = sharedTimerData.recovery ? "/recover" : "/timer";
+        console.log(`session restore: the panel should open on ${sharedTimerData.restoreRoute}`);
+    }
 });
 
 app.on("before-quit", async () => {
-    // Last chance to record what this segment earned before the process dies.
+    // Last chance to record what this segment earned before the process dies,
+    // and to remember what was on screen so the restart lands back on it.
+    saveSession("before-quit");
     await writeHeartbeat();
     stopHeartbeat();
     stopServer();
