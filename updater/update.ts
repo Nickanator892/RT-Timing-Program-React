@@ -1,4 +1,4 @@
-import { execSync, exec, spawn } from "child_process";
+import { execSync, exec, execFile, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -99,6 +99,19 @@ async function getLatestVersion() {
  * used if the app is still there after the grace period.
  */
 const APP_PROCESS = 'rt-timing';
+const APP_BINARY = '/opt/rt-timing/rt-timing';
+
+/** Is the timer running on this station? `pgrep -x` matches the executable
+ *  NAME exactly, so it cannot catch the updater's own `node`/`npx` processes
+ *  the way a -f pattern could. */
+async function appRunning(): Promise<boolean> {
+    try {
+        await run(`pgrep -x ${APP_PROCESS}`);
+        return true;
+    } catch {
+        return false;   // pgrep exits non-zero when nothing matches
+    }
+}
 
 async function killApplication() {
     const spinner = ora('Stopping application...').start();
@@ -109,16 +122,7 @@ async function killApplication() {
         spinner.text = 'Server not running, stopping the app...';
     }
 
-    // `pkill -x` matches the executable NAME exactly, so it cannot catch the
-    // updater's own `node`/`npx` processes the way a -f pattern could.
-    const stillRunning = async () => {
-        try {
-            await run(`pgrep -x ${APP_PROCESS}`);
-            return true;
-        } catch {
-            return false;   // pgrep exits non-zero when nothing matches
-        }
-    };
+    const stillRunning = appRunning;
 
     try {
         await run(`pkill -TERM -x ${APP_PROCESS} || true`);
@@ -212,9 +216,18 @@ async function fixSQLite() {
  * Is somebody timing a build on this station right now?
  *
  * Asked of the app's own backend rather than the database directly, so the
- * updater never opens the shared SQLite file. An unreachable backend means the
- * app is not serving, which is not a reason to hold off - only a definite OPEN
- * segment is.
+ * updater never opens the shared SQLite file.
+ *
+ * When the app cannot be asked, the answer depends on whether it is running.
+ * Not running: there is nothing to interrupt, so go ahead. Running but not
+ * answering: HOLD. This used to carry on regardless, on the theory that an
+ * unreachable backend is an app that is not serving - but on the Pi the
+ * unreachable case was the updater's own doing. Until 2026-09-13 the app lived
+ * inside this service's cgroup, so `systemctl restart rt-timing-updater` killed
+ * it before this check ran, the ask failed, and every update went ahead without
+ * ever having asked (both updates that day logged exactly that). An app that is
+ * up and silent may well be mid-build: holding costs a day's update, guessing
+ * wrong costs somebody's build.
  *
  * Set RT_TIMING_FORCE_UPDATE=1 to update anyway (used when the time on screen
  * has already been captured by hand).
@@ -224,70 +237,168 @@ async function buildInProgress(): Promise<boolean> {
         console.log("RT_TIMING_FORCE_UPDATE=1 - not checking for an open build.");
         return false;
     }
-    try {
-        const res = await fetch(`http://localhost:${serverPort}/api/query`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            // Scoped to THIS station. Segments are stamped with the hostname
-            // that opened them, and the updater runs on that same host, so
-            // another panel's open build can never hold this one's update.
-            body: JSON.stringify({
-                query:
-                    "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS " +
-                    "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
-                params: [os.hostname()],
-            }),
-            signal: AbortSignal.timeout(8000),
-        });
-        const data: any = await res.json();
-        const rows = Array.isArray(data?.result) ? data.result : [];
-        if (rows.length > 0) {
-            console.log(`A build is in progress (segment ${rows[0].segmentId}) - leaving the app alone.`);
-            return true;
+    const ATTEMPTS = 3;
+    let lastError = "";
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+        try {
+            const res = await fetch(`http://localhost:${serverPort}/api/query`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                // Scoped to THIS station. Segments are stamped with the hostname
+                // that opened them, and the updater runs on that same host, so
+                // another panel's open build can never hold this one's update.
+                body: JSON.stringify({
+                    query:
+                        "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS " +
+                        "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
+                    params: [os.hostname()],
+                }),
+                signal: AbortSignal.timeout(8000),
+            });
+            const data: any = await res.json();
+            // A refused or failed query is NOT "no open builds" - it is no
+            // answer at all, and is treated exactly like an unreachable app.
+            if (data?.success !== true || !Array.isArray(data?.result)) {
+                throw new Error(data?.error ? String(data.error) : `unexpected answer (HTTP ${res.status})`);
+            }
+            if (data.result.length > 0) {
+                console.log(`A build is in progress (segment ${data.result[0].segmentId}) - leaving the app alone.`);
+                return true;
+            }
+            return false;
+        } catch (e) {
+            lastError = String(e);
         }
-        return false;
-    } catch (e) {
-        console.log(`Could not ask the app about open builds (${e}) - continuing.`);
-        return false;
+        // The Settings tab's "Check for update" quits the app half a second
+        // after starting this updater, so a failed ask can simply mean the app
+        // is still on its way out. Look again before deciding it is stuck.
+        if (!(await appRunning())) {
+            console.log(`The app is not running (${lastError}) - nothing to interrupt.`);
+            return false;
+        }
+        if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, 5000));
     }
+    console.log(
+        `The app is running but could not be asked about open builds (${lastError}) - ` +
+        `HOLDING the update rather than risk a live build. Set RT_TIMING_FORCE_UPDATE=1 to update anyway.`
+    );
+    return true;
+}
+
+/**
+ * Start the timer in its OWN transient systemd unit, and return.
+ *
+ * It used to be `exec("/opt/rt-timing/rt-timing")` straight from this script,
+ * which made the app part of rt-timing-updater.service for as long as it ran -
+ * same cgroup, and a oneshot that never finished (found 2026-09-13):
+ *  - the 07:30 timer fired into a unit still "activating" and did nothing, so
+ *    the daily update check never actually ran;
+ *  - `systemctl restart rt-timing-updater` stops the unit, which kills its whole
+ *    cgroup, so the app was gone before buildInProgress() could ask it.
+ *
+ * `systemd-run` puts the app in rt-timing-app-<epoch>.service instead, and its
+ * output in the journal (`journalctl -u 'rt-timing-app-*'`). KillMode=process
+ * because the Settings tab's "Check for update" starts THIS script from inside
+ * the app and then quits the app: with the default control-group kill, the app
+ * exiting would take that updater down with it, mid-install.
+ *
+ * Never starts a second copy. Now that this script actually exits, the daily
+ * check runs while the app is up, and the app has no single-instance lock.
+ */
+async function startApplication(): Promise<void> {
+    if (await appRunning()) {
+        console.log("The app is already running - leaving it alone.");
+        return;
+    }
+    const me = os.userInfo();
+    const unit = `rt-timing-app-${Math.floor(Date.now() / 1000)}`;
+    const args = [
+        "-n", "systemd-run",
+        `--unit=${unit}`,
+        "--description=RT Timing",
+        "--collect",
+        `--uid=${me.uid}`,
+        `--gid=${me.gid}`,
+        // Same cwd and display the app has always been started with.
+        `--working-directory=${process.cwd()}`,
+        `--setenv=DISPLAY=${process.env.DISPLAY || ":0"}`,
+        `--setenv=LANG=${process.env.LANG || "en_GB.UTF-8"}`,
+        "--property=KillMode=process",
+        APP_BINARY,
+    ];
+    try {
+        await new Promise<void>((resolve, reject) => {
+            execFile("sudo", args, (err, _stdout, stderr) =>
+                err ? reject(new Error(`${err.message} ${stderr}`.trim())) : resolve()
+            );
+        });
+        console.log(`App started in its own unit: ${unit}.service`);
+        return;
+    } catch (e) {
+        console.error(`Could not start the app through systemd-run (${e}) - starting it directly instead.`);
+    }
+    // Last resort, the old way. The app is then inside THIS unit, so this script
+    // has to stay alive as long as the app does - if it exited, systemd would
+    // kill the app along with it. The station keeps a timer, the daily check
+    // is back to not running until this is sorted out.
+    await new Promise<void>((resolve) => {
+        const child = spawn(APP_BINARY, [], { stdio: "inherit" });
+        child.on("exit", () => resolve());
+        child.on("error", (err) => {
+            console.error(`Could not start the app at all: ${err}`);
+            resolve();
+        });
+    });
 }
 
 async function updateApplication() {
     console.log("Updating Application!")
     if (!acquireLock()) {
         console.log("Another updater instance is already running - exiting without touching the install.");
-        return false;
+        return;
     }
     try {
         const latestVersion = await getLatestVersion();
-        if (!latestVersion) {
-            exec("/opt/rt-timing/rt-timing")
-            return false;
+        if (latestVersion) {
+            // Checked AFTER we know an update is even available, so a routine
+            // daily poll with nothing new never touches a running build at all.
+            // The app is up in both of these early returns, so the station keeps
+            // working on the version it has.
+            if (await buildInProgress()) return;
+            try {
+                await killApplication();
+            } catch (e) {
+                // Installing over a running app is what produced two
+                // instances on one panel.
+                console.error(`Update aborted - could not stop the running app: ${e}`);
+                return;
+            }
+            await installFiles(latestVersion);
+            await fixSQLite();
+            console.log("Update Complete!")
         }
-        // Checked AFTER we know an update is even available, so a routine daily
-        // poll with nothing new never touches a running build at all. The app
-        // is already up here, so returning leaves the station working.
-        if (await buildInProgress()) return false;
-        try {
-            await killApplication();
-        } catch (e) {
-            // The old app is still up, so the station is NOT left without a
-            // timer - it simply stays on the version it has. Installing over a
-            // running app is what produced two instances on one panel.
-            console.error(`Update aborted - could not stop the running app: ${e}`);
-            return false;
-        }
-        await installFiles(latestVersion);
-        await fixSQLite();
-        console.log("Update Complete!")
-        exec("/opt/rt-timing/rt-timing")
-        return true
     } finally {
         releaseLock();
     }
+    // Outside the lock: in the last-resort path this waits as long as the app
+    // runs, and a lock held for days would read as a crashed updater.
+    await startApplication();
 }
 
-updateApplication();
+/**
+ * `npx tsx update.ts --check-guard` - read-only. Reports what an update would
+ * decide about THIS station right now (is the app up, would it hold for an open
+ * build) without checking GitHub, stopping, installing or starting anything.
+ */
+async function checkGuard() {
+    console.log(`app running: ${await appRunning()}`);
+    const hold = await buildInProgress();
+    console.log(hold
+        ? "decision: HOLD - an update now would leave the app alone"
+        : "decision: GO - an update now would stop the app and install");
+}
+
+void (process.argv.includes("--check-guard") ? checkGuard() : updateApplication());
 
 /** Useful Commands 
  *  sudo dpkg --remove --force-remove-reinstreq rt-timing
