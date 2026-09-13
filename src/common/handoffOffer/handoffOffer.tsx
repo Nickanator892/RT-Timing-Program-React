@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSharedState } from "../../hooks/useSharedState";
 import { timerModes } from "../timerModeDropdown/timerModeDropdown";
+import { holdScreensaver } from "../screensaver/screensaver";
 import "./handoffOffer.css";
 
 /**
@@ -17,8 +18,13 @@ import "./handoffOffer.css";
  */
 
 const POLL_MS = 3_000;          // the tester polls at 4s; beat it
-/** How long the dialog waits for an answer before resolving itself. */
-const ANSWER_MS = 3 * 60_000;
+/**
+ * How long the dialog waits for an answer before resolving itself. It counts
+ * from the claim, which is the moment the offer arrives - so it has to cover
+ * the operator's walk from the test station, not just reading the dialog.
+ * Randy, 2026-09-13: three minutes was too tight for that; ten.
+ */
+const ANSWER_MS = 10 * 60_000;
 
 interface Offer {
     HandoffId: number;
@@ -138,6 +144,15 @@ function HandoffOffer() {
             if (answerTimer.current) window.clearTimeout(answerTimer.current);
         };
     }, [isMain, dismiss]);
+
+    // Wake the panel for as long as an offer is up. The screensaver draws over
+    // this dialog, so without this an idle panel lets the offer expire unseen
+    // (HandoffId 31, 2026-09-13).
+    useEffect(() => {
+        if (!offer) return;
+        holdScreensaver(true);
+        return () => holdScreensaver(false);
+    }, [offer]);
 
     async function accept() {
         const current = offer;

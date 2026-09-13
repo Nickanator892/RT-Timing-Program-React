@@ -18,6 +18,17 @@ import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 export const SCREENSAVER_KEY = "screensaverMinutes";
 export const DEFAULT_SCREENSAVER_MINUTES = 10;
 
+/**
+ * Window event: `detail: true` wakes the panel and keeps it awake, `false`
+ * releases it and restarts the idle countdown. For anything that puts a
+ * question on screen which an operator has to see - see HandoffOffer.
+ */
+export const SCREENSAVER_HOLD_EVENT = "rt-screensaver-hold";
+
+export function holdScreensaver(held: boolean): void {
+    window.dispatchEvent(new CustomEvent<boolean>(SCREENSAVER_HOLD_EVENT, { detail: held }));
+}
+
 /** Every event a tap on a touch panel produces, in the order they arrive. */
 const GESTURE_EVENTS = [
     "pointerdown",
@@ -78,6 +89,9 @@ function Screensaver() {
     const wokeAt = useRef(0);
     const dismissTimer = useRef<number | null>(null);
     const armRef = useRef<() => void>(() => {});
+    // True while another component has something on screen that needs an
+    // answer (SCREENSAVER_HOLD_EVENT). The panel stays awake for as long as it lasts.
+    const holdRef = useRef(false);
 
     // This component is mounted by TimerLayout, which both windows share, so
     // without this gate the analytics screen would black out too - and that
@@ -172,7 +186,11 @@ function Screensaver() {
 
         const arm = () => {
             if (timerRef.current) window.clearTimeout(timerRef.current);
-            timerRef.current = window.setTimeout(() => setAsleep(true), minutes * 60_000);
+            // Something on screen is waiting for an answer - see the hold below.
+            if (holdRef.current) return;
+            timerRef.current = window.setTimeout(() => {
+                if (!holdRef.current) setAsleep(true);
+            }, minutes * 60_000);
         };
         armRef.current = arm;
 
@@ -194,6 +212,32 @@ function Screensaver() {
             if (timerRef.current) window.clearTimeout(timerRef.current);
         };
     }, [minutes, isAnalytics]);
+
+    // --- A question on screen wakes the panel --------------------------------
+    //
+    // Randy, 2026-09-13: the first real test-station offer (HandoffId 31) was
+    // claimed, shown and expired three minutes later entirely underneath
+    // "Touch to begin" - the dialog sits below this overlay on purpose, so an
+    // idle panel hid the one thing it was asking. Now whoever puts a question
+    // up holds the screensaver off until it is answered or times out.
+    //
+    // No gesture is involved, so there is nothing to swallow: the overlay is
+    // simply taken down, and the next touch goes to the dialog as normal.
+    useEffect(() => {
+        const onHold = (e: Event) => {
+            const held = (e as CustomEvent<boolean>).detail === true;
+            holdRef.current = held;
+            if (held) {
+                if (timerRef.current) window.clearTimeout(timerRef.current);
+                timerRef.current = null;
+                setAsleep(false);
+            } else {
+                armRef.current();
+            }
+        };
+        window.addEventListener(SCREENSAVER_HOLD_EVENT, onHold);
+        return () => window.removeEventListener(SCREENSAVER_HOLD_EVENT, onHold);
+    }, []);
 
     if (!asleep && !dismissing) return null;
 
