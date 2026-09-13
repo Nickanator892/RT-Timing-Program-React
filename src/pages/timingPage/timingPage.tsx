@@ -77,8 +77,10 @@ function TimingPage({
     // builds safe to close.
     const [currentSegmentId, setCurrentSegmentId] = useSharedState<number>("currentSegmentId", 0);
     // Batch mode: one timed window covers `batchUnits` physical units of the PN
-    // (e.g. stripping every cable for all harnesses at once). No rows are
-    // written at start - submit slices the window across the units.
+    // (e.g. stripping every cable for all harnesses at once). It opens a live
+    // build at Start like any other timer, so heartbeats, crash recovery and
+    // the one-place-at-a-time rule all see it; Submit drops that build and
+    // slices the window across the units.
     //
     // Shared state, not page state: this page unmounts on every trip to the
     // pause-reason screen, and on 2026-09-09 a batch Final Test came back from
@@ -289,10 +291,12 @@ function TimingPage({
             // roll is reported once, not retried on every later render.
             track();
 
-            // Batch runs have no rows to segment yet - the final builder count,
-            // and the builder it is recorded against, come from the page when
-            // submit writes the distributed rows.
-            if (L.batchMode) return;
+            // A batch whose Start could not be recorded has no build to roll -
+            // Submit writes whatever roster is on screen then. Once a batch has
+            // its live build it rolls like any other, so the database knows who
+            // is on it and refuses a second operator who is already timing
+            // somewhere else (the RT-MCS phone timer, or another station).
+            if (L.batchMode && !L.currentBuildId) return;
             void handleBuilderChange(L, handover);
         }, CREW_SETTLE_MS);
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -654,9 +658,12 @@ function TimingPage({
             // successful submit: a run that was abandoned, or whose submit
             // failed, would otherwise hand its pauses to whatever ran next.
             setBatchPauses([]);
-            // Batch runs write nothing at start - all rows are created at
-            // submit, when the total window and unit count are known.
-            if (batchMode) return;
+            // Batch runs open a live build too (2026-09-13). They used to write
+            // nothing until Submit, which left a batch in progress invisible to
+            // crash recovery and to the database's one-place-at-a-time rule, so
+            // the RT-MCS phone timer could start the same builder on a second
+            // build. Submit still drops this build and slices the window across
+            // the units - submitBatch's discard path, which carries its pauses.
 
             // One transaction: a crash between these inserts used to leave a
             // build row with no segment, which carries no time and is invisible
@@ -743,11 +750,12 @@ function TimingPage({
                 });
             }
 
-            // Started as a single build and switched to batch mid-run: that
-            // build already has rows (its open segment, pause rows, crew
-            // segments). Take its pauses over, drop it, and let the batch write
-            // its units fresh. The pauses go into the shared queue BEFORE the
-            // drop, so a failed batch write below still has them for the retry.
+            // The live build opened at Start - by the batch itself, or by a
+            // single build switched to batch mid-run - already has rows (its
+            // open segment, pause rows, crew segments). Take its pauses over,
+            // drop it, and let the batch write its units fresh. The pauses go
+            // into the shared queue BEFORE the drop, so a failed batch write
+            // below still has them for the retry.
             if (currentBuildId) {
                 const dropped = await postApi("/api/build/discard", { buildId: currentBuildId });
                 const carried = (dropped?.pauses ?? []).map((p: any) => ({
