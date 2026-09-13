@@ -793,7 +793,16 @@ app.get("/api/recovery/scan", async (_req, res) => {
  * Start a build. One transaction so a crash can never leave a half-built
  * record: the recovery scan JOINs all three tables, so a torn start would be
  * invisible to it and its time unrecoverable.
+ *
+ * It used to be two transactions - the HARNBUILDS insert first, to learn the
+ * new buildId, then everything else - so a start refused by the database
+ * (RT-MCS's one-place-at-a-time triggers, 2026-09-13) rolled back only the
+ * second half and left an empty HARNBUILDS row behind on every refusal.
+ * The later statements now find the id inside the same transaction: the
+ * first INSERT holds the write lock until COMMIT, so no other writer can add
+ * a build in between and MAX(buildId) is this one.
  */
+const NEW_BUILD_ID = `(SELECT MAX(buildId) FROM HARNBUILDS)`;
 app.post("/api/build/start", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime } = req.body ?? {};
@@ -801,30 +810,28 @@ app.post("/api/build/start", async (req, res) => {
   const start = startTime || nowLocal();
   const builders = Math.max(1, Number(numberOfBuilders) || 1);
   try {
-    const first = await mustRun([
+    const out = await mustRun([
       { query: `INSERT INTO HARNBUILDS (harnNumber) VALUES (?)`, params: [harnNumber], requireChanges: 1 },
-    ]);
-    const buildId = Number(first[0].lastID);
-    const rest = await mustRun([
       {
         query: `INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders)
-                VALUES (?, ?, ?, ?, ?, ?)`,
-        params: [buildId, harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders],
+                VALUES (${NEW_BUILD_ID}, ?, ?, ?, ?, ?)`,
+        params: [harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders],
         requireChanges: 1,
       },
       {
         query: `INSERT INTO HARNBUILDSEGMENTS
                   (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId, builderId)
-                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?, ?)`,
-        params: [buildId, start, builders, start, STATION_ID, builderId ?? null],
+                VALUES (${NEW_BUILD_ID}, ?, '', ?, 0, ?, 'RUN', ?, ?)`,
+        params: [start, builders, start, STATION_ID, builderId ?? null],
         requireChanges: 1,
       },
       ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
-        query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
-        params: [buildId, id],
+        query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (${NEW_BUILD_ID}, ?)`,
+        params: [id],
       })),
     ]);
-    res.json({ success: true, result: { buildId, segmentId: Number(rest[1].lastID), startTime: start } });
+    const buildId = Number(out[0].lastID);
+    res.json({ success: true, result: { buildId, segmentId: Number(out[2].lastID), startTime: start } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
