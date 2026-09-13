@@ -46,6 +46,13 @@ if [ ! -f ~/.config/rt-timing/db-config.json ]; then
 fi
 
 # Create systemd service
+#
+# A oneshot that EXITS. update.ts starts the app in its own transient unit
+# (rt-timing-app-<epoch>.service) and then finishes, so:
+#   - the daily timer below can start this unit again (a oneshot that never
+#     exits sits in "activating" forever, and a timer firing into it is a no-op)
+#   - restarting this unit never takes the app down with it before the
+#     open-build check has had a chance to ask the app anything
 sudo tee /etc/systemd/system/rt-timing-updater.service > /dev/null << EOF
 [Unit]
 Description=RT Timing Update Service
@@ -65,5 +72,10 @@ EOF
 
 sudo systemctl enable rt-timing-updater
 sudo systemctl daemon-reload
+
+# Daily update check at 07:30 (it holds off by itself while a build is open).
+sudo cp /usr/local/rt-timing-updater/Timing-Pi-Setup-Assets/rt-timing-updater.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rt-timing-updater.timer
 
 echo "Setup complete! Run 'sudo systemctl start rt-timing-updater' to launch the app."

@@ -3,6 +3,10 @@ Description=Daily check for a new RT Timing release
 # Randy, 2026-09-12: check every morning at 07:30 rather than only at boot.
 # The updater itself refuses to touch a station with an open build, so a timer
 # firing while someone is mid-harness is a no-op, not an interruption.
+# Both halves of that depend on the updater EXITING, with the app in its own
+# transient unit (fixed 2026-09-13). Before that the app lived inside
+# rt-timing-updater.service, the unit never finished, and this timer fired into
+# it and did nothing - the check had never once run.
 
 [Timer]
 OnCalendar=*-*-* 07:30:00
