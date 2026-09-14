@@ -861,15 +861,22 @@ function TimingPage({
             }
             setBatchPauses([]);
 
-            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
-            if (Array.isArray(updatedTimes)) {
-                setHarnBuilt(updatedTimes.length);
-            }
+            // Every row is on record: the clock is done NOW, before anything
+            // that only reads. On 2026-09-14 a 17-unit Final Test saved all its
+            // rows, the panel was shut down before this point, and the restart
+            // brought 58:51 back onto the next harness - where Resume and Submit
+            // would have charged it a second time.
             window.electron.timerReset();
             setCurrentBuildId(0);
             setCurrentSegmentId(0);
-            setRefreshTrigger((prev) => prev + 1);
             setTimerDone(true);
+            setPauseStart(null);
+
+            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
+            if (Array.isArray(updatedTimes)) {
+                setHarnBuilt(updatedTimes.length);
+            }
+            setRefreshTrigger((prev) => prev + 1);
             setDbSuccess(`${units} units ✅`);
             setErr("");
             setPauseStart(null);
@@ -968,18 +975,21 @@ function TimingPage({
                 throw new Error("Could not close the segment - nothing was written. Check the database and Submit again.");
             }
 
-            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id);
-            if (Array.isArray(updatedTimes)) {
-                setHarnBuilt(updatedTimes.length);
-            }
-
+            // Saved: done with the clock before anything that only reads (see
+            // submitBatch - a restart between the write and the reset brought
+            // the old time back onto the next harness, 2026-09-14).
             window.electron.timerReset();
             // The ids belong to the build just closed. Left in place, the next
             // timer that has no build of its own would write into this one.
             setCurrentBuildId(0);
             setCurrentSegmentId(0);
-            setRefreshTrigger((prev) => prev + 1); // ← triggers analytics to refresh
             setTimerDone(true);
+
+            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
+            if (Array.isArray(updatedTimes)) {
+                setHarnBuilt(updatedTimes.length);
+            }
+            setRefreshTrigger((prev) => prev + 1); // ← triggers analytics to refresh
             setDbSuccess("Success✅");
             setErr("");
             setPauseStart(null);
