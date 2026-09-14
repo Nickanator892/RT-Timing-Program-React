@@ -939,9 +939,10 @@ function TimingPage({
             setDbSuccess("Submit");
             return;
         }
-        // Normally already closed by Pause or End; a build restored after a
-        // crash can reach Submit with a change still open.
-        await closeBobbin(true);
+        // Normally already closed by Pause or End; a Braid restored after a
+        // crash can reach Submit with a change still open. Braid only, so every
+        // other Submit does not send a write it has no use for.
+        if (timerMode.id === BRAID_MODE) await closeBobbin(true);
         const currentTime = displayTimer;
         if (currentTime === "00:00:00") {
             setErr("Timer is 00:00:00");
