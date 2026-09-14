@@ -344,6 +344,29 @@ hr {
     font-size: 1em;
 }
 
+/* Braid only. Amber while a change is open, so it reads as "something on the
+   side is timing" without looking like the Pause button. */
+.bobbin-button {
+    width: 100%;
+    min-height: clamp(44px, 8vh, 64px);
+    font-family: "RobotoMono";
+    font-size: clamp(18px, 3.2vh, 26px);
+    border-radius: 8px;
+    border: 2px solid #f0a830;
+    background: transparent;
+    color: #f0a830;
+}
+
+.bobbin-button.open {
+    background: #f0a830;
+    color: #15191a;
+    font-weight: 700;
+}
+
+.bobbin-button:disabled {
+    opacity: 0.45;
+}
+
 #error-timer .second-operator {
     font-size: clamp(18px, 3.3vh, 26px);
 }

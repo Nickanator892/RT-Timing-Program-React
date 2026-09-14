@@ -100,14 +100,13 @@ function TimingPage({
     // every unit at once, a Build is one harness. Applied when the MODE changes
     // (and once when the page first sees it), only while idle, so a deliberate
     // un-tick survives until the next mode change, and a mode change mid-run
-    // cannot flip a timer that already has rows. A Bobbin Change (id 10) is one
-    // event on the braiding machine, not per unit, so it starts single like Build.
+    // cannot flip a timer that already has rows.
     const batchDefaultedForMode = useRef<number | null>(null);
     useEffect(() => {
         if (!timerModeLoaded || !timerDoneLoaded) return;
         if (batchDefaultedForMode.current === timerMode.id) return;
         batchDefaultedForMode.current = timerMode.id;
-        if (timerDone) setBatchMode(timerMode.id !== 1 && timerMode.id !== 10);
+        if (timerDone) setBatchMode(timerMode.id !== 1);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [timerMode.id, timerModeLoaded, timerDoneLoaded, timerDone]);
 
@@ -400,6 +399,60 @@ function TimingPage({
         return data.result;
     };
 
+    // --- Bobbin change: braiding time, tracked on the side ---------------
+    // Randy, 2026-09-14: reloading the braider is still braiding - the build
+    // clock keeps running - but the changes are timed apart so their total can
+    // be seen. One MSTIMERBOBBIN row per change (RT-MCS creates the table and
+    // the phone timer writes the same rows). Keyed by builder, not build: a
+    // batch Submit replaces the live build with new ids. Pause, End, Submit and
+    // a QuickBooks clock-out all close an open change first.
+    const BRAID_MODE = 8;
+    const [bobbinStart, setBobbinStart] = useSharedState<string | null>("bobbinStart", null);
+
+    async function startBobbin() {
+        if (bobbinStart || !isRunning || timerMode.id !== BRAID_MODE || !currentSegmentId) return;
+        const at = formatTimestamp(new Date().toISOString());
+        try {
+            // Not queueable: the change is only real if it is on record while
+            // the operator is still standing at the machine.
+            await execWrite(
+                `INSERT INTO MSTIMERBOBBIN (HARN, REV, BUILDID, BUILDERID, STATION, STARTTIME, ENDTIME)
+                 SELECT ?, ?, ?, ?, stationId, ?, '' FROM HARNBUILDSEGMENTS WHERE segmentId = ?`,
+                [selectedHarn, buildKit?.REV ?? null, currentBuildId || null, selectedUser?.Id, at, currentSegmentId]
+            );
+            setBobbinStart(at);
+            setErr("");
+        } catch (e: any) {
+            setErr(`Could not start the bobbin change: ${e?.message ?? e}`);
+        }
+    }
+
+    /** Close whatever change this builder has open. Safe to call when none is.
+     *  `force` writes even when this panel has no change on screen - Submit
+     *  uses it so a change orphaned by a crash cannot stay open for good. */
+    async function closeBobbin(force = false) {
+        if (!bobbinStart && !force) return;
+        const at = formatTimestamp(new Date().toISOString());
+        setBobbinStart(null);
+        try {
+            await execWrite(
+                `UPDATE MSTIMERBOBBIN
+                    SET ENDTIME = ?, SECONDS = MAX(0, CAST(strftime('%s', ?) AS INTEGER) - CAST(strftime('%s', STARTTIME) AS INTEGER))
+                  WHERE BUILDERID = ? AND ENDTIME = ''`,
+                [at, at, selectedUser?.Id],
+                // The row already exists, so ending it late is still correct.
+                { kind: "ending a bobbin change" }
+            );
+        } catch (e: any) {
+            setErr(`Could not end the bobbin change: ${e?.message ?? e}`);
+        }
+    }
+
+    const bobbinSeconds = bobbinStart
+        ? Math.max(0, Math.floor((Date.now() - (parseTimestamp(bobbinStart)?.getTime() ?? Date.now())) / 1000))
+        : 0;
+    const bobbinClock = `${String(Math.floor(bobbinSeconds / 60)).padStart(2, "0")}:${String(bobbinSeconds % 60).padStart(2, "0")}`;
+
     // A build restored after a crash arrives mid-flight: it is not "done", the
     // clock already shows earned time, and Submit must be available without
     // pressing End first.
@@ -453,6 +506,7 @@ function TimingPage({
 
             if (offTheClock && isRunning && !timerDone && !autoPausedRef.current) {
                 autoPausedRef.current = true;
+                closeBobbin();
                 window.electron.timerPause();
                 setIsRunning(false);
                 // Move the lit indicator to Pause, which is where the timer now
@@ -700,6 +754,7 @@ function TimingPage({
     }
 
     function pauseTimer() {
+        closeBobbin();
         window.electron.timerPause();
         const pauseStartTime = formatTimestamp(new Date().toISOString())
         setPauseStart(pauseStartTime);
@@ -718,6 +773,7 @@ function TimingPage({
 
     function resetTimer() {
         if (displayTimer === "00:00:00") return;
+        closeBobbin();
         window.electron.timerPause();
         if (!timerDone) {
             const localEndTime = formatTimestamp(new Date().toISOString())
@@ -876,6 +932,9 @@ function TimingPage({
             setDbSuccess("Submit");
             return;
         }
+        // Normally already closed by Pause or End; a build restored after a
+        // crash can reach Submit with a change still open.
+        await closeBobbin(true);
         const currentTime = displayTimer;
         if (currentTime === "00:00:00") {
             setErr("Timer is 00:00:00");
@@ -1058,6 +1117,16 @@ function TimingPage({
                                     onChange={(e) => setBatchUnits(Number(e.target.value))}
                                 />
                             </label>
+                        )}
+                        {timerMode.id === BRAID_MODE && !timerDone && (
+                            <button
+                                type="button"
+                                className={`bobbin-button${bobbinStart ? " open" : ""}`}
+                                onClick={() => (bobbinStart ? closeBobbin() : startBobbin())}
+                                disabled={!bobbinStart && (!isRunning || dbBlocked)}
+                            >
+                                {bobbinStart ? `Bobbin change ${bobbinClock} - tap when done` : "Bobbin Change"}
+                            </button>
                         )}
                     </div>
                 </div>

@@ -4,7 +4,9 @@ import AnchoredList from "../anchoredList/anchoredList"
 import "./timerModeDropdown.css"
 
 // id 4 is reserved: pause records are stored in HARNBUILDTIMES with
-// timeTypeId 4, so new modes must never reuse it.
+// timeTypeId 4, so new modes must never reuse it. id 10 is reserved too: it was
+// "Bobbin Change" for a day (1.0.22) before Randy moved bobbin changes onto the
+// Braid screen as a side timer (2026-09-14) - braiding time, tracked apart.
 export const timerModes = [
     { header: "Timing Build", id: 1, label: "Timer Mode: Build" },
     { header: "Timing Setup", id: 2, label: "Timer Mode: Setup" },
@@ -13,9 +15,7 @@ export const timerModes = [
     { header: "Timing Prebuild", id: 6, label: "Timer Mode: Prebuild" },
     { header: "Timing Strip & Crimp", id: 7, label: "Timer Mode: Strip & Crimp" },
     { header: "Timing Braid", id: 8, label: "Timer Mode: Braid" },
-    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" },
-    // Randy, 2026-09-13: reloading the braiding machine is timed as its own process.
-    { header: "Timing Bobbin Change", id: 10, label: "Timer Mode: Bobbin Change" }
+    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" }
 ];
 
 // Was a native <select>, whose popup opened off the bottom of the bench panel
