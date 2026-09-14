@@ -100,13 +100,14 @@ function TimingPage({
     // every unit at once, a Build is one harness. Applied when the MODE changes
     // (and once when the page first sees it), only while idle, so a deliberate
     // un-tick survives until the next mode change, and a mode change mid-run
-    // cannot flip a timer that already has rows.
+    // cannot flip a timer that already has rows. A Bobbin Change (id 10) is one
+    // event on the braiding machine, not per unit, so it starts single like Build.
     const batchDefaultedForMode = useRef<number | null>(null);
     useEffect(() => {
         if (!timerModeLoaded || !timerDoneLoaded) return;
         if (batchDefaultedForMode.current === timerMode.id) return;
         batchDefaultedForMode.current = timerMode.id;
-        if (timerDone) setBatchMode(timerMode.id !== 1);
+        if (timerDone) setBatchMode(timerMode.id !== 1 && timerMode.id !== 10);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [timerMode.id, timerModeLoaded, timerDoneLoaded, timerDone]);
 

@@ -13,7 +13,9 @@ export const timerModes = [
     { header: "Timing Prebuild", id: 6, label: "Timer Mode: Prebuild" },
     { header: "Timing Strip & Crimp", id: 7, label: "Timer Mode: Strip & Crimp" },
     { header: "Timing Braid", id: 8, label: "Timer Mode: Braid" },
-    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" }
+    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" },
+    // Randy, 2026-09-13: reloading the braiding machine is timed as its own process.
+    { header: "Timing Bobbin Change", id: 10, label: "Timer Mode: Bobbin Change" }
 ];
 
 // Was a native <select>, whose popup opened off the bottom of the bench panel
