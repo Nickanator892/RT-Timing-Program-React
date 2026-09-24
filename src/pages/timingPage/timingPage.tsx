@@ -24,6 +24,10 @@ import { fetchHarnProgress } from "../../hooks/useJobs";
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
 
+// Same define vite.config.ts sets for analyticsPage.tsx - one build-time
+// constant, not a second hard-coded version number.
+declare const __APP_VERSION__: string;
+
 type timingPageProps = {
     activeButton: "start" | "pause" | "end" | "submit" | null;
     setActiveButton: (value: "start" | "pause" | "end" | "submit" | null) => void;
@@ -1174,6 +1178,16 @@ function TimingPage({
                 )}
                 <p id="error-message">{err}</p>
             </div>
+            {/* Fixed to the viewport, not a grid/flex child: it can never be
+                pushed into a control by row growth (second operator, a
+                warning banner), and pointer-events:none keeps it out of the
+                touch path even if the corner is ever tight. Scoped by the
+                .timing-page ancestor because every stylesheet in this app is
+                global (see the #error-timer comment above) - a bare
+                #app-version-tag rule would leak onto other pages. */}
+            <p id="app-version-tag" aria-hidden="true">
+                RT Timing - v{__APP_VERSION__}
+            </p>
         </div>
     );
 }

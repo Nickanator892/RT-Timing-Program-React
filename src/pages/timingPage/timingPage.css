@@ -451,3 +451,22 @@ hr {
     font-weight: bold;
     text-align: center;
 }
+
+/* Build-version corner stamp. Pinned to the viewport corner (not a grid/flex
+   flow item) so it can never shift or be shifted into a button, badge or
+   warning row, and kept low-contrast so it reads as a stamp, not a control.
+   Scoped with the .timing-page ancestor selector - a bare #app-version-tag
+   rule is global across the bundle (see the #error-timer comment above) and
+   would otherwise apply itself to any other page that ever reuses this id. */
+.timing-page #app-version-tag {
+    position: fixed;
+    left: 6px;
+    bottom: 3px;
+    margin: 0;
+    font-size: 10px;
+    font-family: "RobotoMono", monospace;
+    color: rgba(255, 255, 255, 0.22);
+    pointer-events: none;
+    z-index: 0;
+    white-space: nowrap;
+}
