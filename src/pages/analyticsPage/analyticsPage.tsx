@@ -268,7 +268,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes
                     </p>
                     {createInfoElement()}
-                    <p id="version-tag">App Version: v{__APP_VERSION__}</p>
+                    <p id="version-tag">RT Timing - v{__APP_VERSION__}</p>
                 </div>
             </div>
 
