@@ -470,3 +470,69 @@ hr {
     z-index: 0;
     white-space: nowrap;
 }
+
+/* Setup/Teardown lock the batch toggle ON (Randy, 2026-09-25) - dim it like
+   any other disabled control so it reads as "not yours to change" rather than
+   looking broken. */
+.batch-toggle:has(input:disabled) {
+    opacity: 0.6;
+}
+
+/* Extra-units question (item 4): asked before a submit that would cover more
+   units than the schedule has left. Sits above the screensaver for the same
+   reason the carryover lock does - it is a real question, not decoration. */
+.extra-units-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20002;
+    background: rgba(0, 0, 0, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4vh 4vw;
+}
+
+.extra-units-card {
+    background: #16233a;
+    border: 3px solid #4da3ff;
+    border-radius: 14px;
+    padding: 2.4vh 2.6vw;
+    max-width: 36em;
+    width: 100%;
+    color: #eaf4ff;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.extra-units-body {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(15px, 2.2vh, 21px);
+    line-height: 1.4;
+    margin: 0 0 1em;
+}
+
+.extra-units-buttons {
+    display: flex;
+    gap: 1em;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.extra-units-buttons button {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(14px, 2vh, 20px);
+    padding: 0.6em 1.1em;
+    min-height: 2.4em;
+    min-width: 7em;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 2px solid #4da3ff;
+    background: #142236;
+    color: #eaf4ff;
+}
+
+#extra-units-cancel {
+    border-color: #6b7683;
+    background: #1b2027;
+    color: #dfe6ee;
+}

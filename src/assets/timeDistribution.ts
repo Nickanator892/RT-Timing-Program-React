@@ -44,6 +44,23 @@ export interface DistributedTimeArgs {
     workedMs?: number;
     numberOfBuilders: number;
     secondaryBuilderIds: number[];
+    /**
+     * Randy, 2026-09-25: the extra-units question (Build mode only, see
+     * timingPage.tsx submitBatch) - set when this batch covers more units than
+     * the schedule has left. Applies to the EXCESS units only, so it is
+     * threaded through here rather than written as one blanket UPDATE after
+     * the fact: `excessUnits` says how many of the LAST slices (the ones that
+     * were not actually owed) carry it. Written into the same INSERT that
+     * creates each row's HARNBUILDTIMES record, which happens before that
+     * unit's HARNBUILDSEGMENTS row is inserted ALREADY CLOSED (a batch slice
+     * has no open segment ever - its endTime is set at creation) - so the flag
+     * is on record before the RT-MCS consume sweep, which acts on closed
+     * sessions, can ever see the row.
+     */
+    unitDecision?: "EXTRA" | "SPREAD";
+    /** How many of the `units` slices (counting from the END) get unitDecision.
+     *  0 or omitted writes no flag at all - the default, unaffected path. */
+    excessUnits?: number;
 }
 
 /**
@@ -62,6 +79,7 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
     // slice for callers that have no separate worked total (manual entry, where
     // the operator types the time they actually worked).
     const workedSlice = (args.workedMs ?? args.endMs - args.startMs) / args.units;
+    const excessUnits = Math.max(0, Math.min(args.units, Math.floor(args.excessUnits ?? 0)));
     for (let k = 0; k < args.units; k++) {
         const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
             args.harnNumber,
@@ -70,10 +88,22 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         if (!buildId) throw new Error("Failed to create build row");
         buildIds.push(buildId);
 
-        await execQuery(
-            "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-            [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders]
-        );
+        // The LAST `excessUnits` slices are the ones that were not actually
+        // owed - see the doc comment on DistributedTimeArgs.unitDecision.
+        const isExcessRow = args.unitDecision != null && k >= args.units - excessUnits;
+        if (isExcessRow) {
+            await execQuery(
+                `INSERT INTO HARNBUILDTIMES
+                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
+                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+                [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders, args.unitDecision]
+            );
+        } else {
+            await execQuery(
+                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
+                [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders]
+            );
+        }
         // accumSeconds must be written here too: it is the duration authority
         // the analytics view sums, so a batch segment without it charts as zero.
         // builderId as well: every other writer of a segment stamps it, and a
@@ -92,7 +122,14 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
                 args.builderId ?? null,
             ]
         );
+        // Randy, 2026-09-25: nobody is the builder AND the second operator on
+        // the same segment - that bills one pair of hands as two. The picker
+        // (secondOperator.tsx) already excludes the primary from its
+        // candidate list, but this writes straight from shared state, so it
+        // gets its own defensive filter rather than trusting every caller
+        // upstream got that right.
         for (const secondaryId of args.secondaryBuilderIds) {
+            if (Number(secondaryId) === Number(args.builderId ?? -1)) continue;
             await execQuery("INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)", [
                 buildId,
                 secondaryId,

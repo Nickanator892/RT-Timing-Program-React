@@ -38,7 +38,13 @@ function SecondOperator() {
     const second = secondaryBuilders[0];
 
     // Anyone active except whoever is already on this timer, the people who
-    // work this bench first.
+    // work this bench first. The `selectedUser` exclusion is the one that
+    // matters most: nobody is the builder AND the second operator on the same
+    // segment, which would bill one pair of hands as two (confirmed present on
+    // Main 2026-09-25 - this candidate list already made it impossible to pick
+    // the primary here; handleBuilderChange/segment-roll and the build-start
+    // calls in timingPage.tsx got the matching defensive filter that day too,
+    // since they write straight from shared state rather than through this list).
     const candidates = recentOperatorsFirst(
         (users ?? []).filter(
             (u: User) =>
