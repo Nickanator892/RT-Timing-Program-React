@@ -1,6 +1,7 @@
 import { useRef, useState } from "react"
 import { useSharedState } from "../../hooks/useSharedState"
 import AnchoredList from "../anchoredList/anchoredList"
+import { requestGuardedChange } from "../carryoverLock/carryoverLock"
 import "./timerModeDropdown.css"
 
 // id 4 is reserved: pause records are stored in HARNBUILDTIMES with
@@ -53,9 +54,12 @@ function TimerModeDropdown() {
                     }))}
                     onPick={(key) => {
                         const mode = timerModes.find((m) => m.id === Number(key));
-                        if (mode) setTimerMode({ header: mode.header, id: mode.id });
                         setOpen(false);
                         buttonRef.current?.focus();
+                        // Randy, 2026-09-25: a mode change is a different
+                        // operation just like a harness or job change, so it
+                        // goes through the same unsubmitted-time lock.
+                        if (mode) requestGuardedChange("mode", () => setTimerMode({ header: mode.header, id: mode.id }));
                     }}
                     onClose={() => {
                         setOpen(false);

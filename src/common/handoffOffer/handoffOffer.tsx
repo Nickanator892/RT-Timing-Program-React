@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useSharedState } from "../../hooks/useSharedState";
 import { timerModes } from "../timerModeDropdown/timerModeDropdown";
 import { holdScreensaver } from "../screensaver/screensaver";
+import { hasUnsubmittedTime } from "../../assets/carryoverGuard";
 import "./handoffOffer.css";
 
 /**
@@ -159,6 +160,23 @@ function HandoffOffer() {
         if (!current || busy) return;
         setBusy(true);
         try {
+            // Randy, 2026-09-25: the poll only refuses to SHOW an offer while
+            // there is unsubmitted time - it does not re-check at the moment
+            // Accept is actually pressed, which can be up to ANSWER_MS (10 min)
+            // later. An operator can start (or resume) a build in that window,
+            // and overwriting selectedHarn/timerMode out from under it would be
+            // exactly the carryover bug this whole feature exists to close.
+            // Declining and letting the operator set it up by hand is simpler
+            // and safer here than routing this through the full lock dialog.
+            const shared = await window.electron.getSharedData();
+            if (hasUnsubmittedTime(shared?.isRunning, shared?.elapsedTime, shared?.timerDone)) {
+                await respond(current.HandoffId, "DECLINED");
+                setOffer(null);
+                console.warn(
+                    `handoff: declined offer ${current.HandoffId} at accept-time - unsubmitted time was on the clock`
+                );
+                return;
+            }
             setSelectedHarn(current.HarnPn);
             // Mode and units come off the ROW, which is more specific than the
             // panel's own default for that mode.

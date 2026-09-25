@@ -1,0 +1,93 @@
+/* Unsubmitted-time lock: blocks a harness/job/mode change until the operator
+   deals with whatever the clock is still holding. Modal for the same reason
+   HandoffOffer is - this is a question that has to be answered - but it MUST
+   win against the screensaver, which the handoff dialog (z-index 15000, under
+   the screensaver's 20000) did not (Randy, 2026-09-25). */
+
+.carryover-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20001;
+    background: rgba(0, 0, 0, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4vh 4vw;
+}
+
+.carryover-card {
+    background: #2a1a16;
+    border: 3px solid #ff9a4d;
+    border-radius: 14px;
+    padding: 2.4vh 2.6vw;
+    max-width: 36em;
+    width: 100%;
+    color: #ffe9d9;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.carryover-title {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(20px, 3.2vh, 30px);
+    font-weight: bold;
+    margin: 0 0 0.5em;
+}
+
+.carryover-body {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(15px, 2.2vh, 21px);
+    line-height: 1.4;
+    margin: 0 0 1em;
+}
+
+.carryover-error {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(12px, 1.7vh, 16px);
+    color: #ffb3b3;
+    margin: 0 0 0.8em;
+}
+
+.carryover-buttons {
+    display: flex;
+    gap: 1em;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.carryover-submit,
+.carryover-discard,
+.carryover-cancel {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(15px, 2.2vh, 22px);
+    padding: 0.6em 1.2em;
+    /* Finger-sized, like every other bench control. */
+    min-height: 2.4em;
+    min-width: 7.5em;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.carryover-submit {
+    border: 2px solid #2f8f5a;
+    background: #16331f;
+    color: #dff5e8;
+}
+
+.carryover-discard {
+    border: 2px solid #b0413e;
+    background: #3a1a19;
+    color: #ffd9d6;
+}
+
+.carryover-cancel {
+    border: 2px solid #6b7683;
+    background: #1b2027;
+    color: #dfe6ee;
+}
+
+.carryover-submit:disabled,
+.carryover-discard:disabled,
+.carryover-cancel:disabled {
+    opacity: 0.6;
+}
