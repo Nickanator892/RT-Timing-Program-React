@@ -112,18 +112,31 @@ export function isSegmentStale(status: SegmentStatus): boolean {
 }
 
 /**
- * isRunning OR (paused with real elapsed time and not yet submitted). Shared
- * by the carryover lock and by HandoffOffer's accept() - both have to agree on
- * exactly what "unsubmitted time on the clock" means, because a mismatch
- * between them is exactly the kind of gap this feature exists to close.
+ * isRunning OR (not yet submitted AND (real elapsed time OR a real open build
+ * pointer)). Shared by the carryover lock and by HandoffOffer's accept() -
+ * both have to agree on exactly what "unsubmitted time on the clock" means,
+ * because a mismatch between them is exactly the kind of gap this feature
+ * exists to close.
+ *
+ * elapsedTime alone fails open in the window between Start (which opens a
+ * real HARNBUILDS/HARNBUILDSEGMENTS row and sets timerDone=false immediately)
+ * and the first 1s tick (which is the only thing that ever writes a nonzero
+ * elapsedTime into shared state) - see project_timer_shared_state_hazards.md.
+ * currentBuildId/currentSegmentId are set at the same moment as timerDone in
+ * that Start path, so checking them closes that gap without needing a real
+ * elapsed time to have accumulated yet.
  */
 export function hasUnsubmittedTime(
     isRunning: boolean | undefined,
     elapsedTime: number | undefined,
-    timerDone: boolean | undefined
+    timerDone: boolean | undefined,
+    currentBuildId?: number | undefined,
+    currentSegmentId?: number | undefined
 ): boolean {
     if (isRunning) return true;
-    return timerDone === false && Number(elapsedTime ?? 0) > 0;
+    if (timerDone !== false) return false;
+    if (Number(elapsedTime ?? 0) > 0) return true;
+    return Number(currentBuildId ?? 0) > 0 && Number(currentSegmentId ?? 0) > 0;
 }
 
 /**

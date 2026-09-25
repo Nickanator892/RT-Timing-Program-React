@@ -124,7 +124,15 @@ function CarryoverLockGuard({ setPauseStart }: Props) {
 
             void (async () => {
                 const shared = await window.electron.getSharedData();
-                if (!hasUnsubmittedTime(shared?.isRunning, shared?.elapsedTime, shared?.timerDone)) {
+                if (
+                    !hasUnsubmittedTime(
+                        shared?.isRunning,
+                        shared?.elapsedTime,
+                        shared?.timerDone,
+                        shared?.currentBuildId,
+                        shared?.currentSegmentId
+                    )
+                ) {
                     detail.onProceed();
                     return;
                 }
@@ -144,11 +152,25 @@ function CarryoverLockGuard({ setPauseStart }: Props) {
                     shared?.timerMode?.id
                 );
                 if (isSegmentStale(result.status)) {
-                    clear(result.message);
-                    detail.onProceed();
-                    return;
+                    // finding [2] (roll race): a crew-change roll can close
+                    // THIS segment id and open a new one between the snapshot
+                    // read above and this query resolving. Re-read the
+                    // freshest id before clearing - if it moved on, the roll
+                    // (not a real prior submit) closed the id just checked,
+                    // and the new segment is still legitimately open, so this
+                    // falls through to the same "genuinely locked - ask"
+                    // treatment below instead of clearing and proceeding.
+                    const fresh = await window.electron.getSharedData();
+                    if (Number(fresh?.currentSegmentId ?? 0) === Number(shared?.currentSegmentId ?? 0)) {
+                        clear(result.message);
+                        detail.onProceed();
+                        return;
+                    }
                 }
-                // Genuinely locked - ask.
+                // Genuinely locked - ask. Reached both for a still-open
+                // segment and for the roll-race case above, where the fresh
+                // id no longer matches what was checked (the roll's new
+                // segment is still legitimately open and must be protected).
                 setPending({ kind: detail.kind, onProceed: detail.onProceed });
             })();
         }

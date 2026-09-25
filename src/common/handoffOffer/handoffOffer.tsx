@@ -169,7 +169,15 @@ function HandoffOffer() {
             // Declining and letting the operator set it up by hand is simpler
             // and safer here than routing this through the full lock dialog.
             const shared = await window.electron.getSharedData();
-            if (hasUnsubmittedTime(shared?.isRunning, shared?.elapsedTime, shared?.timerDone)) {
+            if (
+                hasUnsubmittedTime(
+                    shared?.isRunning,
+                    shared?.elapsedTime,
+                    shared?.timerDone,
+                    shared?.currentBuildId,
+                    shared?.currentSegmentId
+                )
+            ) {
                 await respond(current.HandoffId, "DECLINED");
                 setOffer(null);
                 console.warn(

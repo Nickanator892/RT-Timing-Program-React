@@ -388,9 +388,15 @@ function TimingPage({
             if (L.timerDone || !(L.currentSegmentId > 0)) return;
             const result = await checkSegmentStatus(L.currentSegmentId, displayTimer, timerMode.id);
             if (isSegmentStale(result.status)) {
-                clearCarryoverClock(result.message);
-                setPauseStart(null);
-                setActiveButton(null);
+                // finding [2] (roll race): re-read the freshest id before
+                // clearing - a crew-change roll could have closed L's id and
+                // opened a new one while this query was in flight.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === L.currentSegmentId) {
+                    clearCarryoverClock(result.message);
+                    setPauseStart(null);
+                    setActiveButton(null);
+                }
             } else if (result.status === "unknown" && !staleBootRetried.current) {
                 // The backend was not reachable yet - a fresh boot regularly
                 // beats the file server up. Try once more instead of trusting
@@ -401,9 +407,12 @@ function TimingPage({
                     if (L2.timerDone || !(L2.currentSegmentId > 0)) return;
                     const retry = await checkSegmentStatus(L2.currentSegmentId, displayTimer, timerMode.id);
                     if (isSegmentStale(retry.status)) {
-                        clearCarryoverClock(retry.message);
-                        setPauseStart(null);
-                        setActiveButton(null);
+                        const fresh2 = await window.electron.getSharedData();
+                        if (Number(fresh2?.currentSegmentId ?? 0) === L2.currentSegmentId) {
+                            clearCarryoverClock(retry.message);
+                            setPauseStart(null);
+                            setActiveButton(null);
+                        }
                     }
                 }, 8000);
             }
@@ -803,12 +812,21 @@ function TimingPage({
         // BEFORE window.electron.timerStart() below: once that fires the clock
         // is running again, and there would be nothing left to undo cleanly.
         if (!timerDone && currentSegmentId > 0) {
-            const result = await checkSegmentStatus(currentSegmentId, displayTimer, timerMode.id);
+            const checkedSegmentId = currentSegmentId;
+            const result = await checkSegmentStatus(checkedSegmentId, displayTimer, timerMode.id);
             if (isSegmentStale(result.status)) {
-                clearCarryoverClock(result.message);
-                setPauseStart(null);
-                setActiveButton(null);
-                return;
+                // finding [2] (roll race): re-read the freshest id before
+                // clearing - a crew-change roll could have closed
+                // checkedSegmentId and opened a new one while this query was
+                // in flight, in which case the new segment is still
+                // legitimately open and must not be wiped.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === checkedSegmentId) {
+                    clearCarryoverClock(result.message);
+                    setPauseStart(null);
+                    setActiveButton(null);
+                    return;
+                }
             }
         }
         // Checked at the moment of the press, not just on the 30s poll: the
@@ -1082,10 +1100,31 @@ function TimingPage({
             const batchSecondaryIds = secondaryBuilders
                 .map((b) => Number(b.Id))
                 .filter((id) => id !== Number(selectedUser?.Id ?? -1));
+            // Item 6: maybeAskExtraUnits computed `remaining` from whatever
+            // unitsBuilt was in scope when Submit was first pressed, then
+            // awaited a human decision on a dialog that can stay open
+            // indefinitely - another operator can finish real units on this
+            // same harness while it waits. Re-fetch the built count NOW,
+            // immediately before computing the excess to flag, so the
+            // operator's EXTRA/SPREAD choice applies to the excess as it
+            // actually stands at write time. If the gap has since closed to
+            // 0, excessUnits comes out 0 and writeDistributedTimes flags
+            // nothing (isExcessRow is never true for excessUnits === 0) -
+            // nothing is excess, so no flag is silently wrong either way.
+            let freshUnitsBuilt = unitsBuilt;
+            if (decision && kitRev != null) {
+                try {
+                    const freshProgress = await fetchHarnProgress(kitRev, jobKitId);
+                    freshUnitsBuilt = freshProgress.get(selectedHarn)?.built ?? unitsBuilt;
+                } catch {
+                    // Could not re-fetch - fall back to the value already on
+                    // screen rather than aborting a batch whose time is real.
+                }
+            }
             // The decision applies only to the EXCESS units - the ones past
             // what was actually still owed (item 4's rule).
-            const remainingForExcess = unitsTotal - (unitsBuilt ?? 0);
-            const excessUnits = decision ? units - Math.max(remainingForExcess, 0) : 0;
+            const remainingForExcess = unitsTotal - (freshUnitsBuilt ?? 0);
+            const excessUnits = decision ? Math.max(0, units - Math.max(remainingForExcess, 0)) : 0;
             const buildIds = await writeDistributedTimes({
                 harnNumber: selectedHarn,
                 rev: buildKit?.REV,
@@ -1154,6 +1193,15 @@ function TimingPage({
         const newBuildSecondaryIds = secondaryBuilders
             .map((b) => Number(b.Id))
             .filter((id) => id !== Number(selectedUser?.Id ?? -1));
+        // finding [5]: unitDecision now travels INTO /api/build/start and is
+        // written by the server in the SAME transaction as the build+segment
+        // insert, instead of a separate non-queueable UPDATE issued after the
+        // fact. That UPDATE used to be able to fail (a transient lock) AFTER
+        // the build/segment above had already committed, orphaning an open
+        // segment with no id anywhere in app state to retry against - a Submit
+        // retry then created a fresh orphan on top of it every time. Now the
+        // decision either lands with the build or the whole build/start call
+        // fails and nothing here was ever created.
         const created = await postApi("/api/build/start", {
             harnNumber: selectedHarn,
             rev: buildKit?.REV,
@@ -1162,17 +1210,8 @@ function TimingPage({
             numberOfBuilders: newBuildSecondaryIds.length + 1,
             secondaryBuilderIds: newBuildSecondaryIds,
             startTime: start,
+            unitDecision,
         });
-        if (unitDecision) {
-            // Written BEFORE the segment-closing UPDATE below - the RT-MCS
-            // consume sweep acts on CLOSED Build sessions, so flag-first avoids
-            // a race with it. Not queueable: a decision that silently failed to
-            // land would let an extra unit through the sweep unflagged.
-            await execWrite("UPDATE HARNBUILDTIMES SET unitDecision = ? WHERE buildId = ? AND timeTypeId <> 4", [
-                unitDecision,
-                created.buildId,
-            ]);
-        }
         await execWrite(
             `UPDATE HARNBUILDSEGMENTS
                 SET endTime = ?, accumSeconds = ?, heartbeatAt = ?, heartbeatState = 'PAUSE'
@@ -1213,30 +1252,42 @@ function TimingPage({
             setDbSuccess("Submit");
             return;
         }
+        // finding [1]: verify a segment id in shared state is still genuinely
+        // open BEFORE dispatching to either path. This used to run only in
+        // the single-submit branch below, so a stale currentBuildId reaching
+        // submitBatch skipped it entirely - submitBatch's own
+        // /api/build/discard then threw on an already-closed build and the
+        // whole batch's real, unsubmitted time was lost instead of the clock
+        // self-healing with the friendly "already submitted" notice. Batch
+        // and single now share this one check.
+        const idsPresent = typeof currentBuildId == "number" && currentBuildId > 0 && currentSegmentId > 0;
+        if (idsPresent) {
+            const staleCheck = await checkSegmentStatus(currentSegmentId, currentTime, timerMode.id);
+            if (staleCheck.status === "closed") {
+                // finding [2] (roll race): a crew-change roll closes THIS
+                // segment id and opens a new one in one server transaction.
+                // If that roll's commit lands in the gap between reading
+                // currentSegmentId above and this query resolving,
+                // staleCheck truthfully reports "closed" for an id that was
+                // superseded, not submitted - the NEW segment is still
+                // legitimately open. Re-read the freshest id before clearing;
+                // only wipe the clock if it still names the id just checked.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === currentSegmentId) {
+                    clearCarryoverClock(staleCheck.message);
+                    setPauseStart(null);
+                }
+                setDbSuccess("Submit");
+                return;
+            }
+        }
+
         if (batchMode) {
             await submitBatch();
             return;
         }
         setDbSuccess("Fetching...");
         try {
-            const idsPresent = typeof currentBuildId == "number" && currentBuildId > 0 && currentSegmentId > 0;
-
-            // item 1(d): verify the segment we are about to close is still
-            // genuinely open BEFORE writing anything. Checked proactively here
-            // (rather than only after writeTime answers "nomatch") so a stale,
-            // already-submitted build can never receive a fresh unitDecision
-            // flag from the question below - it belongs to a submit that
-            // already happened, not this one.
-            if (idsPresent) {
-                const staleCheck = await checkSegmentStatus(currentSegmentId, currentTime, timerMode.id);
-                if (staleCheck.status === "closed") {
-                    clearCarryoverClock(staleCheck.message);
-                    setPauseStart(null);
-                    setDbSuccess("Submit");
-                    return;
-                }
-            }
-
             // Extra-units question (Build mode only) - before any write, same
             // as the batch twin above.
             const decision = await maybeAskExtraUnits(1);
