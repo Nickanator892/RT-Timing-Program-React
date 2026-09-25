@@ -379,6 +379,22 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.displayTimer = "00:00:00";
     sharedTimerData.elapsedTime = 0;
     sharedTimerData.isRunning = false;
+    // Randy, 2026-09-25 (project_pi_session_restore_carryover.md, "RECURRED on
+    // v1.0.24"): timer-reset used to leave the just-submitted build's ids,
+    // times and timerDone=false sitting in sharedTimerData - fine while the
+    // process stays up, since the next Start overwrites them, but saveSession
+    // only runs on a heartbeat tick or before-quit, and before-quit does NOT
+    // run when the Pi is powered off. An operator who shuts the panel down
+    // seconds after Submit (routine on the floor) then restarts into a
+    // session that still names the closed segment, with the clock showing
+    // what it earned. Every caller of timerReset() means "this build is
+    // done" - so say so here, once, instead of trusting each caller to also
+    // zero these fields for itself.
+    sharedTimerData.currentBuildId = 0;
+    sharedTimerData.currentSegmentId = 0;
+    sharedTimerData.timerDone = true;
+    sharedTimerData.startTime = "";
+    sharedTimerData.endTime = "";
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();
@@ -390,6 +406,11 @@ ipcMain.on("timer-reset", () => {
     // unable to clear itself. A failing submit reports itself on its own path.
     setHeartbeatError(null);
     sharedTimerData.recovery = null;
+    // Written NOW, synchronously - not left for the next heartbeat tick (up to
+    // 60s away) or before-quit (which a Pi shutdown skips entirely). This is
+    // the actual fix for the recurrence above: the on-disk session can no
+    // longer outlive the submit that closed it.
+    saveSession("reset");
 });
 
 // The renderer tells main which segment is live, so heartbeats land on the

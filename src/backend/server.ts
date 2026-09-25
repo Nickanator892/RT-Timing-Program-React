@@ -529,6 +529,17 @@ async function migrate() {
     );
   }
 
+  // --- extra-units decision (Build mode) ---------------------------------
+  // Best-effort, matching another agent's own migration on the RT-MCS side:
+  // both converge on the same column existing, and ensureColumn is idempotent
+  // either way. 'EXTRA' | 'SPREAD' | NULL on the build's non-pause
+  // HARNBUILDTIMES row(s) - see timingPage.tsx's extra-units question. The Pi
+  // may run this release before RT-MCS is republished, so every reader and
+  // writer of this column has to tolerate it being absent (see
+  // carryoverGuard-adjacent code in timingPage.tsx, timeDistribution.ts,
+  // useTimes.ts and useJobs.ts) rather than depend on this ALTER having run.
+  await ensureColumn("HARNBUILDTIMES", "unitDecision", "TEXT");
+
   // --- QuickBooks Time clock link ---------------------------------------
   // Which QuickBooks Time user a builder is, and whether their clock state is
   // allowed to drive the timer. Opt-in per person: office staff are in
