@@ -92,16 +92,27 @@ SELECT V.MSID, V.SEQ, V.HARNPN AS jobName, V.PHKITNAME, V.CUSTOMER, V.REVNUM, V.
 /** Built and in-progress counts per part number for one job. Kept separate from
  *  the kit itself so the harness list can refresh its numbers without reloading
  *  (and re-broadcasting) the kit the timer is working from. */
-const HARN_PROGRESS_SQL = `
+function harnProgressSql(excludeSpread: boolean): string {
+    // Randy, 2026-09-25: a 'SPREAD' unitDecision row (the extra-units question
+    // in timingPage.tsx) already had its time counted against a unit the
+    // schedule genuinely owed - counting it again here would show a harness as
+    // built twice. The column may not exist yet on a Pi that has not picked up
+    // the RT-MCS republish, so the caller tries WITH this clause first and
+    // falls back to WITHOUT it on any failure.
+    const spreadExclusion = excludeSpread
+        ? "AND T.harnBuildTimeId NOT IN (SELECT harnBuildTimeId FROM HARNBUILDTIMES WHERE unitDecision='SPREAD')"
+        : "";
+    return `
 SELECT PH.HARNPN AS partNum,
        (SELECT COUNT(*) FROM HARNBUILDTIMES_VIEW T
          WHERE T.harnNumber = PH.HARNPN AND T.REV = PH.RID
-           AND T.timeTypeId = ${PROGRESS_TIMETYPE} AND T.openSegments = 0) AS built,
+           AND T.timeTypeId = ${PROGRESS_TIMETYPE} AND T.openSegments = 0 ${spreadExclusion}) AS built,
        (SELECT COUNT(*) FROM HARNBUILDTIMES_VIEW T
          WHERE T.harnNumber = PH.HARNPN AND T.REV = PH.RID
            AND T.timeTypeId = ${PROGRESS_TIMETYPE} AND T.openSegments > 0) AS running
   FROM PROJHARN PH
  WHERE PH.RID = ? AND (? IS NULL OR PH.KITID = ?)`;
+}
 
 export function jobIsComplete(job: Job): boolean {
     return job.unitsTotal > 0 && job.unitsBuilt >= job.unitsTotal;
@@ -153,7 +164,8 @@ export async function fetchHarnProgress(
     rev: number,
     phkid: number | null
 ): Promise<Map<string, HarnProgress>> {
-    const rows = await query(HARN_PROGRESS_SQL, [rev, phkid, phkid]);
+    let rows = await query(harnProgressSql(true), [rev, phkid, phkid]);
+    if (!rows) rows = await query(harnProgressSql(false), [rev, phkid, phkid]);
     const map = new Map<string, HarnProgress>();
     if (!rows) return map;
     for (const r of rows) {

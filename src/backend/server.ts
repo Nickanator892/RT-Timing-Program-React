@@ -529,6 +529,17 @@ async function migrate() {
     );
   }
 
+  // --- extra-units decision (Build mode) ---------------------------------
+  // Best-effort, matching another agent's own migration on the RT-MCS side:
+  // both converge on the same column existing, and ensureColumn is idempotent
+  // either way. 'EXTRA' | 'SPREAD' | NULL on the build's non-pause
+  // HARNBUILDTIMES row(s) - see timingPage.tsx's extra-units question. The Pi
+  // may run this release before RT-MCS is republished, so every reader and
+  // writer of this column has to tolerate it being absent (see
+  // carryoverGuard-adjacent code in timingPage.tsx, timeDistribution.ts,
+  // useTimes.ts and useJobs.ts) rather than depend on this ALTER having run.
+  await ensureColumn("HARNBUILDTIMES", "unitDecision", "TEXT");
+
   // --- QuickBooks Time clock link ---------------------------------------
   // Which QuickBooks Time user a builder is, and whether their clock state is
   // allowed to drive the timer. Opt-in per person: office staff are in
@@ -805,19 +816,52 @@ app.get("/api/recovery/scan", async (_req, res) => {
 const NEW_BUILD_ID = `(SELECT MAX(buildId) FROM HARNBUILDS)`;
 app.post("/api/build/start", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
-  const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime } = req.body ?? {};
+  const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime, unitDecision } =
+    req.body ?? {};
   if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
   const start = startTime || nowLocal();
-  const builders = Math.max(1, Number(numberOfBuilders) || 1);
-  try {
-    const out = await mustRun([
+  // finding [7]: nobody is the builder AND the second operator. Every current
+  // client caller already filters secondaryBuilderIds against the primary
+  // before sending it, but that guarantee only holds as long as every caller
+  // remembers to - this endpoint is the actual authority over the write, so
+  // it filters again server-side and recomputes numberOfBuilders from the
+  // filtered list rather than trusting the client-supplied count.
+  const primary = Number(builderId) > 0 ? Number(builderId) : null;
+  const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
+    (id: any) => primary == null || Number(id) !== primary
+  );
+  const builders = Math.max(1, filteredSecondaryIds.length + 1);
+  void numberOfBuilders; // superseded by the recomputed `builders` above.
+  const decision = unitDecision === "EXTRA" || unitDecision === "SPREAD" ? unitDecision : null;
+
+  // finding [5]: recordAsNewBuild used to flag the extra-units decision with a
+  // SEPARATE, non-queueable UPDATE issued right after this insert. If that
+  // UPDATE failed (e.g. a transient lock) the build+segment created here were
+  // already committed, and recordAsNewBuild never surfaces their ids to app
+  // state - so the failure orphaned an open segment with nothing anywhere
+  // pointing at it, and a Submit retry created another orphan on top. Writing
+  // the decision INTO this same INSERT/transaction makes it atomic with the
+  // build's own creation: either both land, or neither does and there is
+  // nothing to orphan. Column-tolerant: HARNBUILDTIMES.unitDecision is added
+  // by this app's own migrate() (see ensureColumn above), which is skipped
+  // entirely while RtMcs is unreachable - if the column is not there yet,
+  // insert without it and log, rather than failing the whole build/start.
+  function buildStatements(withDecisionColumn: boolean) {
+    return [
       { query: `INSERT INTO HARNBUILDS (harnNumber) VALUES (?)`, params: [harnNumber], requireChanges: 1 },
-      {
-        query: `INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders)
-                VALUES (${NEW_BUILD_ID}, ?, ?, ?, ?, ?)`,
-        params: [harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders],
-        requireChanges: 1,
-      },
+      withDecisionColumn
+        ? {
+            query: `INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
+                    VALUES (${NEW_BUILD_ID}, ?, ?, ?, ?, ?, ?)`,
+            params: [harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders, decision],
+            requireChanges: 1,
+          }
+        : {
+            query: `INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders)
+                    VALUES (${NEW_BUILD_ID}, ?, ?, ?, ?, ?)`,
+            params: [harnNumber, rev ?? null, builderId ?? null, timeTypeId ?? 1, builders],
+            requireChanges: 1,
+          },
       {
         query: `INSERT INTO HARNBUILDSEGMENTS
                   (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId, builderId)
@@ -825,11 +869,25 @@ app.post("/api/build/start", async (req, res) => {
         params: [start, builders, start, STATION_ID, builderId ?? null],
         requireChanges: 1,
       },
-      ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
+      ...filteredSecondaryIds.map((id: any) => ({
         query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (${NEW_BUILD_ID}, ?)`,
         params: [id],
       })),
-    ]);
+    ];
+  }
+
+  try {
+    let out;
+    try {
+      out = await mustRun(buildStatements(decision != null));
+    } catch (err) {
+      if (decision != null && /(no such column|has no column named).*unitDecision/i.test(String(err))) {
+        console.warn("build/start: HARNBUILDTIMES.unitDecision not present yet - inserting without it:", err);
+        out = await mustRun(buildStatements(false));
+      } else {
+        throw err;
+      }
+    }
     const buildId = Number(out[0].lastID);
     res.json({ success: true, result: { buildId, segmentId: Number(out[2].lastID), startTime: start } });
   } catch (err) {
@@ -857,12 +915,31 @@ app.post("/api/build/segment-roll", async (req, res) => {
     return res.status(400).json({ success: false, error: "buildId and segmentId are required" });
   }
   const now = nowLocal();
-  const builders = Math.max(1, Number(numberOfBuilders) || 1);
   // A handover names the incoming builder; a plain crew change does not, and
   // must leave both the build row and the new segment on whoever is already
   // recorded - never NULL them.
   const newPrimary = Number(builderId) > 0 ? Number(builderId) : null;
+  void numberOfBuilders; // superseded by the recomputed `builders` below.
   try {
+    // finding [7]: same server-side backstop as /api/build/start - filter
+    // secondaryBuilderIds against the RESOLVED primary (the incoming handover
+    // target, or, on a plain crew change, whoever the build is already
+    // recorded against) and recompute numberOfBuilders from the filtered
+    // list, instead of trusting the client-supplied array and count.
+    let resolvedPrimary = newPrimary;
+    if (resolvedPrimary == null) {
+      const primaryLookup = await runQuery(
+        `SELECT builderId FROM HARNBUILDTIMES WHERE buildId = ? AND timeTypeId <> 4 ORDER BY harnBuildTimeId LIMIT 1`,
+        [buildId]
+      );
+      if (primaryLookup?.success) {
+        resolvedPrimary = Number(primaryLookup.result?.[0]?.builderId ?? 0) || null;
+      }
+    }
+    const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
+      (id: any) => resolvedPrimary == null || Number(id) !== resolvedPrimary
+    );
+    const builders = Math.max(1, filteredSecondaryIds.length + 1);
     const out = await mustRun([
       {
         query: `UPDATE HARNBUILDSEGMENTS
@@ -890,7 +967,7 @@ app.post("/api/build/segment-roll", async (req, res) => {
         params: [builders, newPrimary, buildId],
       },
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
-      ...(Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map((id: any) => ({
+      ...filteredSecondaryIds.map((id: any) => ({
         query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
         params: [buildId, id],
       })),

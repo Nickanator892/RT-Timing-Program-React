@@ -20,6 +20,8 @@ import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
 import { fetchHarnProgress } from "../../hooks/useJobs";
+import { checkSegmentStatus, clearCarryoverClock, isSegmentStale } from "../../assets/carryoverGuard";
+import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
 
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
@@ -99,20 +101,68 @@ function TimingPage({
     const { writeTime, fetchTimes } = useTimes();
     const nav = useNavigate();
 
+    // Straight off the kit - no effect, no state. The scheduled quantity is
+    // already in hand the moment the kit is. Moved above the batch-default
+    // effect below (2026-09-25) because Setup/Teardown's forced batch count
+    // needs it at defaulting time.
+    const unitsTotal = Number(
+        buildKit?.harnesses.find((h) => h.partNum === selectedHarn)?.buildNumber ?? 0
+    );
+
     // Randy's rule (2026-09-09): every timing operation other than Build defaults
     // to batch - setup, teardown, final test and the rest are normally done for
     // every unit at once, a Build is one harness. Applied when the MODE changes
     // (and once when the page first sees it), only while idle, so a deliberate
     // un-tick survives until the next mode change, and a mode change mid-run
     // cannot flip a timer that already has rows.
+    //
+    // Setup (2) and Teardown (3) go further (Randy, 2026-09-25): they are
+    // ALWAYS batch, never a per-unit timer, and default their unit count to
+    // the harness's full scheduled quantity - the same number "Harness x of y"
+    // is built from - rather than whatever batchUnits was left at by a
+    // different mode.
+    const SETUP_MODE = 2;
+    const TEARDOWN_MODE = 3;
+    const alwaysBatchMode = (id: number) => id === SETUP_MODE || id === TEARDOWN_MODE;
     const batchDefaultedForMode = useRef<number | null>(null);
     useEffect(() => {
         if (!timerModeLoaded || !timerDoneLoaded) return;
         if (batchDefaultedForMode.current === timerMode.id) return;
         batchDefaultedForMode.current = timerMode.id;
-        if (timerDone) setBatchMode(timerMode.id !== 1);
+        if (timerDone) {
+            setBatchMode(timerMode.id !== 1);
+            if (alwaysBatchMode(timerMode.id) && unitsTotal > 0) setBatchUnits(unitsTotal);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [timerMode.id, timerModeLoaded, timerDoneLoaded, timerDone]);
+    }, [timerMode.id, timerModeLoaded, timerDoneLoaded, timerDone, unitsTotal]);
+
+    // The toggle in the JSX below is also `disabled` in Setup/Teardown, which
+    // covers a deliberate tap - this effect is the backstop for anything else
+    // that could leave batchMode false there (a stale session restore, a
+    // future caller). Debounced and read from a ref rather than reacting to
+    // `batchMode` directly, for the same reason the crew-change check below
+    // is: every broadcast from main (a 1s tick, any updateSharedData) rewrites
+    // every shared key with main's snapshot at send time, so the render right
+    // after our OWN setBatchMode(true) can still show a stale `false` for a
+    // moment - deciding off THAT render is what flickered the checkbox.
+    // Read-only while a build is in progress: forcing it mid-run would fight a
+    // batch that already has rows.
+    const forcedBatchLatest = useRef({ modeId: timerMode.id, batchMode, timerDone });
+    forcedBatchLatest.current = { modeId: timerMode.id, batchMode, timerDone };
+    const forcedBatchTimer = useRef<number | null>(null);
+    useEffect(() => {
+        if (!timerModeLoaded || !timerDoneLoaded) return;
+        if (forcedBatchTimer.current) window.clearTimeout(forcedBatchTimer.current);
+        forcedBatchTimer.current = window.setTimeout(() => {
+            forcedBatchTimer.current = null;
+            const L = forcedBatchLatest.current;
+            if (!L.timerDone) return;
+            if (alwaysBatchMode(L.modeId) && !L.batchMode) setBatchMode(true);
+        }, 400);
+        return () => {
+            if (forcedBatchTimer.current) window.clearTimeout(forcedBatchTimer.current);
+        };
+    }, [timerMode.id, batchMode, timerDone, timerModeLoaded, timerDoneLoaded]);
 
     const timesFetched = useRef(false);
     const lastSelectedHarn = useRef("");
@@ -127,12 +177,6 @@ function TimingPage({
     // submit button.
     const [unitsBuilt, setUnitsBuilt] = useState<number | null>(null);
     const [selectedJob] = useSharedState<{ phkid?: number | null } | null>("selectedJob", null);
-
-    // Straight off the kit - no effect, no state. The scheduled quantity is
-    // already in hand the moment the kit is.
-    const unitsTotal = Number(
-        buildKit?.harnesses.find((h) => h.partNum === selectedHarn)?.buildNumber ?? 0
-    );
 
     // Depends on the kit's REV, NOT the kit object: useBuildKit hands back a new
     // object on every render, so an effect keyed on it re-ran forever, each pass
@@ -221,12 +265,23 @@ function TimingPage({
 
         rolling.current = true;
         try {
+            // Randy, 2026-09-25: nobody is the builder AND the second operator
+            // on the same segment - that bills one pair of hands as two. The
+            // picker (secondOperator.tsx) already excludes the CURRENT primary
+            // from its candidate list, but L.primaryId here is the primary
+            // AFTER this roll (a handover has already moved selectedUser by
+            // the time this effect fires), so this filter is what stops a
+            // handover target who was already loaded as second operator from
+            // riding along as their own second operator too.
+            const rollSecondaryIds = L.secondaryBuilders
+                .map((b) => Number(b.Id))
+                .filter((id) => id !== L.primaryId);
             const rolled = await postApi("/api/build/segment-roll", {
                 buildId: L.currentBuildId,
                 segmentId: L.currentSegmentId,
                 accumSeconds: await window.electron.getSegmentSeconds(),
-                numberOfBuilders: L.secondaryBuilders.length + 1,
-                secondaryBuilderIds: L.secondaryBuilders.map((b) => Number(b.Id)),
+                numberOfBuilders: rollSecondaryIds.length + 1,
+                secondaryBuilderIds: rollSecondaryIds,
                 // Only on a handover. Sent on every roll it would be harmless
                 // today, but it is the one field that rewrites who owns the
                 // build, so it travels only when that is what happened.
@@ -307,6 +362,101 @@ function TimingPage({
     }, [crewLoaded, selectedUserLoaded, secondaryBuilders, primaryId, currentBuildId, currentSegmentId, timerDone, batchMode, isRunning]);
 
     useEffect(() => () => { if (crewCheck.current) window.clearTimeout(crewCheck.current); }, []);
+
+    // --- item 1: never resume/resubmit a build the database already closed ---
+    // Randy, 2026-09-25 (project_pi_session_restore_carryover.md, "RECURRED on
+    // v1.0.24"): a restored session can point this page at a segment the
+    // database already closed - the previous submit's OWN segment, still
+    // named in shared state because timer-reset used to leave those ids in
+    // place until the next Start (see electron/main.js's timer-reset for the
+    // fix on that side). Checked once per mount, which also covers every
+    // return from the pause-reason detour since this page remounts on that
+    // trip, not literally only at app boot.
+    //
+    // Debounced and read from `latest` for the same reason the crew-change
+    // check above is: useSharedState hands back a placeholder before main's
+    // real snapshot lands, and deciding on that first render would misread a
+    // perfectly good restored build as having no segment at all.
+    const staleBootChecked = useRef(false);
+    const staleBootRetried = useRef(false);
+    useEffect(() => {
+        if (!timerDoneLoaded || !crewLoaded || !selectedUserLoaded) return;
+        if (staleBootChecked.current) return;
+        const t = window.setTimeout(async () => {
+            staleBootChecked.current = true;
+            const L = latest.current;
+            if (L.timerDone || !(L.currentSegmentId > 0)) return;
+            const result = await checkSegmentStatus(L.currentSegmentId, displayTimer, timerMode.id);
+            if (isSegmentStale(result.status)) {
+                // finding [2] (roll race): re-read the freshest id before
+                // clearing - a crew-change roll could have closed L's id and
+                // opened a new one while this query was in flight.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === L.currentSegmentId) {
+                    clearCarryoverClock(result.message);
+                    setPauseStart(null);
+                    setActiveButton(null);
+                }
+            } else if (result.status === "unknown" && !staleBootRetried.current) {
+                // The backend was not reachable yet - a fresh boot regularly
+                // beats the file server up. Try once more instead of trusting
+                // a build that could not actually be checked.
+                staleBootRetried.current = true;
+                window.setTimeout(async () => {
+                    const L2 = latest.current;
+                    if (L2.timerDone || !(L2.currentSegmentId > 0)) return;
+                    const retry = await checkSegmentStatus(L2.currentSegmentId, displayTimer, timerMode.id);
+                    if (isSegmentStale(retry.status)) {
+                        const fresh2 = await window.electron.getSharedData();
+                        if (Number(fresh2?.currentSegmentId ?? 0) === L2.currentSegmentId) {
+                            clearCarryoverClock(retry.message);
+                            setPauseStart(null);
+                            setActiveButton(null);
+                        }
+                    }
+                }, 8000);
+            }
+        }, CREW_SETTLE_MS);
+        return () => window.clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [timerDoneLoaded, crewLoaded, selectedUserLoaded]);
+
+    // The carryover lock guard (carryoverLock.tsx) clears a stale clock from
+    // pages other than this one (e.g. the App.tsx setHarn backstop, reached
+    // from /choose-harn) and has no "page's own message area" to write to, so
+    // it drops its notice into shared state instead. Relayed into `err` here
+    // whenever this page is the one open to show it, then consumed so it does
+    // not re-fire on the next unrelated broadcast.
+    const [carryoverNotice, setCarryoverNotice] = useSharedState<string>("carryoverNotice", "");
+    useEffect(() => {
+        if (!carryoverNotice) return;
+        setErr(carryoverNotice);
+        setCarryoverNotice("");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [carryoverNotice]);
+
+    // Register this page's End/Submit into the carryover-lock bridge so the
+    // lock dialog (mounted separately in TimerLayout, reachable from any
+    // page) can drive a REAL submit rather than reimplementing one. The
+    // registered functions are stable (registered once) and always call
+    // through refs to the LATEST resetTimer/submitTime closures, because the
+    // bridge can be invoked renders after it was registered and a stale
+    // closure here would submit against yesterday's isRunning/currentBuildId.
+    const resetTimerRef = useRef<() => void>(() => {});
+    const submitTimeRef = useRef<() => Promise<void>>(async () => {});
+    // Function DECLARATIONS (resetTimer, submitTime below) are hoisted within
+    // this component call, so assigning them here - before their textual
+    // definition further down - still captures THIS render's closure.
+    resetTimerRef.current = resetTimer;
+    submitTimeRef.current = submitTime;
+    useEffect(() => {
+        carryoverBridge.end = () => resetTimerRef.current();
+        carryoverBridge.submit = () => submitTimeRef.current();
+        return () => {
+            carryoverBridge.end = null;
+            carryoverBridge.submit = null;
+        };
+    }, []);
 
     // Default the batch unit count to the PN's qty-to-build.
     useEffect(() => {
@@ -657,6 +807,28 @@ function TimingPage({
             setErr(`${selectedUser?.name ?? "This builder"} is clocked out of QuickBooks - clock in to start timing`);
             return;
         }
+        // item 1(c): this is the Resume path (a paused build with a segment on
+        // record) - never resume one the database already closed. Checked
+        // BEFORE window.electron.timerStart() below: once that fires the clock
+        // is running again, and there would be nothing left to undo cleanly.
+        if (!timerDone && currentSegmentId > 0) {
+            const checkedSegmentId = currentSegmentId;
+            const result = await checkSegmentStatus(checkedSegmentId, displayTimer, timerMode.id);
+            if (isSegmentStale(result.status)) {
+                // finding [2] (roll race): re-read the freshest id before
+                // clearing - a crew-change roll could have closed
+                // checkedSegmentId and opened a new one while this query was
+                // in flight, in which case the new segment is still
+                // legitimately open and must not be wiped.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === checkedSegmentId) {
+                    clearCarryoverClock(result.message);
+                    setPauseStart(null);
+                    setActiveButton(null);
+                    return;
+                }
+            }
+        }
         // Checked at the moment of the press, not just on the 30s poll: the
         // window this exists for is the few minutes after a power cut, when it
         // flips from read-only to writable.
@@ -728,13 +900,20 @@ function TimingPage({
             // build row with no segment, which carries no time and is invisible
             // to the recovery scan.
             try {
+                // Nobody is the builder AND the second operator (2026-09-25) -
+                // secondOperator.tsx's candidate list already excludes the
+                // primary, but this writes straight from shared state, so it
+                // gets the same defensive filter as segment-roll.
+                const startSecondaryIds = secondaryBuilders
+                    .map((b) => Number(b.Id))
+                    .filter((id) => id !== Number(selectedUser?.Id ?? -1));
                 const created = await postApi("/api/build/start", {
                     harnNumber: selectedHarn,
                     rev: buildKit?.REV,
                     builderId: selectedUser?.Id,
                     timeTypeId: timerMode.id,
-                    numberOfBuilders: secondaryBuilders.length + 1,
-                    secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+                    numberOfBuilders: startSecondaryIds.length + 1,
+                    secondaryBuilderIds: startSecondaryIds,
                     startTime,
                 });
                 setCurrentBuildId(created.buildId);
@@ -787,9 +966,83 @@ function TimingPage({
         setDisableSubmit(false);
     }
 
+    // --- Extra-units question (Build mode only) ---------------------------
+    // Randy, 2026-09-25: qty and built here are the exact numbers "Harness x
+    // of y" (unitsLabel above) is built from - asking from any other source
+    // would let this question and that label disagree about the same
+    // harness. HARNBUILDTIMES.unitDecision is added by this app's own migrate
+    // (server.ts) AND, separately, by an RT-MCS agent doing the same thing -
+    // the Pi may get this release before RT-MCS is republished, so every read
+    // and write of the column checks for it first and skips the whole feature
+    // (question, flag, exclusion) when it is missing rather than throwing a
+    // "no such column" error into a submit.
+    const unitDecisionColumnRef = useRef<boolean | null>(null);
+    async function columnSupportsUnitDecision(): Promise<boolean> {
+        if (unitDecisionColumnRef.current !== null) return unitDecisionColumnRef.current;
+        try {
+            const data = await execQuery(
+                `SELECT COUNT(*) AS n FROM pragma_table_info('HARNBUILDTIMES') WHERE name = 'unitDecision'`
+            );
+            const present = !!data?.result && Number(data.result[0]?.n ?? 0) > 0;
+            unitDecisionColumnRef.current = present;
+            if (!present) console.warn("HARNBUILDTIMES.unitDecision not present yet - skipping the extra-units question");
+            return present;
+        } catch {
+            unitDecisionColumnRef.current = false;
+            return false;
+        }
+    }
+
+    type UnitDecision = "EXTRA" | "SPREAD";
+    const [extraUnitsPrompt, setExtraUnitsPrompt] = useState<{
+        qty: number;
+        remaining: number;
+        units: number;
+        harn: string;
+        resolve: (choice: UnitDecision | "CANCEL") => void;
+    } | null>(null);
+
+    /** Resolves once the operator picks a button on the extra-units dialog. */
+    function askExtraUnitsQuestion(args: {
+        qty: number;
+        remaining: number;
+        units: number;
+        harn: string;
+    }): Promise<UnitDecision | "CANCEL"> {
+        return new Promise((resolve) => setExtraUnitsPrompt({ ...args, resolve }));
+    }
+
+    function answerExtraUnits(choice: UnitDecision | "CANCEL") {
+        extraUnitsPrompt?.resolve(choice);
+        setExtraUnitsPrompt(null);
+    }
+
+    /** Ask, if this submit (Build mode, `units` of them) would run past what
+     *  the schedule has left. Returns null when the question does not apply
+     *  (wrong mode, no schedule data yet, column missing, or units fit) - the
+     *  caller writes no flag at all in that case, same as before this
+     *  feature existed. */
+    async function maybeAskExtraUnits(units: number): Promise<UnitDecision | null | "CANCEL"> {
+        if (timerMode.id !== 1 || unitsTotal <= 0 || unitsBuilt === null) return null;
+        const remaining = unitsTotal - unitsBuilt;
+        if (units <= remaining) return null;
+        if (!(await columnSupportsUnitDecision())) return null;
+        return askExtraUnitsQuestion({ qty: unitsTotal, remaining, units, harn: selectedHarn });
+    }
+
     /** Batch submit: slice the timed window across the unit count. */
     async function submitBatch() {
         const units = Math.max(1, Math.floor(batchUnits));
+
+        // Extra-units question - BEFORE anything is written (setDbSuccess
+        // below is just a label). A Cancel here must leave every row, the
+        // clock and the live build exactly as they were.
+        const decision = await maybeAskExtraUnits(units);
+        if (decision === "CANCEL") {
+            setDbSuccess("Submit");
+            return;
+        }
+
         setDbSuccess("Saving batch...");
         try {
             const startMs = new Date(startTime).getTime();
@@ -842,6 +1095,36 @@ function TimingPage({
             const windowMs = endMs - startMs;
             const workedMs = elapsedMs > 0 ? Math.min(elapsedMs, windowMs) : windowMs;
 
+            // Nobody is the builder AND the second operator (2026-09-25) - see
+            // the same filter in startTimer/handleBuilderChange.
+            const batchSecondaryIds = secondaryBuilders
+                .map((b) => Number(b.Id))
+                .filter((id) => id !== Number(selectedUser?.Id ?? -1));
+            // Item 6: maybeAskExtraUnits computed `remaining` from whatever
+            // unitsBuilt was in scope when Submit was first pressed, then
+            // awaited a human decision on a dialog that can stay open
+            // indefinitely - another operator can finish real units on this
+            // same harness while it waits. Re-fetch the built count NOW,
+            // immediately before computing the excess to flag, so the
+            // operator's EXTRA/SPREAD choice applies to the excess as it
+            // actually stands at write time. If the gap has since closed to
+            // 0, excessUnits comes out 0 and writeDistributedTimes flags
+            // nothing (isExcessRow is never true for excessUnits === 0) -
+            // nothing is excess, so no flag is silently wrong either way.
+            let freshUnitsBuilt = unitsBuilt;
+            if (decision && kitRev != null) {
+                try {
+                    const freshProgress = await fetchHarnProgress(kitRev, jobKitId);
+                    freshUnitsBuilt = freshProgress.get(selectedHarn)?.built ?? unitsBuilt;
+                } catch {
+                    // Could not re-fetch - fall back to the value already on
+                    // screen rather than aborting a batch whose time is real.
+                }
+            }
+            // The decision applies only to the EXCESS units - the ones past
+            // what was actually still owed (item 4's rule).
+            const remainingForExcess = unitsTotal - (freshUnitsBuilt ?? 0);
+            const excessUnits = decision ? Math.max(0, units - Math.max(remainingForExcess, 0)) : 0;
             const buildIds = await writeDistributedTimes({
                 harnNumber: selectedHarn,
                 rev: buildKit?.REV,
@@ -851,8 +1134,10 @@ function TimingPage({
                 startMs,
                 endMs,
                 workedMs,
-                numberOfBuilders: secondaryBuilders.length + 1,
-                secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+                numberOfBuilders: batchSecondaryIds.length + 1,
+                secondaryBuilderIds: batchSecondaryIds,
+                unitDecision: decision ?? undefined,
+                excessUnits,
             });
             // execWrite, not execQuery: a dropped pause row here would silently
             // inflate the batch's times, and submitBatch's catch reports it.
@@ -896,7 +1181,7 @@ function TimingPage({
      *  time row and ONE closed segment carrying the pause-free elapsed seconds
      *  from the main-process clock. Used when Submit finds no open segment to
      *  close, so the operator's time is written instead of abandoned. */
-    async function recordAsNewBuild() {
+    async function recordAsNewBuild(unitDecision?: UnitDecision) {
         const shared = await window.electron.getSharedData();
         const elapsedSeconds = Math.max(1, Math.round(Number(shared?.elapsedTime ?? 0) / 1000));
         const end = endTime || formatTimestamp(new Date().toISOString());
@@ -904,14 +1189,28 @@ function TimingPage({
             startTime ||
             formatTimestamp(new Date(new Date(end).getTime() - elapsedSeconds * 1000).toISOString());
         setDbSuccess("Recording...");
+        // Nobody is the builder AND the second operator (2026-09-25).
+        const newBuildSecondaryIds = secondaryBuilders
+            .map((b) => Number(b.Id))
+            .filter((id) => id !== Number(selectedUser?.Id ?? -1));
+        // finding [5]: unitDecision now travels INTO /api/build/start and is
+        // written by the server in the SAME transaction as the build+segment
+        // insert, instead of a separate non-queueable UPDATE issued after the
+        // fact. That UPDATE used to be able to fail (a transient lock) AFTER
+        // the build/segment above had already committed, orphaning an open
+        // segment with no id anywhere in app state to retry against - a Submit
+        // retry then created a fresh orphan on top of it every time. Now the
+        // decision either lands with the build or the whole build/start call
+        // fails and nothing here was ever created.
         const created = await postApi("/api/build/start", {
             harnNumber: selectedHarn,
             rev: buildKit?.REV,
             builderId: selectedUser?.Id,
             timeTypeId: timerMode.id,
-            numberOfBuilders: secondaryBuilders.length + 1,
-            secondaryBuilderIds: secondaryBuilders.map((b) => Number(b.Id)),
+            numberOfBuilders: newBuildSecondaryIds.length + 1,
+            secondaryBuilderIds: newBuildSecondaryIds,
             startTime: start,
+            unitDecision,
         });
         await execWrite(
             `UPDATE HARNBUILDSEGMENTS
@@ -953,29 +1252,83 @@ function TimingPage({
             setDbSuccess("Submit");
             return;
         }
+        // finding [1]: verify a segment id in shared state is still genuinely
+        // open BEFORE dispatching to either path. This used to run only in
+        // the single-submit branch below, so a stale currentBuildId reaching
+        // submitBatch skipped it entirely - submitBatch's own
+        // /api/build/discard then threw on an already-closed build and the
+        // whole batch's real, unsubmitted time was lost instead of the clock
+        // self-healing with the friendly "already submitted" notice. Batch
+        // and single now share this one check.
+        const idsPresent = typeof currentBuildId == "number" && currentBuildId > 0 && currentSegmentId > 0;
+        if (idsPresent) {
+            const staleCheck = await checkSegmentStatus(currentSegmentId, currentTime, timerMode.id);
+            if (staleCheck.status === "closed") {
+                // finding [2] (roll race): a crew-change roll closes THIS
+                // segment id and opens a new one in one server transaction.
+                // If that roll's commit lands in the gap between reading
+                // currentSegmentId above and this query resolving,
+                // staleCheck truthfully reports "closed" for an id that was
+                // superseded, not submitted - the NEW segment is still
+                // legitimately open. Re-read the freshest id before clearing;
+                // only wipe the clock if it still names the id just checked.
+                const fresh = await window.electron.getSharedData();
+                if (Number(fresh?.currentSegmentId ?? 0) === currentSegmentId) {
+                    clearCarryoverClock(staleCheck.message);
+                    setPauseStart(null);
+                }
+                setDbSuccess("Submit");
+                return;
+            }
+        }
+
         if (batchMode) {
             await submitBatch();
             return;
         }
         setDbSuccess("Fetching...");
         try {
+            // Extra-units question (Build mode only) - before any write, same
+            // as the batch twin above.
+            const decision = await maybeAskExtraUnits(1);
+            if (decision === "CANCEL") {
+                setDbSuccess("Submit");
+                return;
+            }
+            const unitDecision = decision === "EXTRA" || decision === "SPREAD" ? decision : undefined;
+
             const timeObject: Partial<LoggedTime> = {
                 startTime: startTime,
                 endTime: endTime,
                 harnNumber: selectedHarn,
             };
             // Close the segment this timer has been heartbeating. When there is
-            // none on record, or the one on record is already closed, the time
-            // on screen is still real work: record it as a build of its own.
-            // This used to return silently with the button stuck on
-            // "Fetching..." and nothing written (2026-09-09: a 28-minute Final
-            // Test whose ids still pointed at the previous, submitted build).
+            // none on record, or the one on record vanished between the check
+            // above and here, the time on screen is still real work: record it
+            // as a build of its own. This used to return silently with the
+            // button stuck on "Fetching..." and nothing written (2026-09-09: a
+            // 28-minute Final Test whose ids still pointed at the previous,
+            // submitted build).
             let closed: unknown = "nomatch";
-            if (typeof currentBuildId == "number" && currentBuildId > 0 && currentSegmentId > 0) {
+            if (idsPresent) {
+                if (unitDecision) {
+                    // Written BEFORE writeTime closes the segment - see the
+                    // matching comment in recordAsNewBuild. Not queueable and
+                    // not caught here: a decision that failed to land must
+                    // abort the submit, per Randy's spec, rather than close
+                    // the segment silently unflagged.
+                    await execWrite(
+                        "UPDATE HARNBUILDTIMES SET unitDecision = ? WHERE buildId = ? AND timeTypeId <> 4",
+                        [unitDecision, currentBuildId]
+                    );
+                }
                 closed = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
             }
             if (closed === "nomatch") {
-                await recordAsNewBuild();
+                // Keep recordAsNewBuild for the genuine no-ids case, and for the
+                // rare race where the segment vanished in the instant between
+                // the stale-check above and writeTime's own UPDATE.
+                await recordAsNewBuild(unitDecision);
             } else if (!closed) {
                 throw new Error("Could not close the segment - nothing was written. Check the database and Submit again.");
             }
@@ -1114,11 +1467,20 @@ function TimingPage({
                         <label className="batch-toggle">
                             {/* Usable mid-run (Randy, 2026-09-09): a single build
                                 switched to batch is converted at Submit, a batch
-                                switched to single is recorded as one build. */}
+                                switched to single is recorded as one build.
+                                Setup and Teardown lock it ON (Randy, 2026-09-25) -
+                                neither is ever a per-unit timer - so the checkbox
+                                is disabled there; the forcedBatchLatest effect
+                                above is the backstop for anything that could
+                                still flip it off. */}
                             <input
                                 type="checkbox"
                                 checked={batchMode}
-                                onChange={(e) => setBatchMode(e.target.checked)}
+                                disabled={alwaysBatchMode(timerMode.id)}
+                                onChange={(e) => {
+                                    if (alwaysBatchMode(timerMode.id)) return;
+                                    setBatchMode(e.target.checked);
+                                }}
                             />
                             Batch: one time across all units
                         </label>
@@ -1188,6 +1550,33 @@ function TimingPage({
             <p id="app-version-tag" aria-hidden="true">
                 RT Timing - v{__APP_VERSION__}
             </p>
+            {/* Extra-units question (item 4, Build mode only): asked BEFORE any
+                write when a submit would cover more units than the schedule has
+                left. Local to this page - unlike the carryover lock, both
+                submit paths that need it (submitTime, submitBatch) only ever
+                run from here. */}
+            {extraUnitsPrompt && (
+                <div className="extra-units-backdrop" role="dialog" aria-modal="true" aria-label="Extra units">
+                    <div className="extra-units-card">
+                        <p className="extra-units-body">
+                            {extraUnitsPrompt.remaining <= 0
+                                ? `All ${extraUnitsPrompt.qty} ${extraUnitsPrompt.harn} are already built`
+                                : `Only ${extraUnitsPrompt.remaining} of ${extraUnitsPrompt.qty} ${extraUnitsPrompt.harn} are left to build - this submit is ${extraUnitsPrompt.units}`}
+                        </p>
+                        <div className="extra-units-buttons">
+                            <button type="button" id="extra-units-extra" onClick={() => answerExtraUnits("EXTRA")}>
+                                Extra harnesses were built
+                            </button>
+                            <button type="button" id="extra-units-spread" onClick={() => answerExtraUnits("SPREAD")}>
+                                Spread this time across the {extraUnitsPrompt.qty}
+                            </button>
+                            <button type="button" id="extra-units-cancel" onClick={() => answerExtraUnits("CANCEL")}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

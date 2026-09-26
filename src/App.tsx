@@ -16,6 +16,7 @@ import RecoveryPage from "./pages/recoveryPage/recoveryPage";
 import OnScreenKeyboard from "./common/onScreenKeyboard/onScreenKeyboard";
 import Screensaver from "./common/screensaver/screensaver";
 import HandoffOffer from "./common/handoffOffer/handoffOffer";
+import CarryoverLockGuard, { requestGuardedChange } from "./common/carryoverLock/carryoverLock";
 
 const API_BASE = "http://localhost:5000";
 
@@ -97,7 +98,25 @@ function TimerLayout() {
                     }
                 />
                 <Route path="/analytics" element={<AnalyticsPage harn={selectedHarn} />} />
-                <Route path="/choose-harn" element={<ChooseHarnPage setHarn={setSelectedHarn} />} />
+                <Route
+                    path="/choose-harn"
+                    element={
+                        <ChooseHarnPage
+                            setHarn={(value) => {
+                                // Randy, 2026-09-25: the harness ICON already
+                                // guards navigating here, so in practice this
+                                // page is only reached with no unsubmitted time
+                                // on the clock. This wrapper is the backstop for
+                                // the actual mutation anyway - it is the one
+                                // place ChooseHarnPage.selectHarn calls to
+                                // change selectedHarn, regardless of how the
+                                // operator got to this route.
+                                const next = typeof value === "function" ? value(selectedHarn) : value;
+                                requestGuardedChange("harness", () => setSelectedHarn(next));
+                            }}
+                        />
+                    }
+                />
                 <Route path="/choose-kit" element={<ChooseKitPage />} />
                 <Route
                     path="/recover"
@@ -114,6 +133,10 @@ function TimerLayout() {
             <OnScreenKeyboard />
             <Screensaver />
             <HandoffOffer />
+            {/* Mounted here, not inside TimingPage, so it can also catch the
+                App.tsx setHarn backstop above (fires from /choose-harn) - see
+                carryoverLock.tsx's doc comment. */}
+            <CarryoverLockGuard setPauseStart={setPauseStart} />
         </>
     );
 }

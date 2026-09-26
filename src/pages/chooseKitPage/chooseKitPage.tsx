@@ -6,6 +6,7 @@ import { useSharedState } from "../../hooks/useSharedState";
 import { useJobs, jobIsComplete, type Job } from "../../hooks/useJobs";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import BackButton from "../../common/buttons/backButton/backButton";
+import { requestGuardedChange } from "../../common/carryoverLock/carryoverLock";
 
 /**
  * Pick the job to work on.
@@ -114,7 +115,15 @@ function ChooseKitPage() {
                 setBusy(false);
                 return;
             }
-            setSelectedJob(job);
+            // finding [4]: harness selection has App.tsx's setHarn wrapper as
+            // a backstop on the actual mutation "regardless of how the
+            // operator got to this route" - job/kit selection had no
+            // equivalent. chooseKitButton guards the NAVIGATION to
+            // /choose-kit, but loginPage.tsx's afterLogin() and
+            // recoveryPage.tsx's notNow()/no-candidate fallback both land
+            // here with no guard at all, so this page's own mutation is where
+            // it has to be gated - regardless of entry route, same as harness.
+            requestGuardedChange("job", () => setSelectedJob(job));
             nav("/choose-harn");
         } catch (e: any) {
             setErr(String(e?.message ?? e));

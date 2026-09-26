@@ -57,6 +57,17 @@ export function useTimes() {
         }
     };
 
+    // Randy, 2026-09-25: a 'SPREAD' unitDecision means this row's time was
+    // already counted against an earlier, genuinely-owed unit (see the
+    // extra-units question in timingPage.tsx) - counting it again here would
+    // make a harness look built twice. The column may not exist yet on a Pi
+    // that has not picked up the RT-MCS republish, so every query that
+    // excludes it tries that form FIRST and falls back to the plain query on
+    // any failure (a real DB error would fail the fallback identically, so
+    // there is nothing lost by trying).
+    const SPREAD_EXCLUSION =
+        "AND harnBuildTimeId NOT IN (SELECT harnBuildTimeId FROM HARNBUILDTIMES WHERE unitDecision='SPREAD')";
+
     // Completed builds only. openSegments (not endTime) is the in-progress
     // test: SQLite ranks '' below every timestamp, so MAX(endTime) on a build
     // with one closed and one open segment returns the closed stamp and the
@@ -65,10 +76,18 @@ export function useTimes() {
     // the built counts; the live run is already shown by the "Current" line.
     async function fetchTimes(harnNumber: string, timeTypeId: number) {
         if (!harnNumber) return;
-        const result = await execQuery(
-            "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND openSegments = 0 ORDER BY startTime ASC",
+        let result = await execQuery(
+            `SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND openSegments = 0 ${SPREAD_EXCLUSION} ORDER BY startTime ASC`,
             [harnNumber, timeTypeId]
         );
+        if (!Array.isArray(result)) {
+            // unitDecision column not present (or some other failure this
+            // retry cannot make worse) - degrade to the query as it always was.
+            result = await execQuery(
+                "SELECT * FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND openSegments = 0 ORDER BY startTime ASC",
+                [harnNumber, timeTypeId]
+            );
+        }
         if (Array.isArray(result)) {
             setLoggedTimes(result);
             return result;
@@ -76,10 +95,16 @@ export function useTimes() {
     }
 
     async function fetchAllTimes(REV: number | undefined, timeTypeId: number): Promise<HarnCount[]> {
-        const result = await execQuery(
-            "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND openSegments = 0 GROUP BY harnNumber",
+        let result = await execQuery(
+            `SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND openSegments = 0 ${SPREAD_EXCLUSION} GROUP BY harnNumber`,
             [REV, timeTypeId]
         );
+        if (!Array.isArray(result)) {
+            result = await execQuery(
+                "SELECT harnNumber, COUNT(harnNumber) as count FROM HARNBUILDTIMES_VIEW WHERE REV=? AND timeTypeId=? AND openSegments = 0 GROUP BY harnNumber",
+                [REV, timeTypeId]
+            );
+        }
         return Array.isArray(result)
             ? result.map((r: any) => ({
                 harnNumber: r.harnNumber,
