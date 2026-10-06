@@ -23,6 +23,11 @@ let serverProcess = null;
 let timerInterval = null;
 let timerStart = null;
 let timerElapsed = 0;
+// Randy, 2026-10-05: a bobbin change on a Braid is costed apart (allocated by
+// yarn used), so the braid clock HOLDS while one is open. Held is not paused:
+// the build stays running (isRunning, heartbeat state RUN, Pause/End live),
+// the ticks keep broadcasting, but timerElapsed does not grow.
+let timerHeld = false;
 
 // --------------------
 // Crash-recovery heartbeat
@@ -135,6 +140,8 @@ let sharedTimerData = {
     activeButton: null,
     elapsedTime: 0,
     isRunning: false,
+    // True while a bobbin change holds the braid clock (see timerHeld).
+    timerHeld: false,
     selectedUser: null,
     pauseReason: [],
     currentSessionStart: null,
@@ -337,6 +344,8 @@ function formatTime(ms) {
 // --------------------
 ipcMain.on("timer-start", () => {
     if (timerInterval) return;
+    // A hold survives this (a crew change pauses and restarts the clock in the
+    // middle of a bobbin change): only closing the change releases it.
     timerStart = Date.now() - timerElapsed;
     sharedTimerData.isRunning = true;
     broadcastToAll(sharedTimerData);
@@ -344,17 +353,47 @@ ipcMain.on("timer-start", () => {
     writeHeartbeat(); // transition: don't wait a full interval to record RUN
 
     function tick() {
-        timerElapsed = Date.now() - timerStart;
+        // Held: keep broadcasting (the page re-renders on these, the bobbin
+        // clock included) but earn nothing.
+        if (!timerHeld) timerElapsed = Date.now() - timerStart;
         const formatted = formatTime(timerElapsed);
         sharedTimerData.displayTimer = formatted;
         sharedTimerData.elapsedTime = timerElapsed;
         broadcastToAll(sharedTimerData);
 
-        const drift = timerElapsed % 1000;
+        const drift = timerHeld ? 0 : timerElapsed % 1000;
         timerInterval = setTimeout(tick, 1000 - drift);
     }
 
     timerInterval = setTimeout(tick, 1000);
+});
+
+// Bobbin change hold (see timerHeld). { held: true } freezes the clock at this
+// instant; { held: false } resumes it from the frozen value, so the held span
+// is never earned; { held: false, undo: true } cancels a hold whose bobbin row
+// could not be written, as if it never happened. Only a running clock starts a
+// hold; once on, it lasts through pause/start until released, reset or restore.
+ipcMain.on("timer-hold", (_event, { held, undo } = {}) => {
+    if (held) {
+        if (timerHeld || !sharedTimerData.isRunning || !timerInterval) return;
+        timerElapsed = Date.now() - timerStart;
+        timerHeld = true;
+    } else {
+        if (!timerHeld) return;
+        timerHeld = false;
+        // Undo only while the clock is still running: a pause during the hold
+        // left timerStart behind, and the pause is not worked time.
+        if (undo && timerInterval) timerElapsed = Date.now() - timerStart;
+        else timerStart = Date.now() - timerElapsed;
+    }
+    sharedTimerData.displayTimer = formatTime(timerElapsed);
+    sharedTimerData.elapsedTime = timerElapsed;
+    // The pages extrapolate the clock between ticks while isRunning
+    // (useSyncedTimer); held, they must show the frozen value instead.
+    sharedTimerData.timerHeld = timerHeld;
+    broadcastToAll(sharedTimerData);
+    // Record the frozen (or resumed) total now, not up to a minute later.
+    writeHeartbeat();
 });
 
 ipcMain.on("timer-pause", () => {
@@ -362,6 +401,8 @@ ipcMain.on("timer-pause", () => {
         clearTimeout(timerInterval);
         timerInterval = null;
     }
+    // A held clock is already frozen at the hold. The hold itself stays until
+    // the change is closed - Pause, End and clock-out close it first anyway.
     sharedTimerData.isRunning = false;
     broadcastToAll(sharedTimerData);
     // Freeze the earned total on disk at the instant of the pause, so a crash
@@ -376,6 +417,8 @@ ipcMain.on("timer-reset", () => {
     }
     timerElapsed = 0;
     timerStart = null;
+    timerHeld = false;
+    sharedTimerData.timerHeld = false;
     sharedTimerData.displayTimer = "00:00:00";
     sharedTimerData.elapsedTime = 0;
     sharedTimerData.isRunning = false;
@@ -435,6 +478,8 @@ ipcMain.handle("restore-timer", (_event, { elapsedMs, segmentId, segmentAccumSec
     }
     timerElapsed = Math.max(0, Number(elapsedMs) || 0);
     timerStart = null;
+    timerHeld = false;
+    sharedTimerData.timerHeld = false;
     currentSegmentId = segmentId ?? null;
     segmentBase = timerElapsed - Math.max(0, Number(segmentAccumSeconds) || 0) * 1000;
     sharedTimerData.isRunning = false;

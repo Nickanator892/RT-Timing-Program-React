@@ -19,6 +19,8 @@ interface User {
     password?: string;
     privLevel?: number;
     active: number;
+    /** Last time on a timer anywhere, local "YYYY-MM-DD HH:mm:ss"; null if never. */
+    lastUsed?: string | null;
 }
 
 interface AllUsers {
@@ -35,6 +37,16 @@ interface Settings {
     users: User[];
     allUsers: AllUsers[];
 }
+
+/** Active builders, latest timer use first, never-used last - Randy 2026-10-05,
+ *  the same rule as the RT-MCS phone timer's builder list (FloorTimer.cs
+ *  BuilderLastUsedSql): last time on a timer anywhere, as primary, handed a
+ *  segment, or crew. */
+const USERS_BY_LAST_USE =
+    "SELECT b.*, (SELECT MAX(s.startTime) FROM HARNBUILDSEGMENTS s WHERE s.builderId = b.Id" +
+    " OR s.buildId IN (SELECT t.buildId FROM HARNBUILDTIMES t WHERE t.builderId = b.Id)" +
+    " OR s.buildId IN (SELECT sb.buildId FROM SECONDARYBUILDERS sb WHERE sb.builderId = b.Id)) AS lastUsed" +
+    " FROM HARNBUILDERS b WHERE b.active != 0 ORDER BY lastUsed IS NULL, lastUsed DESC, b.Id";
 
 const execQuery = async (query: string, params: unknown[] = []): Promise<any> => {
     try {
@@ -105,7 +117,10 @@ useEffect(() => {
                 const [reasonRows, allPauseReasonsRows, userRows, allUserRows] = await Promise.all([
                     await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"),
                     await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS"),
-                    await execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0"),
+                    // Latest used first (assets/operatorOrder.ts). The plain list is the
+                    // fallback, so a failed usage lookup can never empty the login page.
+                    (await execQuery(USERS_BY_LAST_USE)) ??
+                        (await execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0")),
                     await execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC"),
                 ]);
 
@@ -126,6 +141,7 @@ useEffect(() => {
                         password: row["password"],
                         privLevel: row["privLevel"],
                         active: row["active"],
+                        lastUsed: row["lastUsed"] ?? null,
                     }));
                     const allUsers: AllUsers[] = allUserRows.map((row: any) => ({
                         Id: row["Id"],

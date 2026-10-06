@@ -5,6 +5,10 @@ export function useSyncedTimer() {
     const [displayTimer] = useSharedState<string>("displayTimer", "00:00:00");
     const [elapsedTime] = useSharedState<number>("elapsedTime", 0);
     const [isRunning] = useSharedState<boolean>("isRunning", false);
+    // A bobbin change holds the braid clock while the build stays running
+    // (main.js timer-hold): show the frozen value, don't count on locally.
+    const [timerHeld] = useSharedState<boolean>("timerHeld", false);
+    const ticking = isRunning && !timerHeld;
     const [localDisplay, setLocalDisplay] = useState(displayTimer);
     const rafRef = useRef<number | null>(null);
     const baseTimeRef = useRef<number>(0);
@@ -27,9 +31,9 @@ export function useSyncedTimer() {
         setLocalDisplay(displayTimer);
     }, [displayTimer, elapsedTime]);
 
-    // Run local RAF loop when running
+    // Run local RAF loop when running (and not held)
     useEffect(() => {
-        if (!isRunning) {
+        if (!ticking) {
             if (rafRef.current) cancelAnimationFrame(rafRef.current);
             setLocalDisplay(displayTimer); // 👈 sync display when stopped
             return;
@@ -53,7 +57,7 @@ export function useSyncedTimer() {
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current);
         };
-    }, [isRunning, elapsedTime]);
+    }, [ticking, elapsedTime]);
 
     return localDisplay;
 }
