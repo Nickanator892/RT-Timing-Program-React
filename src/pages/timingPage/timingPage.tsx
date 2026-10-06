@@ -553,19 +553,23 @@ function TimingPage({
         return data.result;
     };
 
-    // --- Bobbin change: braiding time, tracked on the side ---------------
-    // Randy, 2026-09-14: reloading the braider is still braiding - the build
-    // clock keeps running - but the changes are timed apart so their total can
-    // be seen. One MSTIMERBOBBIN row per change (RT-MCS creates the table and
-    // the phone timer writes the same rows). Keyed by builder, not build: a
-    // batch Submit replaces the live build with new ids. Pause, End, Submit and
-    // a QuickBooks clock-out all close an open change first.
+    // --- Bobbin change: timed apart from the braid -----------------------
+    // Randy, 2026-09-14: bobbin changes are timed on the side of a Braid run.
+    // Randy, 2026-10-05: they are costed apart (allocated by yarn used), so the
+    // braid clock HOLDS while a change is open - the build stays running, it
+    // just earns nothing until the change is closed (main.js timer-hold). Same
+    // rule as the RT-MCS phone timer, which writes the same MSTIMERBOBBIN rows
+    // (one per change; RT-MCS creates the table). Pause, End, Submit and a
+    // QuickBooks clock-out all close an open change first. A batch Submit moves
+    // the build's rows onto the first of its new builds (submitBatch).
     const BRAID_MODE = 8;
     const [bobbinStart, setBobbinStart] = useSharedState<string | null>("bobbinStart", null);
 
     async function startBobbin() {
         if (bobbinStart || !isRunning || timerMode.id !== BRAID_MODE || !currentSegmentId) return;
         const at = formatTimestamp(new Date().toISOString());
+        // Hold from the tap, so the braid loses exactly the change's own time.
+        window.electron.timerHold({ held: true });
         try {
             // Not queueable: the change is only real if it is on record while
             // the operator is still standing at the machine.
@@ -577,6 +581,8 @@ function TimingPage({
             setBobbinStart(at);
             setErr("");
         } catch (e: any) {
+            // No change on record, so none happened: give the braid its time back.
+            window.electron.timerHold({ held: false, undo: true });
             setErr(`Could not start the bobbin change: ${e?.message ?? e}`);
         }
     }
@@ -587,6 +593,9 @@ function TimingPage({
     async function closeBobbin(force = false) {
         if (!bobbinStart && !force) return;
         const at = formatTimestamp(new Date().toISOString());
+        // Restart the braid clock from the frozen value (a no-op when nothing is
+        // held). Pause/End/clock-out stop it again straight after.
+        window.electron.timerHold({ held: false });
         setBobbinStart(null);
         try {
             await execWrite(
@@ -1070,6 +1079,7 @@ function TimingPage({
             // drop it, and let the batch write its units fresh. The pauses go
             // into the shared queue BEFORE the drop, so a failed batch write
             // below still has them for the retry.
+            const droppedBuildId = typeof currentBuildId == "number" ? currentBuildId : 0;
             if (currentBuildId) {
                 const dropped = await postApi("/api/build/discard", { buildId: currentBuildId });
                 const carried = (dropped?.pauses ?? []).map((p: any) => ({
@@ -1149,6 +1159,15 @@ function TimingPage({
                 );
             }
             setBatchPauses([]);
+            // The dropped build's bobbin changes go onto the first unit, like
+            // its pauses - the discard above removed the id they pointed at.
+            if (timerMode.id === BRAID_MODE && droppedBuildId > 0 && buildIds?.[0]) {
+                await execWrite(
+                    "UPDATE MSTIMERBOBBIN SET BUILDID = ? WHERE BUILDID = ?",
+                    [buildIds[0], droppedBuildId],
+                    { kind: "bobbin change link" }
+                );
+            }
 
             // Every row is on record: the clock is done NOW, before anything
             // that only reads. On 2026-09-14 a 17-unit Final Test saved all its
@@ -1502,7 +1521,7 @@ function TimingPage({
                                 onClick={() => (bobbinStart ? closeBobbin() : startBobbin())}
                                 disabled={!bobbinStart && (!isRunning || dbBlocked)}
                             >
-                                {bobbinStart ? `Bobbin change ${bobbinClock} - tap when done` : "Bobbin Change"}
+                                {bobbinStart ? `Bobbin change ${bobbinClock} - braid clock stopped - tap when done` : "Bobbin Change"}
                             </button>
                         )}
                     </div>

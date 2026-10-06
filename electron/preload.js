@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("electron", {
     timerStart: () => ipcRenderer.send("timer-start"),
     timerPause: () => ipcRenderer.send("timer-pause"),
     timerReset: () => ipcRenderer.send("timer-reset"),
+    timerHold: (info) => ipcRenderer.send("timer-hold", info),
 
     // Crash recovery
     timerSegment: (info) => ipcRenderer.send("timer-segment", info),

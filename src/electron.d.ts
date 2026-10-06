@@ -50,6 +50,7 @@ declare global {
             timerStart: () => void;
             timerPause: () => void;
             timerReset: () => void;
+            timerHold: (info: { held: boolean; undo?: boolean }) => void;
             timerSegment: (info: { segmentId: number | null; segmentAccumSeconds?: number }) => void;
             getRecovery: () => Promise<RecoveryCandidate | null>;
             getSegmentSeconds: () => Promise<number>;
