@@ -138,6 +138,10 @@ async function writeHeartbeatNow() {
         }
         return true;
     }
+    // Not for a segment this panel has already moved on from (a reset or a
+    // roll while the write was out): that failure says nothing about the
+    // build being timed now, and counting it lit the banner a write early.
+    if (currentSegmentId !== segmentId) return false;
     heartbeatFailures++;
     if (heartbeatFailures >= HEARTBEAT_FAIL_LIMIT) setHeartbeatError(out.error || "unknown error");
     return false;

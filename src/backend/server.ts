@@ -789,6 +789,7 @@ app.get("/api/write-queue", (_req, res) => {
  * Persist how much this segment has earned so far, and prove the app is alive.
  * Fire-and-forget from the main process; a failure must never disturb the timer.
  */
+let heartbeatQueue: Promise<unknown> = Promise.resolve();
 app.post("/api/heartbeat", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const { segmentId, accumSeconds, state } = req.body ?? {};
@@ -798,16 +799,28 @@ app.post("/api/heartbeat", async (req, res) => {
     // never claw back time the operator actually worked. That is also what
     // makes a heartbeat safe to queue and replay late - an old one landing
     // after a newer one changes nothing.
-    const out = await runOrQueue("heartbeat", [
-      {
-        query: `UPDATE HARNBUILDSEGMENTS
-          SET heartbeatAt = ?, heartbeatState = ?,
-              accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
-              stationId = COALESCE(stationId, ?)
-        WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
-        params: [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId],
-      },
-    ]);
+    // One at a time, in the order they arrive - main sends them in order, but
+    // gives up waiting on one after 8 s while this keeps going (a lock wait
+    // can be 16 s), and without the queue the next could overtake it at the
+    // database: a stale PAUSE landing last on a running segment, which RT-MCS
+    // then credits nothing for if it releases the build. The state and the
+    // stamp are taken when the write actually runs, in that order.
+    const accum = Math.max(0, Math.floor(Number(accumSeconds) || 0));
+    const heartbeatState = state === "PAUSE" ? "PAUSE" : "RUN";
+    const run = heartbeatQueue.then(() =>
+      runOrQueue("heartbeat", [
+        {
+          query: `UPDATE HARNBUILDSEGMENTS
+            SET heartbeatAt = ?, heartbeatState = ?,
+                accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
+                stationId = COALESCE(stationId, ?)
+          WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
+          params: [nowLocal(), heartbeatState, accum, STATION_ID, segmentId],
+        },
+      ])
+    );
+    heartbeatQueue = run.catch(() => undefined);
+    const out = await run;
     res.json(out);
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
