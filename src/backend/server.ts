@@ -889,7 +889,19 @@ app.post("/api/build/start", async (req, res) => {
       }
     }
     const buildId = Number(out[0].lastID);
-    res.json({ success: true, result: { buildId, segmentId: Number(out[2].lastID), startTime: start } });
+    // builderId / secondaryBuilderIds: who this transaction actually put on the
+    // segment, so the page's per-segment crew log (timingPage segmentCrew)
+    // records what the database accepted rather than what was on screen.
+    res.json({
+      success: true,
+      result: {
+        buildId,
+        segmentId: Number(out[2].lastID),
+        startTime: start,
+        builderId: primary,
+        secondaryBuilderIds: filteredSecondaryIds.map(Number),
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -972,7 +984,18 @@ app.post("/api/build/segment-roll", async (req, res) => {
         params: [buildId, id],
       })),
     ]);
-    res.json({ success: true, result: { segmentId: Number(out[1].lastID), startTime: now } });
+    // builderId / secondaryBuilderIds: the people this roll committed to the
+    // new segment (see /api/build/start). A refused roll never gets here, so a
+    // crew member the database turned away never reaches the page's log.
+    res.json({
+      success: true,
+      result: {
+        segmentId: Number(out[1].lastID),
+        startTime: now,
+        builderId: resolvedPrimary,
+        secondaryBuilderIds: filteredSecondaryIds.map(Number),
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -982,8 +1005,9 @@ app.post("/api/build/segment-roll", async (req, res) => {
  * Drop a build that is still LIVE on this station - the single-build rows
  * written at Start - because the operator switched it to a batch mid-run and
  * Submit is about to write the batch's units instead. Hands back the build's
- * pause rows so the batch can carry them. One transaction, and the guard on the
- * HARNBUILDS delete (an OPEN segment on this station) means a build that was
+ * pause rows so the batch can carry them, and its segment rows and crew so the
+ * batch can give each unit the people who worked it. One transaction, and the
+ * guard on the HARNBUILDS delete (an OPEN segment on this station) means a build that was
  * already submitted, or belongs to another station, can never be discarded.
  */
 // --------------------
@@ -1155,11 +1179,30 @@ app.post("/api/build/discard", async (req, res) => {
         params: [buildId, STATION_ID],
         requireChanges: 1,
       },
+      // Who worked which stretch, read in the same transaction that drops it:
+      // the batch slices its units by these rows (timingPage submitBatch), so
+      // a helper who joined and left is still credited for their stretch and
+      // a late joiner is not credited for the time before they joined.
+      // SECONDARYBUILDERS is the LATEST roster only - every roll replaces it -
+      // so it names the crew of the open segment and nothing earlier.
+      {
+        query: `SELECT segmentId, builderId, numberOfBuilders, accumSeconds, startTime, endTime
+                  FROM HARNBUILDSEGMENTS WHERE buildId = ? ORDER BY segmentId`,
+        params: [buildId],
+      },
+      { query: `SELECT builderId FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
     ]);
-    res.json({ success: true, result: { pauses: Array.isArray(out[0]) ? out[0] : [] } });
+    res.json({
+      success: true,
+      result: {
+        pauses: Array.isArray(out[0]) ? out[0] : [],
+        segments: Array.isArray(out[2]) ? out[2] : [],
+        crewIds: Array.isArray(out[3]) ? out[3].map((r: any) => Number(r.builderId)).filter((n: number) => n > 0) : [],
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }

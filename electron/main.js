@@ -176,6 +176,11 @@ const SESSION_KEYS = [
     "batchMode", "batchUnits", "batchPauses", "secondaryBuilders",
     "currentBuildId", "currentSegmentId", "currentSegmentStart",
     "startTime", "endTime", "timerDone", "pauseReason",
+    // Who was on each segment of the live build, and a batch's crew stretches
+    // carried past a failed write (timingPage segmentCrew / batchCrew). The
+    // database only keeps the latest roster, so after a restart these are the
+    // only record of a helper who has already left.
+    "segmentCrew", "batchCrew",
 ];
 
 function saveSession(why) {
@@ -438,6 +443,8 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.timerDone = true;
     sharedTimerData.startTime = "";
     sharedTimerData.endTime = "";
+    sharedTimerData.segmentCrew = [];
+    sharedTimerData.batchCrew = [];
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();
