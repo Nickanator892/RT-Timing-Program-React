@@ -88,15 +88,27 @@ export function resolveCrewStretches(args: {
     /** SECONDARYBUILDERS of the build when it was dropped: the latest segment's crew. */
     currentCrewIds: number[];
     openSegmentSeconds: number;
+    /** The segment main's clock is counting for (shared currentSegmentId). */
+    liveSegmentId?: number;
 }): CrewStretch[] {
     const rows = [...(args.segments ?? [])].sort((a, b) => Number(a.segmentId) - Number(b.segmentId));
     const lastId = rows.length ? Number(rows[rows.length - 1].segmentId) : 0;
+    const live = Math.max(0, Math.round(Number(args.openSegmentSeconds) || 0));
+    const liveId = Number(args.liveSegmentId) || 0;
+    // RT-MCS may have rolled someone off this build a moment ago: the segment
+    // main is counting for is then closed, credited up to the roll, and a newer
+    // open one carries on. Main's count covers both, so the open one gets only
+    // what is left after the closed one's credit - never the whole count again.
+    const own = liveId ? rows.find((r) => Number(r.segmentId) === liveId) : undefined;
+    const ownClosedCredit =
+        own && String(own.endTime ?? "") !== "" ? Math.max(0, Number(own.accumSeconds) || 0) : null;
     return rows.map((s) => {
         const segmentId = Number(s.segmentId);
         const primaryId = Number(s.builderId) > 0 ? Number(s.builderId) : null;
         let seconds = Math.max(0, Number(s.accumSeconds) || 0);
         if (String(s.endTime ?? "") === "") {
-            seconds = Math.max(seconds, Math.max(0, Math.round(Number(args.openSegmentSeconds) || 0)));
+            if (!liveId || segmentId === liveId) seconds = Math.max(seconds, live);
+            else if (ownClosedCredit !== null) seconds = Math.max(seconds, live - ownClosedCredit);
         }
         const others = (list: unknown[]) => [...new Set(toIds(list))].filter((id) => id !== primaryId);
         const recorded = others(
@@ -130,7 +142,9 @@ export function crewPerUnit(stretches: CrewStretch[], units: number): UnitCrew[]
     if (!stretches.length) return [];
     const live = stretches.map((s) => ({ ...s, seconds: Math.max(0, Math.round(s.seconds)) }));
     const worked = live.filter((s) => s.seconds > 0);
-    const last = live[live.length - 1];
+    // The latest segment that has worked time - a trailing 0 s segment (a roll
+    // just before End) names nobody. Same rule as the RT-MCS phone timer.
+    const last = worked.length ? worked[worked.length - 1] : live[live.length - 1];
     const result: UnitCrew[] = [];
     for (let k = 0; k < n; k++) {
         let pieces = worked
@@ -143,7 +157,7 @@ export function crewPerUnit(stretches: CrewStretch[], units: number): UnitCrew[]
             }))
             .filter((p) => p.seconds > 0);
         // Fewer seconds on record than units (or none at all): the unit still
-        // exists, carrying the latest segment's people and 0 s.
+        // exists, carrying the latest worked segment's people and 0 s.
         if (!pieces.length) {
             pieces = [
                 { seconds: 0, weight: 1, primaryId: last.primaryId, crewIds: last.crewIds, numberOfBuilders: last.numberOfBuilders },
@@ -186,26 +200,45 @@ export interface OpenElsewhere {
     harnNumber: string;
 }
 
+/** This panel's station name (the backend's hostname, what it stamps on its
+ *  segments) - '' when the backend cannot be asked. Cached once known. */
+let ownStationName = "";
+export async function ownStation(): Promise<string> {
+    if (ownStationName) return ownStationName;
+    try {
+        const r = await fetch("http://localhost:5000/api/build/crew-table");
+        const d = await r.json();
+        ownStationName = String(d?.result?.station ?? "");
+    } catch {
+        /* unknown: callers then treat every station as elsewhere */
+    }
+    return ownStationName;
+}
+
 /**
  * Which of these builders has a build open on another build - the condition
  * RT-MCS's TRG_TIMER_ONE_PLACE_* triggers refuse on. Their message names
- * nobody; this is how the panel says who. Read-only; [] when the read fails.
+ * nobody; this is how the panel says who. Like the triggers, a build open on
+ * THIS station does not count (unless it is the phone's). Read-only; [] when
+ * the read fails.
  */
 export async function findOpenElsewhere(builderIds: number[], excludeBuildId: number): Promise<OpenElsewhere[]> {
     const list = [...new Set(toIds(builderIds))];
     if (!list.length) return [];
+    const station = await ownStation();
     const rows = await execQuery(
         `SELECT b.Id AS builderId, b.userName AS name, s.buildId AS buildId, s.stationId AS stationId,
                 h.harnNumber AS harnNumber, CASE WHEN s.builderId = b.Id THEN 1 ELSE 0 END AS isPrimary
            FROM HARNBUILDERS b
            JOIN HARNBUILDSEGMENTS s
              ON COALESCE(s.endTime, '') = '' AND s.stationId IS NOT NULL AND s.buildId <> ?
+            AND (s.stationId <> ? COLLATE NOCASE OR s.stationId = 'RT-MCS phone')
             AND (s.builderId = b.Id
                  OR EXISTS (SELECT 1 FROM SECONDARYBUILDERS sb WHERE sb.buildId = s.buildId AND sb.builderId = b.Id))
            LEFT JOIN HARNBUILDS h ON h.buildId = s.buildId
           WHERE b.Id IN (${list.map(() => "?").join(",")})
           ORDER BY s.segmentId DESC`,
-        [Number(excludeBuildId) || 0, ...list]
+        [Number(excludeBuildId) || 0, station, ...list]
     );
     if (!Array.isArray(rows)) return [];
     const seen = new Set<number>();
@@ -309,18 +342,22 @@ export type LiveBuildState =
     | { kind: "missing" }
     | { kind: "unknown" };
 
-async function readReleaseAudit(buildId: number): Promise<ReleaseAudit | null> {
+async function readReleaseAudit(buildId: number, action: "SUBMIT" | "DROP", closedAt: string): Promise<ReleaseAudit | null> {
     // MSTIMERRELEASE arrives with RT-MCS 1.0.32; before that this read just
-    // fails and there is no audit to quote.
+    // fails and there is no audit to quote. Only the release that did THIS:
+    // the right action, stamped when the segment in question was closed (both
+    // are RT-MCS's own "now") - not an older release of the same build.
+    if (!closedAt) return null;
     const rows = await execQuery(
         `SELECT r.ACTION AS action, r.STATION AS station, r.VIA AS via, r.AT AS at,
                 rb.userName AS byName, rw.userName AS whoName
            FROM MSTIMERRELEASE r
            LEFT JOIN HARNBUILDERS rb ON rb.Id = r.BYBUILDERID
            LEFT JOIN HARNBUILDERS rw ON rw.Id = r.BUILDERID
-          WHERE r.BUILDID = ?
+          WHERE r.BUILDID = ? AND r.ACTION = ?
+            AND r.AT BETWEEN datetime(?, '-10 seconds') AND datetime(?, '+10 seconds')
           ORDER BY r.ID DESC LIMIT 1`,
-        [buildId]
+        [buildId, action, closedAt, closedAt]
     );
     const r = Array.isArray(rows) ? (rows as any[])[0] : null;
     if (!r) return null;
@@ -384,7 +421,7 @@ export async function readLiveBuild(buildId: number, segmentId: number): Promise
             segmentId: Number(next.segmentId),
             startTime: String(next.startTime ?? ""),
             closedAccum: Math.max(0, Number(mine?.accumSeconds) || 0),
-            release: await readReleaseAudit(id),
+            release: await readReleaseAudit(id, "DROP", String(mine?.endTime ?? "")),
         };
     }
     const lastRow = all[all.length - 1];
@@ -392,6 +429,6 @@ export async function readLiveBuild(buildId: number, segmentId: number): Promise
         kind: "ended",
         harnNumber: String(lastRow.harnNumber ?? ""),
         endTime: String(lastRow.endTime ?? ""),
-        release: await readReleaseAudit(id),
+        release: await readReleaseAudit(id, "SUBMIT", String(lastRow.endTime ?? "")),
     };
 }

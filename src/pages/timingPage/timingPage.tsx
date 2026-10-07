@@ -39,6 +39,21 @@ import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
 
+/** What became of this panel's live build (TimingPage reconcileLiveBuild). */
+type LiveState = "open" | "adopted" | "ended" | "idle" | "missing" | "unknown";
+
+/** Writes still in flight, kept across mounts of this page. It unmounts on
+ *  every pause-reason detour, and a roll or a build/start that finishes after
+ *  that must still hold off the next mount's crew check - otherwise two rolls
+ *  race for one segment, or a crew change made during a slow Start is lost.
+ *  A Submit or a reconcile in flight is shared the same way. */
+const inFlight: { roll: boolean; start: boolean; submit: boolean; reconcile: Promise<LiveState> | null } = {
+    roll: false,
+    start: false,
+    submit: false,
+    reconcile: null,
+};
+
 // Same define vite.config.ts sets for analyticsPage.tsx - one build-time
 // constant, not a second hard-coded version number.
 declare const __APP_VERSION__: string;
@@ -267,7 +282,6 @@ function TimingPage({
     // login both expect the full row.
     const prevSelectedUser = useRef(selectedUser);
     const crewCheck = useRef<number | null>(null);
-    const rolling = useRef(false);
     const CREW_SETTLE_MS = 400;
 
     // handleBuilderChange - close the live segment and open its replacement in
@@ -300,7 +314,7 @@ function TimingPage({
             setIsRunning(false);
         }
 
-        rolling.current = true;
+        inFlight.roll = true;
         // Set when the build turns out to have been ended from elsewhere: the
         // clock has been cleared, and must not be started again below.
         let keepStopped = false;
@@ -327,6 +341,11 @@ function TimingPage({
                 // build, so it travels only when that is what happened.
                 builderId: handover ? L.primaryId : undefined,
             });
+            // Main first, directly: the setters below only reach main from
+            // inside a React state update, which never runs if the page left
+            // (the pause detour) while this roll was in flight - leaving
+            // shared state naming the segment this roll just closed.
+            window.electron.updateSharedData({ currentSegmentId: rolled.segmentId, currentSegmentStart: rolled.startTime });
             setCurrentSegmentStart(rolled.startTime);
             setCurrentSegmentId(rolled.segmentId);
             window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
@@ -361,7 +380,7 @@ function TimingPage({
                 // longer open here - RT-MCS ended this build, or rolled someone
                 // off it, from the phone or another station.
                 const state = await reconcileLiveBuild();
-                if (state === "ended") {
+                if (state === "ended" || state === "idle") {
                     keepStopped = true;
                 } else if (state === "adopted") {
                     setErr(
@@ -377,10 +396,17 @@ function TimingPage({
                 }
             }
         } finally {
-            rolling.current = false;
+            inFlight.roll = false;
+            // Only start again what is still there to time: while this roll
+            // was out, the build may have been ended from another timer, or
+            // End/Submit pressed - a restart then runs a clock with no build
+            // behind it, and its next Submit records a build nobody worked.
             if (wasRunning && !keepStopped) {
-                window.electron.timerStart();
-                setIsRunning(true);
+                const now = await window.electron.getSharedData();
+                if (now?.timerDone === false && Number(now?.currentSegmentId ?? 0) > 0 && !now?.isRunning) {
+                    window.electron.timerStart();
+                    setIsRunning(true);
+                }
             }
         }
     }
@@ -440,74 +466,97 @@ function TimingPage({
     //            second copy of time RT-MCS already submitted.
     // "missing" (the rows are gone) and "unknown" (no answer) are left to the
     // caller's existing handling.
-    const reconciling = useRef(false);
-    async function reconcileLiveBuild(): Promise<"open" | "adopted" | "ended" | "missing" | "unknown"> {
-        if (reconciling.current) return "unknown";
-        reconciling.current = true;
-        try {
-            const fresh = await window.electron.getSharedData();
-            const buildId = Number(fresh?.currentBuildId || 0);
-            const segmentId = Number(fresh?.currentSegmentId || 0);
-            if (fresh?.timerDone !== false || !(segmentId > 0)) return "unknown";
-            const state = await readLiveBuild(buildId, segmentId).catch(() => ({ kind: "unknown" as const }));
-            if (state.kind === "open" || state.kind === "missing" || state.kind === "unknown") {
-                return state.kind;
-            }
-            if (state.kind === "adopt") {
-                // Everything main has counted since this segment's base, less
-                // what RT-MCS credited the segment it closed, belongs to the
-                // one it opened.
-                const live = Number(await window.electron.getSegmentSeconds()) || 0;
-                const carried = Math.max(0, live - state.closedAccum);
-                window.electron.updateSharedData({
-                    currentSegmentId: state.segmentId,
-                    currentSegmentStart: state.startTime,
-                });
-                setCurrentSegmentId(state.segmentId);
-                setCurrentSegmentStart(state.startTime);
-                window.electron.timerSegment({ segmentId: state.segmentId, segmentAccumSeconds: carried });
-                const recorded = await readRecordedCrew(buildId).catch(() => null);
-                if (recorded && recorded.live) {
-                    let user = latest.current.selectedUser;
-                    if (recorded.primaryId && recorded.primaryId !== Number(user?.Id ?? 0)) {
-                        user = (await readBuilder(recorded.primaryId).catch(() => null)) ?? user;
-                    }
-                    // Seen first, so taking the database's crew is not itself
-                    // read as a crew change and rolled.
-                    prevSecondaryBuilders.current = recorded.crew;
-                    if (user) {
-                        prevPrimaryId.current = Number(user.Id);
-                        prevSelectedUser.current = user;
-                    }
-                    window.electron.updateSharedData(
-                        user ? { secondaryBuilders: recorded.crew, selectedUser: user } : { secondaryBuilders: recorded.crew }
-                    );
-                    if (user) _setSelectedUser(user);
-                    setSecondaryBuilders(recorded.crew);
+    // One answer at a time: a second asker (a heartbeat-lost event and a
+    // Submit, say) waits for the first one's answer instead of acting on half
+    // of it - "unknown" used to send it off clearing a clock whose build was
+    // still open. "idle" = nothing live on this panel any more (already dealt
+    // with): nothing to do.
+    function reconcileLiveBuild(): Promise<LiveState> {
+        if (inFlight.reconcile) return inFlight.reconcile;
+        const run = reconcileOnce().finally(() => {
+            inFlight.reconcile = null;
+        });
+        inFlight.reconcile = run;
+        return run;
+    }
+    async function reconcileOnce(): Promise<LiveState> {
+        const fresh = await window.electron.getSharedData();
+        const buildId = Number(fresh?.currentBuildId || 0);
+        const segmentId = Number(fresh?.currentSegmentId || 0);
+        if (fresh?.timerDone !== false || !(segmentId > 0)) return "idle";
+        const state = await readLiveBuild(buildId, segmentId).catch(() => ({ kind: "unknown" as const }));
+        if (state.kind === "open" || state.kind === "missing" || state.kind === "unknown") {
+            return state.kind;
+        }
+        if (state.kind === "adopt") {
+            // Everything main has counted since this segment's base, less
+            // what RT-MCS credited the segment it closed, belongs to the
+            // one it opened.
+            const live = Number(await window.electron.getSegmentSeconds()) || 0;
+            const carried = Math.max(0, live - state.closedAccum);
+            window.electron.updateSharedData({
+                currentSegmentId: state.segmentId,
+                currentSegmentStart: state.startTime,
+            });
+            setCurrentSegmentId(state.segmentId);
+            setCurrentSegmentStart(state.startTime);
+            window.electron.timerSegment({ segmentId: state.segmentId, segmentAccumSeconds: carried });
+            const recorded = await readRecordedCrew(buildId).catch(() => null);
+            if (recorded && recorded.live) {
+                let user = latest.current.selectedUser;
+                if (recorded.primaryId && recorded.primaryId !== Number(user?.Id ?? 0)) {
+                    user = (await readBuilder(recorded.primaryId).catch(() => null)) ?? user;
                 }
-                setErr(
-                    state.release
-                        ? `The crew was changed ${describeRelease(state.release)}` +
-                              (state.release.whoName ? ` - ${state.release.whoName} is no longer on this build.` : ".")
-                        : "The crew of this build was changed from another timer."
+                // Seen first, so taking the database's crew is not itself
+                // read as a crew change and rolled.
+                prevSecondaryBuilders.current = recorded.crew;
+                if (user) {
+                    prevPrimaryId.current = Number(user.Id);
+                    prevSelectedUser.current = user;
+                }
+                window.electron.updateSharedData(
+                    user ? { secondaryBuilders: recorded.crew, selectedUser: user } : { secondaryBuilders: recorded.crew }
                 );
-                return "adopted";
+                if (user) _setSelectedUser(user);
+                setSecondaryBuilders(recorded.crew);
             }
-            const harn = state.harnNumber || selectedHarn;
-            const at = /(\d{2}:\d{2}:\d{2})\s*$/.exec(state.endTime)?.[1];
-            clearCarryoverClock(
+            setErr(
                 state.release
-                    ? `${displayTimer} on ${harn}: this build was ended ${describeRelease(state.release)} - the clock has been cleared.`
-                    : `${displayTimer} on ${harn} was already submitted${at ? ` at ${at}` : ""} - the clock has been cleared.`
+                    ? `The crew was changed ${describeRelease(state.release)}` +
+                          (state.release.whoName ? ` - ${state.release.whoName} is no longer on this build.` : ".")
+                    : "The crew of this build was changed from another timer."
             );
+            return "adopted";
+        }
+        const harn = state.harnNumber || selectedHarn;
+        const at = /(\d{2}:\d{2}:\d{2})\s*$/.exec(state.endTime)?.[1];
+        clearCarryoverClock(
+            state.release
+                ? `${displayTimer} on ${harn}: this build was ended ${describeRelease(state.release)} - the clock has been cleared.`
+                : `${displayTimer} on ${harn} was already submitted${at ? ` at ${at}` : ""} - the clock has been cleared.`
+        );
+        setPauseStart(null);
+        setActiveButton(null);
+        // The operation is over, so the pairing is too - as at a Submit.
+        releaseSecondOperator("build ended elsewhere");
+        return "ended";
+    }
+
+    /** A stale check found this panel's segment closed: find out what became
+     *  of the build (reconcileLiveBuild adopts or ends it). "missing" - the
+     *  rows are gone - clears as before. "unknown" clears NOTHING: a closed
+     *  segment alone does not prove the build is over, and wiping the clock
+     *  could strand a build RT-MCS left open, still blocking its people. */
+    async function settleClosedSegment(message: string): Promise<LiveState> {
+        const state = await reconcileLiveBuild();
+        if (state === "missing") {
+            clearCarryoverClock(message);
             setPauseStart(null);
             setActiveButton(null);
-            // The operation is over, so the pairing is too - as at a Submit.
-            releaseSecondOperator("build ended elsewhere");
-            return "ended";
-        } finally {
-            reconciling.current = false;
+        } else if (state === "unknown") {
+            setErr("Could not check this build against the database - nothing was cleared. Try again in a moment.");
         }
+        return state;
     }
 
     // A heartbeat landed on a segment that is no longer open (main.js).
@@ -525,13 +574,20 @@ function TimingPage({
     }
 
     /** First tap arms it, the second asks RT-MCS to end the blocking time. */
+    const releasing = useRef(false);
+    const releaseArmedAt = useRef(0);
     async function releaseBlocking() {
         const offer = releaseOffer;
-        if (!offer) return;
+        if (!offer || releasing.current) return;
         if (!confirmingRelease) {
+            releaseArmedAt.current = performance.now();
             setConfirmingRelease(true);
             return;
         }
+        // A double-tap is one press, not a confirmation: it ends someone
+        // else's time, so the second tap has to be a second decision.
+        if (performance.now() - releaseArmedAt.current < 400) return;
+        releasing.current = true;
         setConfirmingRelease(false);
         try {
             const released = await postApi("/api/timer/release", {
@@ -543,6 +599,8 @@ function TimingPage({
             setErr(`${released?.message || `Done: ${describeBlockingTime(offer.blocked)}`}. ${offer.next}`);
         } catch (e: any) {
             setErr(`"${describeBlockingTime(offer.blocked)}" did not go through: ${e?.message ?? e}`);
+        } finally {
+            releasing.current = false;
         }
     }
 
@@ -576,6 +634,30 @@ function TimingPage({
             if (isFirstRender.current) {
                 isFirstRender.current = false;
                 track();
+                // A remount mid-build (the pause detour) can come back holding
+                // a crew change made just before the page left, whose settle
+                // timer died with it: the badge would then show someone the
+                // database never recorded. Compare with what the database
+                // holds and, where it differs, make that the baseline, so the
+                // check below rolls the difference.
+                if (!L.timerDone && Number(L.currentBuildId) > 0 && Number(L.currentSegmentId) > 0 && !inFlight.roll) {
+                    void readRecordedCrew(Number(L.currentBuildId))
+                        .then((rec) => {
+                            if (!rec || !rec.live || inFlight.roll) return;
+                            const now = latest.current;
+                            const dbCrew = rec.crew.map((b) => b.Id).sort((a, b) => a - b).join(",");
+                            const primaryDiffers = rec.primaryId != null && rec.primaryId !== now.primaryId;
+                            if (dbCrew === crew(now.secondaryBuilders) && !primaryDiffers) return;
+                            prevSecondaryBuilders.current = rec.crew;
+                            if (primaryDiffers) {
+                                prevPrimaryId.current = Number(rec.primaryId);
+                                prevSelectedUser.current = undefined;
+                            }
+                            if (crewCheck.current) window.clearTimeout(crewCheck.current);
+                            crewCheck.current = window.setTimeout(check, 0);
+                        })
+                        .catch(() => undefined);
+                }
                 return;
             }
             // Idle: nothing to roll, but keep following the roster. Otherwise
@@ -596,7 +678,15 @@ function TimingPage({
             // roll below records the new pairing and the new owner together.
             const handover = L.primaryId > 0 && L.primaryId !== prevPrimaryId.current;
             if (!crewChanged && !handover) return;
-            if (rolling.current) {
+            if (inFlight.roll) {
+                crewCheck.current = window.setTimeout(check, CREW_SETTLE_MS);
+                return;
+            }
+            // A Start whose write is still out has no build to roll yet. Wait
+            // for its ids - the same change is seen again once they land -
+            // rather than marking it handled now and losing it (a slow RtMcs
+            // used to drop a 2nd operator added in that second).
+            if (!L.currentBuildId && inFlight.start) {
                 crewCheck.current = window.setTimeout(check, CREW_SETTLE_MS);
                 return;
             }
@@ -655,9 +745,10 @@ function TimingPage({
                 if (Number(fresh?.currentSegmentId ?? 0) === L.currentSegmentId) {
                     // An RT-MCS release (phone or another station) closes a
                     // segment too: the build may go on in a newer one, or have
-                    // been ended by someone else - reconcileLiveBuild says which.
-                    const state = result.status === "closed" ? await reconcileLiveBuild() : "missing";
-                    if (state !== "adopted" && state !== "ended") {
+                    // been ended by someone else - settleClosedSegment says which.
+                    if (result.status === "closed") {
+                        await settleClosedSegment(result.message ?? "");
+                    } else {
                         clearCarryoverClock(result.message);
                         setPauseStart(null);
                         setActiveButton(null);
@@ -675,8 +766,9 @@ function TimingPage({
                     if (isSegmentStale(retry.status)) {
                         const fresh2 = await window.electron.getSharedData();
                         if (Number(fresh2?.currentSegmentId ?? 0) === L2.currentSegmentId) {
-                            const state = retry.status === "closed" ? await reconcileLiveBuild() : "missing";
-                            if (state !== "adopted" && state !== "ended") {
+                            if (retry.status === "closed") {
+                                await settleClosedSegment(retry.message ?? "");
+                            } else {
                                 clearCarryoverClock(retry.message);
                                 setPauseStart(null);
                                 setActiveButton(null);
@@ -1137,13 +1229,19 @@ function TimingPage({
                 if (Number(fresh?.currentSegmentId ?? 0) === checkedSegmentId) {
                     // Closed from elsewhere (an RT-MCS release) is not the same
                     // as submitted: the build may go on in a newer segment, or
-                    // have been ended by someone else - say so either way.
-                    const state = result.status === "closed" ? await reconcileLiveBuild() : "missing";
-                    if (state === "ended") return;
-                    if (state !== "adopted") {
+                    // have been ended by someone else - say so either way. A
+                    // build picked up in a newer segment is NOT resumed by
+                    // this same press: the operator sees who changed the crew
+                    // first, then presses Resume again.
+                    if (result.status !== "closed") {
                         clearCarryoverClock(result.message);
                         setPauseStart(null);
                         setActiveButton(null);
+                        return;
+                    }
+                    const state = await settleClosedSegment(result.message ?? "");
+                    if (state !== "open") {
+                        if (state === "adopted" || state === "unknown") setActiveButton(pauseStart ? "pause" : null);
                         return;
                     }
                 }
@@ -1228,6 +1326,7 @@ function TimingPage({
             // One transaction: a crash between these inserts used to leave a
             // build row with no segment, which carries no time and is invisible
             // to the recovery scan.
+            inFlight.start = true;
             try {
                 const created = await postApi("/api/build/start", {
                     harnNumber: selectedHarn,
@@ -1238,6 +1337,9 @@ function TimingPage({
                     secondaryBuilderIds: startSecondaryIds,
                     startTime,
                 });
+                // Main first, directly, as after a roll: the page may have
+                // left (the pause detour) while this write was out.
+                window.electron.updateSharedData({ currentBuildId: created.buildId, currentSegmentId: created.segmentId });
                 setCurrentBuildId(created.buildId);
                 setCurrentSegmentId(created.segmentId);
                 // Point the heartbeat at the new segment - and give it every
@@ -1255,7 +1357,10 @@ function TimingPage({
             } catch (e: any) {
                 // Fail loudly: previously every write error here was swallowed
                 // and the operator timed a build that was never recorded.
-                window.electron.timerPause();
+                // Reset, not just pause: the seconds of a Start that recorded
+                // nothing must not ride onto the next Start's first segment
+                // (which now takes every second on the clock).
+                window.electron.timerReset();
                 setIsRunning(false);
                 setTimerDone(true);
                 setActiveButton(null);
@@ -1270,6 +1375,8 @@ function TimingPage({
                         : `Could not start the build: ${e?.message ?? e}`
                 );
                 if (open.length) offerRelease(open[0], "Press Start again.");
+            } finally {
+                inFlight.start = false;
             }
             return;
         }
@@ -1420,6 +1527,7 @@ function TimingPage({
             if (currentBuildId) {
                 // Read before the drop: discarding resets the segment clock.
                 const openSegmentSeconds = await window.electron.getSegmentSeconds();
+                const liveSegmentId = Number((await window.electron.getSharedData())?.currentSegmentId ?? 0);
                 let dropped: any;
                 try {
                     dropped = await postApi("/api/build/discard", { buildId: currentBuildId });
@@ -1427,7 +1535,7 @@ function TimingPage({
                     // Nothing open here to drop: RT-MCS may have ended this
                     // build, or rolled someone off it, from another timer.
                     const state = await reconcileLiveBuild();
-                    if (state === "ended") {
+                    if (state === "ended" || state === "idle") {
                         setDbSuccess("Submit");
                         return;
                     }
@@ -1450,6 +1558,7 @@ function TimingPage({
                     segCrew: Array.isArray(dropped?.segCrew) ? dropped.segCrew : null,
                     currentCrewIds: Array.isArray(dropped?.crewIds) ? dropped.crewIds : [],
                     openSegmentSeconds: Number(openSegmentSeconds) || 0,
+                    liveSegmentId,
                 });
                 // Kept for a retry, like the pauses: once the build is dropped,
                 // these are the only record of who was on it.
@@ -1461,6 +1570,18 @@ function TimingPage({
                 // A retry after a write that failed past the drop above.
                 const sharedNow = await window.electron.getSharedData();
                 if (Array.isArray(sharedNow?.batchCrew)) crewStretches = sharedNow.batchCrew;
+                // Time the clock kept counting after the failure (resumed to
+                // carry on) belongs to the people on at the end.
+                if (crewStretches.length) {
+                    const onClock = Math.round(Number(sharedNow?.elapsedTime ?? 0) / 1000);
+                    const carried = crewStretches.reduce((t, st) => t + Math.max(0, Number(st.seconds) || 0), 0);
+                    if (onClock > carried) {
+                        const lastAt = crewStretches.length - 1;
+                        crewStretches = crewStretches.map((st, i) =>
+                            i === lastAt ? { ...st, seconds: Number(st.seconds) + onClock - carried } : st
+                        );
+                    }
+                }
             }
 
             // A batch's duration comes from the wall clock, so unlike a normal
@@ -1644,7 +1765,19 @@ function TimingPage({
         setBatchPauses([]);
     }
 
+    // One Submit at a time. The button stays live while "Saving batch..." is
+    // on it, and a second tap used to write every unit of the batch again.
     async function submitTime() {
+        if (inFlight.submit) return;
+        inFlight.submit = true;
+        try {
+            await submitTimeOnce();
+        } finally {
+            inFlight.submit = false;
+        }
+    }
+
+    async function submitTimeOnce() {
         setDbSuccess("Checking...");
         if (isRunning) {
             setErr("Timer is still running");
@@ -1699,11 +1832,7 @@ function TimingPage({
                     // (reconcileLiveBuild): ended by someone else, or still
                     // going in a newer segment with a changed crew - which the
                     // operator sees before pressing Submit again.
-                    const state = await reconcileLiveBuild();
-                    if (state !== "adopted" && state !== "ended") {
-                        clearCarryoverClock(staleCheck.message);
-                        setPauseStart(null);
-                    }
+                    await settleClosedSegment(staleCheck.message ?? "");
                 }
                 setDbSuccess("Submit");
                 return;
@@ -1760,7 +1889,7 @@ function TimingPage({
                 // in that instant is already submitted, and recording it again
                 // would be a second copy of the same time.
                 const state = idsPresent ? await reconcileLiveBuild() : "missing";
-                if (state === "ended") {
+                if (state === "ended" || state === "idle") {
                     setDbSuccess("Submit");
                     return;
                 }

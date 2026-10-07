@@ -457,6 +457,10 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.endTime = "";
     sharedTimerData.batchCrew = [];
     sharedTimerData.segmentLost = null;
+    // A Braid bobbin change cannot outlive its build: a build ended from another
+    // timer (RT-MCS closes its open change rows) would otherwise leave the next
+    // build showing a held clock that is not held.
+    sharedTimerData.bobbinStart = null;
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();

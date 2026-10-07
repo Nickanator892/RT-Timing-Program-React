@@ -314,8 +314,16 @@ function noteSegCrewRefusal(err: unknown): boolean {
   segCrewRefused = true;
   return true;
 }
+/** Whether HARNBUILDSEGCREW can be WRITTEN: it exists and RT-MCS has not
+ *  refused it this session. Reading it needs only segCrewExists. */
 async function hasSegCrew(): Promise<boolean> {
   if (segCrewRefused) return false;
+  return segCrewExists();
+}
+/** Whether the table exists at all - enough for a read (a SELECT goes through
+ *  RT-MCS whatever its allow-list), so names RT-MCS itself pinned are still
+ *  found after this panel stopped writing them. */
+async function segCrewExists(): Promise<boolean> {
   if (segCrewSeen) return true;
   if (Date.now() - segCrewCheckedAt < 60_000) return false;
   segCrewCheckedAt = Date.now();
@@ -873,8 +881,10 @@ app.post("/api/build/start", async (req, res) => {
   // it filters again server-side and recomputes numberOfBuilders from the
   // filtered list rather than trusting the client-supplied count.
   const primary = Number(builderId) > 0 ? Number(builderId) : null;
-  const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
-    (id: any) => primary == null || Number(id) !== primary
+  // Unique as well: a repeated id would break HARNBUILDSEGCREW's primary key
+  // and take the whole Start down with it.
+  const filteredSecondaryIds = [...new Set((Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map(Number))].filter(
+    (id: number) => id > 0 && (primary == null || id !== primary)
   );
   const builders = Math.max(1, filteredSecondaryIds.length + 1);
   void numberOfBuilders; // superseded by the recomputed `builders` above.
@@ -999,8 +1009,8 @@ app.post("/api/build/segment-roll", async (req, res) => {
         resolvedPrimary = Number(primaryLookup.result?.[0]?.builderId ?? 0) || null;
       }
     }
-    const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
-      (id: any) => resolvedPrimary == null || Number(id) !== resolvedPrimary
+    const filteredSecondaryIds = [...new Set((Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map(Number))].filter(
+      (id: number) => id > 0 && (resolvedPrimary == null || id !== resolvedPrimary)
     );
     const builders = Math.max(1, filteredSecondaryIds.length + 1);
     // Built twice at most: with the crew rows, and - if RT-MCS refuses the
@@ -1023,7 +1033,7 @@ app.post("/api/build/segment-roll", async (req, res) => {
       // worked. Same rule as RT-MCS's own rolls.
       statements.push({
         query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
-                SELECT ?, ?, sb.builderId FROM SECONDARYBUILDERS sb
+                SELECT DISTINCT ?, ?, sb.builderId FROM SECONDARYBUILDERS sb
                  WHERE sb.buildId = ?
                    AND sb.builderId <> COALESCE((SELECT s.builderId FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?), -1)
                    AND (SELECT COALESCE(s.numberOfBuilders, 1) FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?) > 1
@@ -1247,7 +1257,7 @@ app.post("/api/build/discard", async (req, res) => {
   if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
   // Built twice at most, like a roll: without the crew table's statements if
   // RT-MCS refuses them (see isSegCrewRefusal).
-  const discardStatements = (withSegCrew: boolean) => [
+  const discardStatements = (readCrew: boolean, withSegCrew: boolean) => [
       {
         query: `SELECT startTime, endTime, pauseReasonId FROM HARNBUILDTIMES
                  WHERE buildId = ? AND timeTypeId = 4 ORDER BY startTime`,
@@ -1273,7 +1283,7 @@ app.post("/api/build/discard", async (req, res) => {
         params: [buildId],
       },
       { query: `SELECT builderId FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
-      withSegCrew
+      readCrew
         ? { query: `SELECT segmentId, builderId FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }
         : { query: `SELECT 0 AS segmentId WHERE 0`, params: [] },
       { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
@@ -1282,14 +1292,15 @@ app.post("/api/build/discard", async (req, res) => {
       ...(withSegCrew ? [{ query: `DELETE FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }] : []),
   ];
   try {
+    const readCrew = await segCrewExists();
     let withSegCrew = await hasSegCrew();
     let out;
     try {
-      out = await mustRun(discardStatements(withSegCrew));
+      out = await mustRun(discardStatements(readCrew, withSegCrew));
     } catch (err) {
       if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
       withSegCrew = false;
-      out = await mustRun(discardStatements(false));
+      out = await mustRun(discardStatements(readCrew, false));
     }
     res.json({
       success: true,
@@ -1299,7 +1310,7 @@ app.post("/api/build/discard", async (req, res) => {
         crewIds: Array.isArray(out[3]) ? out[3].map((r: any) => Number(r.builderId)).filter((n: number) => n > 0) : [],
         // null, not []: "no table yet" and "nobody else on any segment" must
         // stay distinguishable to the batch.
-        segCrew: withSegCrew && Array.isArray(out[4]) ? out[4] : null,
+        segCrew: readCrew && Array.isArray(out[4]) ? out[4] : null,
       },
     });
   } catch (err) {
@@ -1312,7 +1323,9 @@ app.post("/api/build/discard", async (req, res) => {
  *  itself through /api/query (see hasSegCrew). */
 app.get("/api/build/crew-table", async (_req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
-  res.json({ success: true, result: { present: await hasSegCrew() } });
+  // station: this panel's name on its segments, so the page can treat a build
+  // open on THIS station the way the one-place triggers do.
+  res.json({ success: true, result: { present: await hasSegCrew(), station: STATION_ID } });
 });
 
 /**
