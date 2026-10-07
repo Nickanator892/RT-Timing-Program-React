@@ -1663,6 +1663,18 @@ function TimingPage({
             setDbSuccess("Submit");
             return;
         }
+        // Main's copy, not this render's. A build ended from another timer is
+        // cleared in the background (reconcileLiveBuild, usually off the
+        // heartbeat End itself sends), and a Submit pressed in that same
+        // second still sees the old clock and no ids here - which used to fall
+        // through to recordAsNewBuild and write a second copy of time RT-MCS
+        // had already submitted (bench, 2026-10-07: End then Submit 0.7 s
+        // apart). A clock main has reset has nothing to submit.
+        const live = await window.electron.getSharedData();
+        if (!(Number(live?.elapsedTime ?? 0) > 0)) {
+            setDbSuccess("Submit");
+            return;
+        }
         // finding [1]: verify a segment id in shared state is still genuinely
         // open BEFORE dispatching to either path. This used to run only in
         // the single-submit branch below, so a stale currentBuildId reaching
