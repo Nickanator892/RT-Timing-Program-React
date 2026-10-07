@@ -61,8 +61,9 @@
     cursor: default;
 }
 
+/* Fully shipped: dimmed exactly like the board's Completed block. */
 .job-done {
-    opacity: 0.7;
+    opacity: 0.62;
 }
 
 .job-seq {
@@ -171,28 +172,13 @@
     font-family: "RobotoMono";
 }
 
-.job-completed {
-    width: 100%;
-    max-width: 1180px;
-    margin-top: 12px;
-}
-
-.job-completed-toggle {
-    background: none;
-    border: none;
-    color: var(--dim);
+/* The board's "Completed - N Job(s) Fully Shipped" heading. */
+.job-completed-head {
+    margin: 12px 2px 0;
     font-family: "Orbitron";
     font-size: 16px;
-    padding: 6px 2px;
-    cursor: pointer;
-}
-
-.job-completed-toggle:hover {
-    color: #e8eced;
-}
-
-.job-completed .job-list {
-    margin-top: 8px;
+    font-weight: 600;
+    color: var(--dim);
 }
 
 .job-empty {
