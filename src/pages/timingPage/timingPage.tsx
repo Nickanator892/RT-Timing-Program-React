@@ -1992,9 +1992,9 @@ function TimingPage({
                             className={`release-offer-button${confirmingRelease ? " armed" : ""}`}
                             onClick={() => void releaseBlocking()}
                         >
-                            {confirmingRelease
-                                ? `Tap again: ${describeBlockingTime(releaseOffer.blocked)}`
-                                : describeBlockingTime(releaseOffer.blocked)}
+                            {/* Short when armed, so the row keeps its height and
+                                nothing above it moves between the two taps. */}
+                            {confirmingRelease ? "Tap again to confirm" : describeBlockingTime(releaseOffer.blocked)}
                         </button>
                         <button
                             type="button"
