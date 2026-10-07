@@ -320,16 +320,16 @@ async function readReleaseAudit(buildId: number): Promise<ReleaseAudit | null> {
     };
 }
 
-/** "from the RT-MCS phone timer by caleb at 14:02" */
+/** "from the RT-MCS phone timer by caleb at 14:02". VIA is where the release
+ *  was asked from ('phone' or 'station:<name>'); STATION is where the released
+ *  build was open, which for this panel's own build is this panel. */
 export function describeRelease(a: ReleaseAudit): string {
-    const where =
-        a.station === "RT-MCS phone" || /phone/i.test(a.via)
-            ? "from the RT-MCS phone timer"
-            : a.station
-              ? `from ${a.station}`
-              : a.via
-                ? `from ${a.via}`
-                : "elsewhere";
+    const station = /^station:(.+)$/i.exec(a.via)?.[1];
+    const where = /^phone$/i.test(a.via)
+        ? "from the RT-MCS phone timer"
+        : station
+          ? `from timer station ${station}`
+          : "from another timer";
     const at = /(\d{2}:\d{2})(:\d{2})?\s*$/.exec(a.at)?.[1];
     return `${where}${a.byName ? ` by ${a.byName}` : ""}${at ? ` at ${at}` : ""}`;
 }
