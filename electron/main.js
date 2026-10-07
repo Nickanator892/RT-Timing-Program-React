@@ -64,7 +64,7 @@ function postJson(pathname, body) {
                     let parsed = null;
                     try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
                     const httpOk = res.statusCode >= 200 && res.statusCode < 300;
-                    if (httpOk && parsed?.success !== false) return resolve({ ok: true });
+                    if (httpOk && parsed?.success !== false) return resolve({ ok: true, body: parsed });
                     resolve({ ok: false, error: parsed?.error || `HTTP ${res.statusCode}` });
                 });
             }
@@ -100,14 +100,27 @@ function setHeartbeatError(message) {
 
 async function writeHeartbeat() {
     if (!currentSegmentId) return false;
+    const segmentId = currentSegmentId;
     const out = await postJson("/api/heartbeat", {
-        segmentId: currentSegmentId,
+        segmentId,
         accumSeconds: segmentSeconds(),
         state: sharedTimerData.isRunning ? "RUN" : "PAUSE",
     });
     if (out.ok) {
         heartbeatFailures = 0;
         setHeartbeatError(null);
+        // Randy, 2026-10-07: "anyone can end/submit a blocking time" - RT-MCS
+        // can now close this build, or roll someone off its crew, from the
+        // phone or another station. The heartbeat is the first write to
+        // notice: it lands but changes nothing, because the segment is no
+        // longer open. Tell the page, which works out which it was (and
+        // ignores it if the panel's own roll moved on in the meantime). Not
+        // for a held write: a queued heartbeat has no answer yet.
+        const changes = out.body?.queued ? undefined : out.body?.result?.[0]?.changes;
+        if (changes === 0 && currentSegmentId === segmentId) {
+            sharedTimerData.segmentLost = { segmentId, at: Date.now() };
+            broadcastNonTimer(sharedTimerData);
+        }
         return true;
     }
     heartbeatFailures++;
@@ -176,11 +189,10 @@ const SESSION_KEYS = [
     "batchMode", "batchUnits", "batchPauses", "secondaryBuilders",
     "currentBuildId", "currentSegmentId", "currentSegmentStart",
     "startTime", "endTime", "timerDone", "pauseReason",
-    // Who was on each segment of the live build, and a batch's crew stretches
-    // carried past a failed write (timingPage segmentCrew / batchCrew). The
-    // database only keeps the latest roster, so after a restart these are the
-    // only record of a helper who has already left.
-    "segmentCrew", "batchCrew",
+    // A batch's crew stretches, carried past a failed write the way
+    // batchPauses carries its pauses: the live build - and its
+    // HARNBUILDSEGCREW rows - are already dropped by then (timingPage batchCrew).
+    "batchCrew",
 ];
 
 function saveSession(why) {
@@ -443,8 +455,8 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.timerDone = true;
     sharedTimerData.startTime = "";
     sharedTimerData.endTime = "";
-    sharedTimerData.segmentCrew = [];
     sharedTimerData.batchCrew = [];
+    sharedTimerData.segmentLost = null;
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();

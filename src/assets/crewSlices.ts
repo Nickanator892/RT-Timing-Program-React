@@ -2,32 +2,25 @@ import { execQuery } from "./execQueryFunction";
 import type { User } from "./types/UserType";
 
 /**
- * Crew per batch unit (Randy, 2026-10-07).
+ * Crew per segment, and per batch unit (Randy, 2026-10-07: "record hours per
+ * person").
+ *
+ * HARNBUILDSEGCREW holds every person on a segment OTHER than its primary
+ * (HARNBUILDSEGMENTS.builderId), so numberOfBuilders = 1 + its rows. The
+ * people on a segment never change mid-segment: every crew change rolls. The
+ * table belongs to RT-MCS (created in FloorEnsureSchema from 1.0.32, which
+ * also lets the Pi write it through /api/timer/exec) and the RT-MCS phone timer
+ * writes it to exactly the same rules. SECONDARYBUILDERS keeps its old meaning,
+ * the build's latest roster, for compatibility and the one-place trigger.
  *
  * A batch opens one live build at Start and, at Submit, drops it and writes one
- * build per unit with the timed window sliced evenly across them. Its crew used
- * to be the roster on screen AT SUBMIT, stamped on every unit: a helper who
- * joined and then left was recorded nowhere, and one who joined late was billed
- * for the whole window. The live build's segments already say who worked each
- * stretch - every crew change rolls a segment - so the units are cut from them.
- *
- * SECONDARYBUILDERS is per build and every roll replaces it, so once a helper
- * has left, the database no longer names who was on the earlier segments. The
- * page keeps that itself (`segmentCrew`, one entry per segment it opened,
- * written only from what /api/build/start and /api/build/segment-roll report
- * they COMMITTED) and it is believed only where it agrees with the segment row.
- * The database stays the authority on head-count and primary: a segment whose
- * names are not known keeps its numberOfBuilders with no names, so the labour
- * is still right and nobody is ever guessed onto a unit.
+ * build per unit. Its crew used to be the roster on screen AT SUBMIT, stamped
+ * on every unit: a helper who joined and then left was recorded nowhere, and
+ * one who joined late was billed for the whole window. Now every unit gets an
+ * equal share of every live segment (rule 3 of the shared contract): a batch
+ * is worked on all its units at once, so each unit carries the same labour,
+ * and each person's total comes out exactly what they worked.
  */
-
-/** One entry per segment this panel opened: who the database put on it. */
-export interface SegmentCrewEntry {
-    buildId: number;
-    segmentId: number;
-    primaryId: number | null;
-    crewIds: number[];
-}
 
 /** A segment row of the dropped live build, as /api/build/discard returns it. */
 export interface DroppedSegment {
@@ -39,33 +32,35 @@ export interface DroppedSegment {
     endTime?: string | null;
 }
 
-/** One stretch of worked time and the people on it. */
+/** One live segment: the worked seconds it carries and the people on it. */
 export interface CrewStretch {
-    /** Pause-free seconds the stretch earned (its segment's accumSeconds). */
+    /** Pause-free seconds the segment earned (its accumSeconds). */
     seconds: number;
     primaryId: number | null;
-    /** Second operators the database is known to have held for the stretch. */
+    /** The other people on it, by name - HARNBUILDSEGCREW. */
     crewIds: number[];
     /** Head-count off the segment row, primary included. More than
-     *  crewIds.length + 1 only when a closed segment's names are not known. */
+     *  crewIds.length + 1 only for a segment written before HARNBUILDSEGCREW
+     *  existed whose names are no longer known. */
     numberOfBuilders: number;
 }
 
 /** One closed segment of one unit. */
 export interface UnitPiece {
+    seconds: number;
     /** Share of the unit's wall-clock slice; a unit's pieces sum to 1. */
     share: number;
-    seconds: number;
     primaryId: number | null;
     crewIds: number[];
     numberOfBuilders: number;
 }
 
-/** What one unit is written with: its segments, its build-row builder and crew. */
+/** What one batch unit is written with. */
 export interface UnitCrew {
     pieces: UnitPiece[];
+    /** HARNBUILDTIMES.builderId: whoever was on the build last, as a handover leaves it. */
     builderId: number | null;
-    secondaryIds: number[];
+    /** HARNBUILDTIMES.numberOfBuilders: the most people on any of its pieces (display only - labour comes from the segments). */
     numberOfBuilders: number;
 }
 
@@ -73,16 +68,21 @@ const toIds = (list: unknown[] | null | undefined): number[] =>
     (Array.isArray(list) ? list : []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
 
 /**
- * The live build's segments as stretches of worked time, oldest first.
+ * The live build's segments, oldest first, with who was on each.
+ *
+ * Names come from HARNBUILDSEGCREW. A segment with none there (one opened
+ * before the table existed) takes SECONDARYBUILDERS if it is the latest
+ * segment - that is exactly its roster - and otherwise keeps its head-count
+ * with no names: the labour stays right and nobody is guessed onto a unit.
  * The open segment's seconds are main's live count when that is higher - the
  * database only has them to the last heartbeat (same rule as a single Submit).
  */
 export function resolveCrewStretches(args: {
-    buildId: number;
     segments: DroppedSegment[];
+    /** HARNBUILDSEGCREW rows of the build; null when the table does not exist yet. */
+    segCrew: { segmentId: number; builderId: number }[] | null;
     /** SECONDARYBUILDERS of the build when it was dropped: the latest segment's crew. */
     currentCrewIds: number[];
-    log: SegmentCrewEntry[];
     openSegmentSeconds: number;
 }): CrewStretch[] {
     const rows = [...(args.segments ?? [])].sort((a, b) => Number(a.segmentId) - Number(b.segmentId));
@@ -90,145 +90,71 @@ export function resolveCrewStretches(args: {
     return rows.map((s) => {
         const segmentId = Number(s.segmentId);
         const primaryId = Number(s.builderId) > 0 ? Number(s.builderId) : null;
-        const numberOfBuilders = Math.max(1, Math.floor(Number(s.numberOfBuilders) || 1));
         let seconds = Math.max(0, Number(s.accumSeconds) || 0);
         if (String(s.endTime ?? "") === "") {
             seconds = Math.max(seconds, Math.max(0, Math.round(Number(args.openSegmentSeconds) || 0)));
         }
         const others = (list: unknown[]) => [...new Set(toIds(list))].filter((id) => id !== primaryId);
-        const fits = (list: number[]) => list.length + 1 === numberOfBuilders;
-
-        let crewIds: number[] = [];
-        const fromDb = segmentId === lastId ? others(args.currentCrewIds) : null;
-        if (fromDb && fits(fromDb)) {
-            crewIds = fromDb;
-        } else {
-            const entry = (args.log ?? []).find(
-                (e) => Number(e?.buildId) === Number(args.buildId) && Number(e?.segmentId) === segmentId
-            );
-            const logged =
-                entry && (Number(entry.primaryId) > 0 ? Number(entry.primaryId) : null) === primaryId
-                    ? others(entry.crewIds)
-                    : null;
-            if (logged && fits(logged)) crewIds = logged;
+        const recorded = others(
+            (args.segCrew ?? []).filter((r) => Number(r?.segmentId) === segmentId).map((r) => r.builderId)
+        );
+        const dbCount = Math.max(1, Math.floor(Number(s.numberOfBuilders) || 1));
+        let crewIds = recorded;
+        if (!crewIds.length && dbCount > 1 && segmentId === lastId) {
+            const roster = others(args.currentCrewIds);
+            if (roster.length + 1 === dbCount) crewIds = roster;
         }
-        return { seconds, primaryId, crewIds, numberOfBuilders };
+        return { seconds, primaryId, crewIds, numberOfBuilders: Math.max(dbCount, crewIds.length + 1) };
     });
-}
-
-const sameCrew = (a: Omit<UnitPiece, "share" | "seconds">, b: Omit<UnitPiece, "share" | "seconds">) =>
-    a.primaryId === b.primaryId &&
-    a.numberOfBuilders === b.numberOfBuilders &&
-    [...a.crewIds].sort((x, y) => x - y).join(",") === [...b.crewIds].sort((x, y) => x - y).join(",");
-
-function mergeAdjacent(pieces: UnitPiece[]): UnitPiece[] {
-    const out: UnitPiece[] = [];
-    for (const p of pieces) {
-        const last = out[out.length - 1];
-        if (last && sameCrew(last, p)) {
-            last.share += p.share;
-            last.seconds += p.seconds;
-        } else {
-            out.push({ ...p, crewIds: [...p.crewIds] });
-        }
-    }
-    return out;
 }
 
 /**
- * Cut the stretches into `units` equal shares of WORKED time and say who is on
- * each. Worked time, not wall clock: a helper who was only there while the
- * clock was paused earns nothing, and the seconds credited to each person add
- * up to the seconds they were on the segments.
- *
- * Each unit gets one piece per crew stretch inside its share (neighbours with
- * the same people merged, a stretch that rounds to 0 s dropped), and every
- * piece becomes one closed segment carrying its own builderId,
- * numberOfBuilders and seconds - the row shape a single build has after a
- * mid-run roll, so HARNBUILDTIMES_VIEW.laborSeconds stays exact. With no crew
- * change at all every unit is one piece, which is exactly what was written
- * before this existed.
- *
- * @param unitSeconds the seconds each unit is credited (already rounded); the
- *   pieces of a unit always add up to exactly this.
+ * Rule 3 of the shared crew contract: every unit gets an equal share of every
+ * live segment. For segment j with a_j worked seconds, unit k gets
+ * floor(a_j / units) seconds plus one of the a_j mod units leftover seconds if
+ * it is among the first ones, so the per-segment sums are exact. Each piece
+ * keeps its segment's primary, head-count and crew; the pieces sit back to
+ * back inside the unit's own wall-clock slice, each as long as its segment's
+ * share of the run. A segment with no worked seconds is skipped, and so is a
+ * piece that comes to 0 s for this unit (fewer seconds than units).
+ * With no crew change at all, every unit is one piece, as before.
  */
-export function crewPerUnit(stretches: CrewStretch[], units: number, unitSeconds: number): UnitCrew[] {
+export function crewPerUnit(stretches: CrewStretch[], units: number): UnitCrew[] {
     const n = Math.max(1, Math.floor(units));
     if (!stretches.length) return [];
-    const total = stretches.reduce((t, s) => t + Math.max(0, s.seconds), 0);
-    // Nothing earned on record at all: the whole run is the latest stretch.
-    const weights = stretches.map((s, i) =>
-        total > 0 ? Math.max(0, s.seconds) : i === stretches.length - 1 ? 1 : 0
-    );
-    const sum = weights.reduce((a, b) => a + b, 0);
-    const ends: number[] = [];
-    let acc = 0;
-    weights.forEach((w, i) => {
-        acc += w;
-        ends.push(i === weights.length - 1 ? 1 : acc / sum);
-    });
-
+    const live = stretches.map((s) => ({ ...s, seconds: Math.max(0, Math.round(s.seconds)) }));
+    const worked = live.filter((s) => s.seconds > 0);
+    const last = live[live.length - 1];
     const result: UnitCrew[] = [];
     for (let k = 0; k < n; k++) {
-        const lo = k / n;
-        const hi = (k + 1) / n;
-        let pieces: UnitPiece[] = [];
-        stretches.forEach((s, i) => {
-            const overlap = Math.min(ends[i], hi) - Math.max(i === 0 ? 0 : ends[i - 1], lo);
-            if (overlap > 1e-12) {
-                pieces.push({
-                    share: overlap * n,
-                    seconds: 0,
-                    primaryId: s.primaryId,
-                    crewIds: s.crewIds,
-                    numberOfBuilders: s.numberOfBuilders,
-                });
-            }
-        });
+        let pieces = worked
+            .map((s) => ({
+                seconds: Math.floor(s.seconds / n) + (k < s.seconds % n ? 1 : 0),
+                weight: s.seconds,
+                primaryId: s.primaryId,
+                crewIds: s.crewIds,
+                numberOfBuilders: s.numberOfBuilders,
+            }))
+            .filter((p) => p.seconds > 0);
+        // Fewer seconds on record than units (or none at all): the unit still
+        // exists, carrying the latest segment's people and 0 s.
         if (!pieces.length) {
-            const s = stretches[stretches.length - 1];
-            pieces = [{ share: 1, seconds: 0, primaryId: s.primaryId, crewIds: s.crewIds, numberOfBuilders: s.numberOfBuilders }];
+            pieces = [
+                { seconds: 0, weight: 1, primaryId: last.primaryId, crewIds: last.crewIds, numberOfBuilders: last.numberOfBuilders },
+            ];
         }
-        pieces = mergeAdjacent(pieces);
-
-        // Cumulative rounding: the pieces add up to exactly unitSeconds.
-        let cum = 0;
-        let prev = 0;
-        pieces.forEach((p, j) => {
-            cum += p.share;
-            const upTo = j === pieces.length - 1 ? unitSeconds : Math.round(unitSeconds * Math.min(1, cum));
-            p.seconds = Math.max(0, upTo - prev);
-            prev = Math.max(prev, upTo);
+        const weight = pieces.reduce((t, p) => t + p.weight, 0) || 1;
+        result.push({
+            pieces: pieces.map((p) => ({
+                seconds: p.seconds,
+                share: p.weight / weight,
+                primaryId: p.primaryId,
+                crewIds: [...p.crewIds],
+                numberOfBuilders: p.numberOfBuilders,
+            })),
+            builderId: last.primaryId,
+            numberOfBuilders: pieces.reduce((m, p) => Math.max(m, p.numberOfBuilders), 1),
         });
-        if (pieces.some((p) => p.seconds > 0)) {
-            pieces = mergeAdjacent(pieces.filter((p) => p.seconds > 0));
-        } else {
-            pieces = [pieces.reduce((best, p) => (p.share > best.share ? p : best))];
-        }
-        // The wall-clock slice is split the way the seconds are.
-        const shareTotal = pieces.reduce((t, p) => t + p.share, 0) || 1;
-        pieces.forEach((p) => {
-            p.share = unitSeconds > 0 ? p.seconds / unitSeconds : p.share / shareTotal;
-        });
-
-        // The build row goes to whoever was the primary for most of the unit
-        // (the later one on a tie, as a handover's build row follows the
-        // person who took it). Second operators are everyone named on a piece;
-        // nobody is the builder AND a second operator.
-        const byPrimary = new Map<number | null, number>();
-        pieces.forEach((p) => byPrimary.set(p.primaryId, (byPrimary.get(p.primaryId) ?? 0) + p.seconds));
-        let builderId = pieces[pieces.length - 1].primaryId;
-        for (const p of pieces) {
-            if ((byPrimary.get(p.primaryId) ?? 0) > (byPrimary.get(builderId) ?? 0)) builderId = p.primaryId;
-        }
-        const secondaryIds: number[] = [];
-        for (const p of pieces) {
-            for (const id of p.crewIds) {
-                if (id !== builderId && !secondaryIds.includes(id)) secondaryIds.push(id);
-            }
-        }
-        const unnamed = pieces.reduce((m, p) => Math.max(m, p.numberOfBuilders - 1 - p.crewIds.length), 0);
-        result.push({ pieces, builderId, secondaryIds, numberOfBuilders: 1 + secondaryIds.length + unnamed });
     }
     return result;
 }
@@ -238,6 +164,10 @@ export function crewPerUnit(stretches: CrewStretch[], units: number, unitSeconds
 export interface OpenElsewhere {
     builderId: number;
     name: string;
+    /** The build that blocks them - what an RT-MCS release is asked to end. */
+    buildId: number;
+    /** Its primary (a release ends and submits it) or only crew on it (a release takes them off it). */
+    isPrimary: boolean;
     stationId: string;
     harnNumber: string;
 }
@@ -251,7 +181,8 @@ export async function findOpenElsewhere(builderIds: number[], excludeBuildId: nu
     const list = [...new Set(toIds(builderIds))];
     if (!list.length) return [];
     const rows = await execQuery(
-        `SELECT b.Id AS builderId, b.userName AS name, s.stationId AS stationId, h.harnNumber AS harnNumber
+        `SELECT b.Id AS builderId, b.userName AS name, s.buildId AS buildId, s.stationId AS stationId,
+                h.harnNumber AS harnNumber, CASE WHEN s.builderId = b.Id THEN 1 ELSE 0 END AS isPrimary
            FROM HARNBUILDERS b
            JOIN HARNBUILDSEGMENTS s
              ON COALESCE(s.endTime, '') = '' AND s.stationId IS NOT NULL AND s.buildId <> ?
@@ -272,6 +203,8 @@ export async function findOpenElsewhere(builderIds: number[], excludeBuildId: nu
         out.push({
             builderId: id,
             name: String(r.name ?? `builder ${id}`),
+            buildId: Number(r.buildId) || 0,
+            isPrimary: Number(r.isPrimary) === 1,
             stationId: String(r.stationId ?? ""),
             harnNumber: String(r.harnNumber ?? ""),
         });
@@ -279,9 +212,20 @@ export async function findOpenElsewhere(builderIds: number[], excludeBuildId: nu
     return out;
 }
 
+const whereOpen = (stationId: string) =>
+    stationId === "RT-MCS phone" ? "on the RT-MCS phone timer" : `on timer station ${stationId}`;
+
 export function describeOpenElsewhere(o: OpenElsewhere): string {
-    const where = o.stationId === "RT-MCS phone" ? "on the RT-MCS phone timer" : `on timer station ${o.stationId}`;
-    return `${o.name} already has a build open ${where}${o.harnNumber ? ` (${o.harnNumber})` : ""}`;
+    return `${o.name} already has a build open ${whereOpen(o.stationId)}${o.harnNumber ? ` (${o.harnNumber})` : ""}`;
+}
+
+/** What the release button does, in its words: "End & submit ashley's time on
+ *  the RT-MCS phone timer", or "Take ashley off the build on ..." when they are
+ *  only crew there (RT-MCS then rolls them off and leaves its builder timing). */
+export function describeBlockingTime(o: OpenElsewhere): string {
+    return o.isPrimary
+        ? `End & submit ${o.name}'s time ${whereOpen(o.stationId)}`
+        : `Take ${o.name} off the build ${whereOpen(o.stationId)}`;
 }
 
 /** True when an error is RT-MCS's one-place-at-a-time refusal. */
@@ -291,10 +235,7 @@ export const isOnePlaceRefusal = (e: unknown) =>
 /**
  * The crew and primary the database holds for a live build right now: the
  * open segment's builder and the build's SECONDARYBUILDERS. `live: false` when
- * the build has no open segment at all (the page's ids are stale - its time
- * will be recorded as a new build, whose Start the database checks again).
- * null when it cannot be read (the caller falls back to what was on screen
- * before the change).
+ * the build has no open segment at all. null when it cannot be read.
  */
 export async function readRecordedCrew(
     buildId: number
@@ -327,11 +268,116 @@ export async function readRecordedCrew(
 
 /** A builder row in the shape login and the handover control use. */
 export async function readBuilder(id: number): Promise<User | null> {
-    const rows = await execQuery(
-        `SELECT Id, userName, password, privLevel FROM HARNBUILDERS WHERE Id = ?`,
-        [id]
-    );
+    const rows = await execQuery(`SELECT Id, userName, password, privLevel FROM HARNBUILDERS WHERE Id = ?`, [id]);
     const r = Array.isArray(rows) ? (rows as any[])[0] : null;
     if (!r) return null;
     return { Id: Number(r.Id), name: String(r.userName ?? ""), password: r.password ?? undefined, privLevel: r.privLevel ?? undefined };
+}
+
+// --- A live build closed from somewhere else -----------------------------------
+
+/** The latest MSTIMERRELEASE row for a build (RT-MCS's audit of a release). */
+export interface ReleaseAudit {
+    action: string;
+    station: string;
+    via: string;
+    at: string;
+    byName: string;
+    whoName: string;
+}
+
+export type LiveBuildState =
+    | { kind: "open" }
+    /** Our segment was closed but the build goes on: RT-MCS dropped a crew member and opened the next segment here. */
+    | { kind: "adopt"; segmentId: number; startTime: string; closedAccum: number; release: ReleaseAudit | null }
+    /** Every segment of the build is closed: it was ended (by a release, or it was already submitted). */
+    | { kind: "ended"; harnNumber: string; endTime: string; release: ReleaseAudit | null }
+    | { kind: "missing" }
+    | { kind: "unknown" };
+
+async function readReleaseAudit(buildId: number): Promise<ReleaseAudit | null> {
+    // MSTIMERRELEASE arrives with RT-MCS 1.0.32; before that this read just
+    // fails and there is no audit to quote.
+    const rows = await execQuery(
+        `SELECT r.ACTION AS action, r.STATION AS station, r.VIA AS via, r.AT AS at,
+                rb.userName AS byName, rw.userName AS whoName
+           FROM MSTIMERRELEASE r
+           LEFT JOIN HARNBUILDERS rb ON rb.Id = r.BYBUILDERID
+           LEFT JOIN HARNBUILDERS rw ON rw.Id = r.BUILDERID
+          WHERE r.BUILDID = ?
+          ORDER BY r.ID DESC LIMIT 1`,
+        [buildId]
+    );
+    const r = Array.isArray(rows) ? (rows as any[])[0] : null;
+    if (!r) return null;
+    return {
+        action: String(r.action ?? ""),
+        station: String(r.station ?? ""),
+        via: String(r.via ?? ""),
+        at: String(r.at ?? ""),
+        byName: String(r.byName ?? ""),
+        whoName: String(r.whoName ?? ""),
+    };
+}
+
+/** "from the RT-MCS phone timer by caleb at 14:02" */
+export function describeRelease(a: ReleaseAudit): string {
+    const where =
+        a.station === "RT-MCS phone" || /phone/i.test(a.via)
+            ? "from the RT-MCS phone timer"
+            : a.station
+              ? `from ${a.station}`
+              : a.via
+                ? `from ${a.via}`
+                : "elsewhere";
+    const at = /(\d{2}:\d{2})(:\d{2})?\s*$/.exec(a.at)?.[1];
+    return `${where}${a.byName ? ` by ${a.byName}` : ""}${at ? ` at ${at}` : ""}`;
+}
+
+/**
+ * What became of this panel's live build. Asked whenever a write aimed at its
+ * segment finds nothing open (a heartbeat or close changing 0 rows, a roll
+ * refused for the same reason): RT-MCS can now end a blocking build, or drop
+ * someone off its crew, from the phone timer or another station (Randy,
+ * 2026-10-07: "anyone can end/submit a blocking time").
+ */
+export async function readLiveBuild(buildId: number, segmentId: number): Promise<LiveBuildState> {
+    let id = Number(buildId) || 0;
+    if (!id && Number(segmentId) > 0) {
+        const own = await execQuery(`SELECT buildId FROM HARNBUILDSEGMENTS WHERE segmentId = ?`, [segmentId]);
+        if (!Array.isArray(own)) return { kind: "unknown" };
+        if (!own.length) return { kind: "missing" };
+        id = Number((own as any[])[0].buildId) || 0;
+    }
+    if (!id) return { kind: "missing" };
+    const rows = await execQuery(
+        `SELECT s.segmentId, s.endTime, s.accumSeconds, s.startTime, b.harnNumber
+           FROM HARNBUILDSEGMENTS s LEFT JOIN HARNBUILDS b ON b.buildId = s.buildId
+          WHERE s.buildId = ? ORDER BY s.segmentId`,
+        [id]
+    );
+    if (!Array.isArray(rows)) return { kind: "unknown" };
+    if (!rows.length) return { kind: "missing" };
+    const all = rows as any[];
+    const isOpen = (r: any) => String(r.endTime ?? "") === "";
+    const mine = all.find((r) => Number(r.segmentId) === Number(segmentId));
+    if (mine && isOpen(mine)) return { kind: "open" };
+    const open = all.filter(isOpen);
+    if (open.length) {
+        const next = open[open.length - 1];
+        return {
+            kind: "adopt",
+            segmentId: Number(next.segmentId),
+            startTime: String(next.startTime ?? ""),
+            closedAccum: Math.max(0, Number(mine?.accumSeconds) || 0),
+            release: await readReleaseAudit(id),
+        };
+    }
+    const lastRow = all[all.length - 1];
+    return {
+        kind: "ended",
+        harnNumber: String(lastRow.harnNumber ?? ""),
+        endTime: String(lastRow.endTime ?? ""),
+        release: await readReleaseAudit(id),
+    };
 }
