@@ -458,11 +458,34 @@ function TimingPage({
         };
     }, []);
 
-    // Default the batch unit count to the PN's qty-to-build.
+    // Default the batch unit count to the PN's qty-to-build - once per harness
+    // (and kit), not on every render that happens to see the kit.
+    //
+    // Keyed on plain values, never on `buildKit` itself: every broadcast from
+    // main (each 1 s tick, and 100 ms after ANY updateSharedData) hands back a
+    // fresh copy of the kit, so the old [selectedHarn, buildKit] effect re-ran
+    // on every one - and its setBatchUnits is an updateSharedData, which
+    // provoked the next broadcast. With a kit loaded that was a self-sustaining
+    // 7-10 broadcasts a second, idle or not (2026-10-06, through the real
+    // Choose Kit flow). It snapped a typed Units count back to the kit
+    // quantity, and it re-armed the crew-change settle window above faster
+    // than that window could expire, so a second operator added mid-build
+    // never rolled the segment and was recorded nowhere.
+    //
+    // Only while idle: this page remounts on every pause-reason detour, which
+    // resets the ref, and a batch already running keeps the count it started
+    // with. Not before the real timerDone and harness have arrived either -
+    // their placeholders (true, "") would read as an idle page whose harness
+    // just changed.
+    const batchUnitsDefaultedFor = useRef<string | null>(null);
     useEffect(() => {
-        const harness = buildKit?.harnesses.find((h) => h.partNum === selectedHarn);
-        if (harness && harness.buildNumber > 0) setBatchUnits(harness.buildNumber);
-    }, [selectedHarn, buildKit]);
+        if (!timerDoneLoaded || !selectedHarnLoaded || kitRev == null || unitsTotal <= 0) return;
+        const key = `${kitRev}|${selectedHarn}|${unitsTotal}`;
+        if (batchUnitsDefaultedFor.current === key) return;
+        batchUnitsDefaultedFor.current = key;
+        if (timerDone) setBatchUnits(unitsTotal);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [timerDoneLoaded, selectedHarnLoaded, kitRev, selectedHarn, unitsTotal, timerDone]);
 
     useEffect(() => {
         if (selectedHarn !== lastSelectedHarn.current) {
