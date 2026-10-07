@@ -176,6 +176,10 @@ const SESSION_KEYS = [
     "batchMode", "batchUnits", "batchPauses", "secondaryBuilders",
     "currentBuildId", "currentSegmentId", "currentSegmentStart",
     "startTime", "endTime", "timerDone", "pauseReason",
+    // Randy, 2026-10-07: an update may restart the app under a PAUSED build (the
+    // updater now holds only for a running one), so the pause itself has to
+    // survive the restart - see restoredPause below.
+    "pauseStart",
 ];
 
 function saveSession(why) {
@@ -220,6 +224,14 @@ function restoreSession(parsed) {
     // Never start a clock nobody pressed. Anything the build earned while the
     // app was down is not earned at all.
     sharedTimerData.isRunning = false;
+    // The operator's own pause, if the app went down during one: when it began,
+    // why, and on which segment. A snapshot the renderer cannot overwrite (its
+    // own pauseStart starts out empty), read once by the recovery page so the
+    // whole break - the restart included - becomes ONE pause row with the
+    // operator's reason, instead of "Interrupted" from the last heartbeat.
+    sharedTimerData.restoredPause = s.pauseStart
+        ? { start: s.pauseStart, reason: s.pauseReason ?? null, segmentId: s.currentSegmentId ?? null }
+        : null;
     timerElapsed = Math.max(0, Number(s.elapsedTime) || 0);
     timerStart = null;
     segmentBase = timerElapsed - Math.max(0, Number(s.segmentAccumSeconds) || 0) * 1000;
@@ -438,6 +450,8 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.timerDone = true;
     sharedTimerData.startTime = "";
     sharedTimerData.endTime = "";
+    sharedTimerData.pauseStart = null;
+    sharedTimerData.restoredPause = null;
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();

@@ -9,6 +9,9 @@ import RTLogo from "../../components/RTLogo/RTLogo";
 import type { RecoveryCandidate } from "../../electron";
 
 type recoveryPageProps = {
+    /** TimerLayout's status line under the clock - the pause page shows the
+     *  reason there, so a restored operator pause puts it back. */
+    setStatus?: (text: string) => void;
     /** Owned by TimerLayout; setting it puts the app in its normal paused state. */
     setPauseStart: React.Dispatch<React.SetStateAction<string | null>>;
     /** Also owned by TimerLayout. A restored build has to LOOK paused - the
@@ -45,7 +48,7 @@ function formatHMS(totalSeconds: number): string {
     return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
 }
 
-function RecoveryPage({ setPauseStart, setActiveButton }: recoveryPageProps) {
+function RecoveryPage({ setPauseStart, setActiveButton, setStatus }: recoveryPageProps) {
     const [candidate, setCandidate] = useState<RecoveryCandidate | null | undefined>(undefined);
     const [busy, setBusy] = useState(false);
     const [auto, setAuto] = useState(false);
@@ -84,7 +87,19 @@ function RecoveryPage({ setPauseStart, setActiveButton }: recoveryPageProps) {
             // when the operator presses Start the existing resume path writes a
             // pause row spanning the outage. Worked time is untouched because
             // accumSeconds was frozen at that same heartbeat.
-            const pauseStart = candidate.heartbeatAt || candidate.startTime;
+            //
+            // Unless the operator had already paused it (Randy, 2026-10-07: an
+            // update now restarts the app under a paused build): then the pause
+            // they took - its start and its reason - is the one to keep, so the
+            // break and the restart inside it are ONE pause row, with no gap
+            // between the real pause and the last heartbeat.
+            const shared = await window.electron.getSharedData();
+            const kept = shared?.restoredPause;
+            const operatorPause =
+                kept?.start && kept?.reason?.Id && Number(kept.segmentId) === Number(candidate.segmentId)
+                    ? kept
+                    : null;
+            const pauseStart = operatorPause?.start || candidate.heartbeatAt || candidate.startTime;
 
             // Best-effort context. A REV unpublished since the crash must not
             // block recovery - the build and its time still exist.
@@ -123,9 +138,12 @@ function RecoveryPage({ setPauseStart, setActiveButton }: recoveryPageProps) {
                 timerDone: false,
                 isRunning: false,
                 secondaryBuilders: Array.isArray(secondaries) ? secondaries : [],
-                pauseReason: reasonRows?.[0]
-                    ? { Id: String(reasonRows[0].Id), name: INTERRUPTED_REASON }
-                    : undefined,
+                pauseReason: operatorPause
+                    ? operatorPause.reason
+                    : reasonRows?.[0]
+                      ? { Id: String(reasonRows[0].Id), name: INTERRUPTED_REASON }
+                      : undefined,
+                restoredPause: null,
                 ...(kit ? { selectedBuildKit: kit } : {}),
                 recovery: { ...candidate, status: "RESTORED" },
             });
@@ -139,6 +157,7 @@ function RecoveryPage({ setPauseStart, setActiveButton }: recoveryPageProps) {
             });
 
             setPauseStart(pauseStart);
+            if (operatorPause?.reason?.name) setStatus?.(String(operatorPause.reason.name));
             // Land on the timer looking the way a pause looks: yellow indicator,
             // and Start already reading "Resume" because the clock is non-zero.
             setActiveButton("pause");
