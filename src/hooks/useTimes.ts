@@ -152,11 +152,27 @@ export function useTimes() {
         }
     }
 
+    /** Finished time rows for one harness and mode on ONE pricing run (REV) -
+     *  the count behind "ALL BUILT" on the submit button. Per REV on purpose
+     *  (Randy, 2026-10-07, HYSC-10004 BA R3): the same part number on another
+     *  job has its own builds - job 6 shipped 4 on rev 5489 - and counting
+     *  those made job 8 (21 owed on rev 5584) read ALL BUILT after 17.
+     *  fetchTimes stays part-number-wide: it is the chart's history. Null when
+     *  the count cannot be read. */
+    async function countOnRev(harnNumber: string, timeTypeId: number, rev: number): Promise<number | null> {
+        const sql = (spread: boolean) =>
+            `SELECT COUNT(*) AS n FROM HARNBUILDTIMES_VIEW WHERE harnNumber = ? AND timeTypeId = ? AND REV = ? AND openSegments = 0 ${spread ? SPREAD_EXCLUSION : ""}`;
+        let rows = await execQuery(sql(true), [harnNumber, timeTypeId, rev]);
+        if (!Array.isArray(rows)) rows = await execQuery(sql(false), [harnNumber, timeTypeId, rev]);
+        return Array.isArray(rows) && rows.length > 0 ? Number((rows[0] as any).n ?? 0) : null;
+    }
+
     return {
         loggedTimes,
         setLoggedTimes,
         writeTime,
         fetchTimes,
+        countOnRev,
         fetchAllTimes,
     };
 }

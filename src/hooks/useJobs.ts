@@ -13,9 +13,8 @@ import { useCallback, useEffect, useState } from "react";
  * would put all 24 in one undifferentiated list.
  */
 
-/** Progress is always counted in BUILD mode. "Completed" on the floor means the
- *  harness is built - it must not change meaning when someone switches the timer
- *  to Setup or Braid, or a whole job would leave the Completed section. */
+/** Progress is always counted in BUILD mode, so the bar and "ALL BUILT" do not
+ *  change meaning when someone switches the timer to Setup or Braid. */
 export const PROGRESS_TIMETYPE = 1;
 
 export interface Job {
@@ -38,6 +37,9 @@ export interface Job {
     unitsTotal: number;
     unitsBuilt: number;
     unitsRunning: number;
+    /** Every unit this job owed has shipped - the RT-MCS board's Completed test,
+     *  asked of RT-MCS (/api/jobs/shipped). False when RT-MCS could not say. */
+    shipped: boolean;
 }
 
 export interface HarnProgress {
@@ -86,7 +88,7 @@ SELECT V.MSID, V.SEQ, V.HARNPN AS jobName, V.PHKITNAME, V.CUSTOMER, V.REVNUM, V.
          WHERE T.REV = V.REV AND T.timeTypeId = ${PROGRESS_TIMETYPE}
            AND T.openSegments > 0 AND T.harnNumber IN (${HARNESSES_OF_JOB})) AS unitsRunning
   FROM MSSCHED_VIEW V
- WHERE V.REV IS NOT NULL
+ WHERE V.REV IS NOT NULL AND V.STATUS <> 'DONE'
  ORDER BY V.SEQ ASC`;
 
 /** Built and in-progress counts per part number for one job. Kept separate from
@@ -114,8 +116,28 @@ SELECT PH.HARNPN AS partNum,
  WHERE PH.RID = ? AND (? IS NULL OR PH.KITID = ?)`;
 }
 
+/** Finished work: the job has fully shipped (the board's Completed block). */
 export function jobIsComplete(job: Job): boolean {
+    return job.shipped;
+}
+
+/** Every unit the timer was asked for has been built - the job may still have
+ *  Braid, Overmold or Final Test to do, and it stays in the live list. */
+export function jobAllBuilt(job: Job): boolean {
     return job.unitsTotal > 0 && job.unitsBuilt >= job.unitsTotal;
+}
+
+/** MSIDs RT-MCS counts as fully shipped; empty when it cannot be reached. */
+async function fetchShipped(): Promise<Set<number>> {
+    try {
+        const response = await fetch("http://localhost:5000/api/jobs/shipped");
+        const data = await response.json();
+        if (!data?.success || !Array.isArray(data.shipped)) return new Set();
+        return new Set<number>(data.shipped.map(Number));
+    } catch (err) {
+        console.log(err);
+        return new Set();
+    }
 }
 
 export function useJobs() {
@@ -123,7 +145,7 @@ export function useJobs() {
     const [loading, setLoading] = useState(true);
 
     const fetchJobs = useCallback(async () => {
-        const rows = await query(JOBS_SQL);
+        const [rows, shipped] = await Promise.all([query(JOBS_SQL), fetchShipped()]);
         setLoading(false);
         if (!rows) return;
         setJobs(
@@ -148,6 +170,7 @@ export function useJobs() {
                 unitsTotal: Number(r.unitsTotal ?? 0),
                 unitsBuilt: Number(r.unitsBuilt ?? 0),
                 unitsRunning: Number(r.unitsRunning ?? 0),
+                shipped: shipped.has(Number(r.MSID)),
             }))
         );
     }, []);
