@@ -324,18 +324,19 @@ function TimingPage({
             // Who the database put on the new segment - read back from the
             // roll's own answer, never from the screen. Built on main's copy,
             // not this page's: the page remounts on every pause detour and
-            // its first render holds the placeholder.
-            const shared = await window.electron.getSharedData();
-            const log: SegmentCrewEntry[] = Array.isArray(shared?.segmentCrew) ? shared.segmentCrew : [];
-            setSegmentCrew([
-                ...log.filter((e) => Number(e?.buildId) === Number(L.currentBuildId)),
-                {
-                    buildId: Number(L.currentBuildId),
-                    segmentId: Number(rolled.segmentId),
-                    primaryId: Number(rolled.builderId) > 0 ? Number(rolled.builderId) : L.primaryId || null,
-                    crewIds: Array.isArray(rolled.secondaryBuilderIds) ? rolled.secondaryBuilderIds.map(Number) : rollSecondaryIds,
-                },
-            ]);
+            // its first render holds the placeholder. Not awaited: the clock
+            // is stopped until `finally` below, and bookkeeping must not keep
+            // it stopped any longer than the roll itself did.
+            const entry: SegmentCrewEntry = {
+                buildId: Number(L.currentBuildId),
+                segmentId: Number(rolled.segmentId),
+                primaryId: Number(rolled.builderId) > 0 ? Number(rolled.builderId) : L.primaryId || null,
+                crewIds: Array.isArray(rolled.secondaryBuilderIds) ? rolled.secondaryBuilderIds.map(Number) : rollSecondaryIds,
+            };
+            void window.electron.getSharedData().then((shared) => {
+                const log: SegmentCrewEntry[] = Array.isArray(shared?.segmentCrew) ? shared.segmentCrew : [];
+                setSegmentCrew([...log.filter((e) => Number(e?.buildId) === entry.buildId), entry]);
+            });
         } catch (e: any) {
             // Randy, 2026-10-07: the roll did not happen, so neither did the
             // change - put the screen back to what the database holds. Left
