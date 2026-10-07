@@ -47,8 +47,16 @@ type LiveState = "open" | "adopted" | "ended" | "idle" | "missing" | "unknown";
  *  that must still hold off the next mount's crew check - otherwise two rolls
  *  race for one segment, or a crew change made during a slow Start is lost.
  *  A Submit or a reconcile in flight is shared the same way. */
-const inFlight: { roll: boolean; start: boolean; submit: boolean; reconcile: Promise<LiveState> | null } = {
+const inFlight: {
+    roll: boolean;
+    /** End or Pause pressed while a roll was out: it must not restart the clock. */
+    stoppedDuringRoll: boolean;
+    start: boolean;
+    submit: boolean;
+    reconcile: Promise<LiveState> | null;
+} = {
     roll: false,
+    stoppedDuringRoll: false,
     start: false,
     submit: false,
     reconcile: null,
@@ -315,6 +323,7 @@ function TimingPage({
         }
 
         inFlight.roll = true;
+        inFlight.stoppedDuringRoll = false;
         // Set when the build turns out to have been ended from elsewhere: the
         // clock has been cleared, and must not be started again below.
         let keepStopped = false;
@@ -401,7 +410,7 @@ function TimingPage({
             // was out, the build may have been ended from another timer, or
             // End/Submit pressed - a restart then runs a clock with no build
             // behind it, and its next Submit records a build nobody worked.
-            if (wasRunning && !keepStopped) {
+            if (wasRunning && !keepStopped && !inFlight.stoppedDuringRoll) {
                 const now = await window.electron.getSharedData();
                 if (now?.timerDone === false && Number(now?.currentSegmentId ?? 0) > 0 && !now?.isRunning) {
                     window.electron.timerStart();
@@ -635,24 +644,26 @@ function TimingPage({
                 isFirstRender.current = false;
                 track();
                 // A remount mid-build (the pause detour) can come back holding
-                // a crew change made just before the page left, whose settle
-                // timer died with it: the badge would then show someone the
-                // database never recorded. Compare with what the database
-                // holds and, where it differs, make that the baseline, so the
-                // check below rolls the difference.
+                // a 2nd-operator change made just before the page left, whose
+                // settle timer died with it: the badge would then show someone
+                // the database never recorded. Compare the crew with what the
+                // database holds and, where it differs, make that the
+                // baseline, so the check below rolls the difference. The
+                // crew only, never the builder: a different login resuming a
+                // recovered build is not a handover, and only the handover
+                // control may hand a build over.
                 if (!L.timerDone && Number(L.currentBuildId) > 0 && Number(L.currentSegmentId) > 0 && !inFlight.roll) {
                     void readRecordedCrew(Number(L.currentBuildId))
                         .then((rec) => {
                             if (!rec || !rec.live || inFlight.roll) return;
                             const now = latest.current;
-                            const dbCrew = rec.crew.map((b) => b.Id).sort((a, b) => a - b).join(",");
-                            const primaryDiffers = rec.primaryId != null && rec.primaryId !== now.primaryId;
-                            if (dbCrew === crew(now.secondaryBuilders) && !primaryDiffers) return;
+                            const dbCrew = rec.crew
+                                .map((b) => b.Id)
+                                .filter((id) => id !== now.primaryId)
+                                .sort((a, b) => a - b)
+                                .join(",");
+                            if (dbCrew === crew(now.secondaryBuilders)) return;
                             prevSecondaryBuilders.current = rec.crew;
-                            if (primaryDiffers) {
-                                prevPrimaryId.current = Number(rec.primaryId);
-                                prevSelectedUser.current = undefined;
-                            }
                             if (crewCheck.current) window.clearTimeout(crewCheck.current);
                             crewCheck.current = window.setTimeout(check, 0);
                         })
@@ -1386,6 +1397,9 @@ function TimingPage({
     }
 
     function pauseTimer() {
+        // A crew-change roll that is out will want to restart the clock it
+        // paused - the operator has stopped it on purpose (see handleBuilderChange).
+        if (inFlight.roll) inFlight.stoppedDuringRoll = true;
         closeBobbin();
         window.electron.timerPause();
         const pauseStartTime = formatTimestamp(new Date().toISOString())
@@ -1405,6 +1419,7 @@ function TimingPage({
 
     function resetTimer() {
         if (displayTimer === "00:00:00") return;
+        if (inFlight.roll) inFlight.stoppedDuringRoll = true;
         closeBobbin();
         window.electron.timerPause();
         if (!timerDone) {
