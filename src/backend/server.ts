@@ -630,6 +630,28 @@ async function migrate() {
 // --------------------
 
 /**
+ * Which scheduled jobs are finished work: every unit they owed has shipped -
+ * the RT-MCS board's own Completed test (RtMcs JobState.cs, Randy 2026-10-07:
+ * completed jobs ghost off the screen like on the board). Asked of RT-MCS
+ * rather than worked out here, so the panel can never disagree with the office
+ * screen. Read-only and public on RT-MCS; on any failure the Choose Kit page
+ * just shows every job as live.
+ */
+app.get("/api/jobs/shipped", async (_req, res) => {
+  try {
+    const r = await fetch(`${rtmcsUrl}/api/jobs/shipped`, { signal: AbortSignal.timeout(5_000) });
+    const out: any = await r.json().catch(() => null);
+    if (!r.ok || !out || !Array.isArray(out.shipped)) {
+      return res.json({ success: false, error: String(out?.error ?? `RtMcs answered HTTP ${r.status}`) });
+    }
+    res.json({ success: true, shipped: out.shipped.map(Number).filter(Number.isFinite) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.json({ success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` });
+  }
+});
+
+/**
  * `ready` deliberately keeps its old meaning - configured, present and a real
  * SQLite file - because App.tsx sends the operator to the database SETUP screen
  * when it is false. A share that is merely read-only is not a reason to ask

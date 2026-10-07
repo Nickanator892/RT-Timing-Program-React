@@ -1,9 +1,9 @@
 import "./chooseKitPage.css";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSharedState } from "../../hooks/useSharedState";
-import { useJobs, jobIsComplete, type Job } from "../../hooks/useJobs";
+import { useJobs, jobIsComplete, jobAllBuilt, type Job } from "../../hooks/useJobs";
 import RTLogo from "../../components/RTLogo/RTLogo";
 import BackButton from "../../common/buttons/backButton/backButton";
 import { requestGuardedChange } from "../../common/carryoverLock/carryoverLock";
@@ -17,8 +17,12 @@ import { requestGuardedChange } from "../../common/carryoverLock/carryoverLock";
  * looking at a card that reads the same and is called the same thing, instead of
  * the operator translating "rev 5450" into "the Schellvac constant kit".
  *
- * Finished jobs move into a collapsed Completed section rather than disappearing:
- * a late unit or a rework still has to be findable, just not in the way.
+ * Finished jobs ghost the way they do on the board (Randy, 2026-10-07): a job
+ * whose every unit has shipped - the board's own test, asked of RT-MCS - leaves
+ * the live list and comes after it, dimmed, under a "Completed" divider, in the
+ * same pages. It stays tappable: a late unit or a rework still has to be
+ * findable, just not in the way. A job that is only ALL BUILT stays live - it
+ * may still have Braid, Overmold or Final Test to time.
  */
 
 const JOBS_PER_PAGE = 4;
@@ -32,6 +36,7 @@ function fmtDate(s: string | null): string {
 function JobCard({ job, onChoose, busy }: { job: Job; onChoose: (j: Job) => void; busy: boolean }) {
     const pct = job.unitsTotal > 0 ? Math.min(100, (job.unitsBuilt / job.unitsTotal) * 100) : 0;
     const done = jobIsComplete(job);
+    const allBuilt = jobAllBuilt(job);
     const remaining = Math.max(0, job.unitsTotal - job.unitsBuilt);
 
     return (
@@ -61,7 +66,9 @@ function JobCard({ job, onChoose, busy }: { job: Job; onChoose: (j: Job) => void
                 </span>
                 <span className="job-progress">
                     <b>{job.unitsBuilt}</b> of {job.unitsTotal} built
-                    {done ? " · complete" : ` · ${remaining} to go`}
+                    {/* Shipped is the board's word and wins: a unit built off the timer still
+                        shipped, so "2 to go" on a finished job would be wrong. */}
+                    {done ? " · all shipped" : allBuilt ? " · all built" : ` · ${remaining} to go`}
                 </span>
             </span>
 
@@ -71,7 +78,8 @@ function JobCard({ job, onChoose, busy }: { job: Job; onChoose: (j: Job) => void
                 )}
                 {job.shortLines > 0 && <span className="chip c-short">SHORT · {job.shortLines}</span>}
                 {job.inStock > 0 && <span className="chip c-stock">IN STOCK · {job.inStock}</span>}
-                {done && <span className="chip c-ready">COMPLETE</span>}
+                {done && <span className="chip c-ready">SHIPPED</span>}
+                {!done && allBuilt && <span className="chip c-ready">ALL BUILT</span>}
             </span>
 
             <span className="job-dates">
@@ -88,7 +96,6 @@ function ChooseKitPage() {
     const [, setSelectedJob] = useSharedState<Job | null>("selectedJob", null);
 
     const [page, setPage] = useState(0);
-    const [showDone, setShowDone] = useState(false);
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState("");
 
@@ -99,9 +106,14 @@ function ChooseKitPage() {
         return { active: a, completed: c };
     }, [jobs]);
 
+    // Live jobs first, then the finished ones - one list, paged together, like
+    // the board's running list with its Completed block underneath.
+    const ordered = useMemo(() => [...active, ...completed], [active, completed]);
     const start = page * JOBS_PER_PAGE;
-    const shown = active.slice(start, start + JOBS_PER_PAGE);
-    const hasNext = active.length > start + JOBS_PER_PAGE;
+    const shown = ordered.slice(start, start + JOBS_PER_PAGE);
+    const hasNext = ordered.length > start + JOBS_PER_PAGE;
+    // The divider sits above the first finished job on every page that has one.
+    const firstDone = shown.findIndex(jobIsComplete);
 
     async function choose(job: Job) {
         if (busy) return;
@@ -144,33 +156,21 @@ function ChooseKitPage() {
                 </p>
             )}
             {!loading && active.length === 0 && completed.length > 0 && (
-                <p className="job-empty">Every scheduled job is complete.</p>
+                <p className="job-empty">Every scheduled job has shipped.</p>
             )}
 
             <div className="job-list">
-                {shown.map((job) => (
-                    <JobCard key={job.msid} job={job} onChoose={choose} busy={busy} />
+                {shown.map((job, i) => (
+                    <Fragment key={job.msid}>
+                        {i === firstDone && (
+                            <h3 className="job-completed-head">
+                                Completed · {completed.length} Job{completed.length === 1 ? "" : "s"} Fully Shipped
+                            </h3>
+                        )}
+                        <JobCard job={job} onChoose={choose} busy={busy} />
+                    </Fragment>
                 ))}
             </div>
-
-            {completed.length > 0 && (
-                <div className="job-completed">
-                    <button
-                        type="button"
-                        className="job-completed-toggle"
-                        onClick={() => setShowDone((v) => !v)}
-                    >
-                        {showDone ? "▾" : "▸"} Completed ({completed.length})
-                    </button>
-                    {showDone && (
-                        <div className="job-list">
-                            {completed.map((job) => (
-                                <JobCard key={job.msid} job={job} onChoose={choose} busy={busy} />
-                            ))}
-                        </div>
-                    )}
-                </div>
-            )}
 
             <p className="job-error">{err}</p>
 
