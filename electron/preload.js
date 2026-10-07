@@ -35,6 +35,15 @@ contextBridge.exposeInMainWorld("electron", {
     // Window management
     openAnalyticsWindow: () => ipcRenderer.send("open-analytics-window"),
     quitApp: () => ipcRenderer.send("quit-app"),
+    getWindowState: () => ipcRenderer.invoke("get-window-state"),
+    setFullScreen: (on) => ipcRenderer.send("set-full-screen", on),
+    onWindowStateChanged: (callback) => {
+        const subscription = (event, state) => callback(state);
+        ipcRenderer.on("window-state-changed", subscription);
+        return () => {
+            ipcRenderer.removeListener("window-state-changed", subscription);
+        };
+    },
 
     // Navigation
     onNavigateTo: (callback) => {

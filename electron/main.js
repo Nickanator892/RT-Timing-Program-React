@@ -543,6 +543,48 @@ ipcMain.on("open-analytics-window", () => {
 // --------------------
 // Window management
 // --------------------
+
+// Randy, 2026-10-07: the panel runs the timer FULL SCREEN - no title bar, no
+// taskbar - so the whole 1280x800 is the timer. Full screen, not kiosk, so it
+// can still be left: the corner control (common/windowControl) leaves it, or
+// closes the app through confirmClose like the title-bar X did. The panel is
+// the only Linux station, so a Windows desk copy stays windowed;
+// RT_TIMING_FULLSCREEN=1 / =0 forces it either way.
+// The analytics window is unchanged: the panel has ONE display (DSI-2), so it
+// still opens as a normal maximized window over the timer when a harness is
+// picked. Leaving full screen brings the taskbar back to reach it later.
+function wantFullScreen() {
+    if (process.env.RT_TIMING_FULLSCREEN === "1") return true;
+    if (process.env.RT_TIMING_FULLSCREEN === "0") return false;
+    return process.platform === "linux";
+}
+
+// resizable:false pins the window to its 1280x720 creation size, and on the
+// Windows bench (2026-10-07) that held a "full screen" window at 1280x720. The
+// limit comes off before going full screen and stays off: a full-screen window
+// has no edges to drag, and putting it back while the window manager is still
+// restoring the window could pin it to the wrong size.
+function setTimerFullScreen(win, on) {
+    if (on) win.setResizable(true);
+    win.setFullScreen(on);
+}
+
+function sendWindowState(win) {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send("window-state-changed", { fullScreen: win.isFullScreen() });
+}
+
+ipcMain.handle("get-window-state", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return { fullScreen: !!win && !win.isDestroyed() && win.isFullScreen() };
+});
+
+// Only the timer window has the control; analytics keeps its own title bar.
+ipcMain.on("set-full-screen", (event, on) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && win === mainWindow && !win.isDestroyed()) setTimerFullScreen(win, !!on);
+});
+
 function createMainWindow() {
     const displays = screen.getAllDisplays();
     const targetDisplay = displays[0];
@@ -566,7 +608,13 @@ function createMainWindow() {
         mainWindow.setPosition(x, y)
         mainWindow.maximize()
         mainWindow.show()
+        // After maximize + show, so leaving full screen lands back on the
+        // maximized window rather than a 1280x720 one.
+        if (wantFullScreen()) setTimerFullScreen(mainWindow, true)
     })
+
+    mainWindow.on("enter-full-screen", () => sendWindowState(mainWindow));
+    mainWindow.on("leave-full-screen", () => sendWindowState(mainWindow));
 
     windows.push(mainWindow);
 

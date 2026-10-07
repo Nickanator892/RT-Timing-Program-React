@@ -17,6 +17,7 @@ import OnScreenKeyboard from "./common/onScreenKeyboard/onScreenKeyboard";
 import Screensaver from "./common/screensaver/screensaver";
 import HandoffOffer from "./common/handoffOffer/handoffOffer";
 import CarryoverLockGuard, { requestGuardedChange } from "./common/carryoverLock/carryoverLock";
+import WindowControl from "./common/windowControl/windowControl";
 
 const API_BASE = "http://localhost:5000";
 
@@ -133,6 +134,9 @@ function TimerLayout() {
             <OnScreenKeyboard />
             <Screensaver />
             <HandoffOffer />
+            {/* The timer runs full screen on the panel: no title bar, so this
+                is the way to leave full screen or close the app. */}
+            <WindowControl />
             {/* Mounted here, not inside TimingPage, so it can also catch the
                 App.tsx setHarn backstop above (fires from /choose-harn) - see
                 carryoverLock.tsx's doc comment. */}
@@ -170,6 +174,7 @@ function App() {
             <>
                 <DatabaseSetup onDbSet={checkDbStatus} />
                 <OnScreenKeyboard />
+                <WindowControl />
             </>
         );
 

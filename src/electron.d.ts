@@ -61,6 +61,9 @@ declare global {
             }) => Promise<{ ok: boolean }>;
             dismissRecovery: () => void;
             quitApp: () => void;
+            getWindowState: () => Promise<{ fullScreen: boolean }>;
+            setFullScreen: (on: boolean) => void;
+            onWindowStateChanged?: (callback: (state: { fullScreen: boolean }) => void) => () => void;
             runUpdater: () => Promise<void>;
         };
     }
