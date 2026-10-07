@@ -15,12 +15,15 @@ interface chartData {
         formattedTime: string;
     };
     currentTimeSeconds: string;
+    // false for a mode with no pricing target (Packaging): no estimate line.
+    showEstimate?: boolean;
 }
 
 function AnalyticsChart({
     loggedTimes,
     buildTimeEst,
     currentTimeSeconds,
+    showEstimate = true,
 }: chartData) {
     const chartData =
         loggedTimes.length > 0
@@ -58,7 +61,11 @@ function AnalyticsChart({
 
     const estimateMinutes = buildTimeEst.seconds / 60;
 
-    const allValues = [...chartData.map((d) => d.y), estimateMinutes, currentTimeMinutes];
+    const allValues = [
+        ...chartData.map((d) => d.y),
+        ...(showEstimate ? [estimateMinutes] : []),
+        currentTimeMinutes,
+    ];
     const yMax = Math.ceil(Math.max(...allValues) * 1.2);
 
     const apexOptions: ApexOptions = useMemo(
@@ -104,20 +111,24 @@ function AnalyticsChart({
             },
             annotations: {
                 yaxis: [
-                    {
-                        y: buildTimeEst.seconds / 60,
-                        borderColor: "#F527F5",
-                        strokeDashArray: 0,
-                        borderWidth: 2,
-                        label: {
-                            borderColor: "#FF4560",
-                            style: {
-                                color: "#FFFFFF",
-                                background: "#000000",
-                            },
-                            text: "Estimated Time",
-                        },
-                    },
+                    ...(showEstimate
+                        ? [
+                              {
+                                  y: buildTimeEst.seconds / 60,
+                                  borderColor: "#F527F5",
+                                  strokeDashArray: 0,
+                                  borderWidth: 2,
+                                  label: {
+                                      borderColor: "#FF4560",
+                                      style: {
+                                          color: "#FFFFFF",
+                                          background: "#000000",
+                                      },
+                                      text: "Estimated Time",
+                                  },
+                              },
+                          ]
+                        : []),
                     {
                         y: currentTimeMinutes,
                         borderColor: "#FF4560",
@@ -149,7 +160,7 @@ function AnalyticsChart({
                 theme: "dark",
             },
         }),
-        [currentTimeMinutes, buildTimeEst.seconds, currentTimeSeconds]
+        [currentTimeMinutes, buildTimeEst.seconds, currentTimeSeconds, showEstimate]
     );
 
     return (

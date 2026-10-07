@@ -122,7 +122,7 @@ export function jobIsComplete(job: Job): boolean {
 }
 
 /** Every unit the timer was asked for has been built - the job may still have
- *  Braid, Overmold or Final Test to do, and it stays in the live list. */
+ *  Braid, Overmold, Final Test or Packaging to do, and it stays in the live list. */
 export function jobAllBuilt(job: Job): boolean {
     return job.unitsTotal > 0 && job.unitsBuilt >= job.unitsTotal;
 }
