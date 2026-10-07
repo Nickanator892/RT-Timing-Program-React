@@ -1519,11 +1519,6 @@ function TimingPage({
             // what was actually still owed (item 4's rule).
             const remainingForExcess = unitsTotal - (freshUnitsBuilt ?? 0);
             const excessUnits = decision ? Math.max(0, units - Math.max(remainingForExcess, 0)) : 0;
-            // With the live build's segments, each unit's SECONDARYBUILDERS is
-            // that build's last roster (the latest segment's crew) - the
-            // table's meaning everywhere else. Without them, the roster on
-            // screen, as before.
-            const lastRoster = crewStretches.length ? crewStretches[crewStretches.length - 1].crewIds : null;
             const buildIds = await writeDistributedTimes({
                 harnNumber: selectedHarn,
                 rev: buildKit?.REV,
@@ -1534,7 +1529,10 @@ function TimingPage({
                 endMs,
                 workedMs,
                 numberOfBuilders: batchSecondaryIds.length + 1,
-                secondaryBuilderIds: lastRoster ?? batchSecondaryIds,
+                // Only used without the live build's segments (its Start was
+                // never recorded): with them, each unit names the crew of the
+                // pieces it got (crewSlices.ts).
+                secondaryBuilderIds: batchSecondaryIds,
                 unitDecision: decision ?? undefined,
                 excessUnits,
                 crewStretches,

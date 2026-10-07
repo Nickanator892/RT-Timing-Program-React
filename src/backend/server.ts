@@ -292,7 +292,30 @@ function runTransaction(
  */
 let segCrewSeen = false;
 let segCrewCheckedAt = 0;
+/**
+ * The table existing is not enough: on 2026-10-07 a dev RT-MCS started against
+ * the live file by mistake created it while the RT-MCS serving the shop
+ * (1.0.31) still refused it - "table not allowed for the timer:
+ * HARNBUILDSEGCREW" - so a table-exists check alone would have failed every
+ * Start and every crew change. What decides is how RT-MCS answers: a write is
+ * sent with its crew rows, and if the proxy refuses the table, the same write
+ * goes again without them and this panel stops naming the table until it
+ * restarts (the next app start asks again).
+ */
+let segCrewRefused = false;
+function isSegCrewRefusal(err: unknown): boolean {
+  return /not allowed[^\n]*HARNBUILDSEGCREW/i.test(String((err as any)?.message ?? err ?? ""));
+}
+function noteSegCrewRefusal(err: unknown): boolean {
+  if (!isSegCrewRefusal(err)) return false;
+  if (!segCrewRefused) {
+    console.warn("RtMcs refuses HARNBUILDSEGCREW - writing without per-segment crew rows until restart:", String(err));
+  }
+  segCrewRefused = true;
+  return true;
+}
 async function hasSegCrew(): Promise<boolean> {
+  if (segCrewRefused) return false;
   if (segCrewSeen) return true;
   if (Date.now() - segCrewCheckedAt < 60_000) return false;
   segCrewCheckedAt = Date.now();
@@ -869,7 +892,7 @@ app.post("/api/build/start", async (req, res) => {
   // by this app's own migrate() (see ensureColumn above), which is skipped
   // entirely while RtMcs is unreachable - if the column is not there yet,
   // insert without it and log, rather than failing the whole build/start.
-  function buildStatements(withDecisionColumn: boolean) {
+  function buildStatements(withDecisionColumn: boolean, withSegCrew: boolean) {
     return [
       { query: `INSERT INTO HARNBUILDS (harnNumber) VALUES (?)`, params: [harnNumber], requireChanges: 1 },
       withDecisionColumn
@@ -905,16 +928,26 @@ app.post("/api/build/start", async (req, res) => {
     ];
   }
 
-  const withSegCrew = await hasSegCrew();
   try {
+    let withSegCrew = await hasSegCrew();
+    let withDecision = decision != null;
     let out;
-    try {
-      out = await mustRun(buildStatements(decision != null));
-    } catch (err) {
-      if (decision != null && /(no such column|has no column named).*unitDecision/i.test(String(err))) {
-        console.warn("build/start: HARNBUILDTIMES.unitDecision not present yet - inserting without it:", err);
-        out = await mustRun(buildStatements(false));
-      } else {
+    // Each fallback is taken at most once: an RT-MCS that refuses the crew
+    // table, and a database without unitDecision yet.
+    for (;;) {
+      try {
+        out = await mustRun(buildStatements(withDecision, withSegCrew));
+        break;
+      } catch (err) {
+        if (withSegCrew && noteSegCrewRefusal(err)) {
+          withSegCrew = false;
+          continue;
+        }
+        if (withDecision && /(no such column|has no column named).*unitDecision/i.test(String(err))) {
+          console.warn("build/start: HARNBUILDTIMES.unitDecision not present yet - inserting without it:", err);
+          withDecision = false;
+          continue;
+        }
         throw err;
       }
     }
@@ -970,7 +1003,9 @@ app.post("/api/build/segment-roll", async (req, res) => {
       (id: any) => resolvedPrimary == null || Number(id) !== resolvedPrimary
     );
     const builders = Math.max(1, filteredSecondaryIds.length + 1);
-    const withSegCrew = await hasSegCrew();
+    // Built twice at most: with the crew rows, and - if RT-MCS refuses the
+    // table (see isSegCrewRefusal) - the same roll without them.
+    const rollStatements = (withSegCrew: boolean) => {
     const statements: { query: string; params?: any[]; requireChanges?: number }[] = [
       {
         query: `UPDATE HARNBUILDSEGMENTS
@@ -1030,8 +1065,19 @@ app.post("/api/build/segment-roll", async (req, res) => {
         params: [buildId, buildId, id],
       }))
     );
-    const out = await mustRun(statements);
-    res.json({ success: true, result: { segmentId: Number(out[newSegmentAt].lastID), startTime: now } });
+    return { statements, newSegmentAt };
+    };
+    const withSegCrew = await hasSegCrew();
+    let roll = rollStatements(withSegCrew);
+    let out;
+    try {
+      out = await mustRun(roll.statements);
+    } catch (err) {
+      if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
+      roll = rollStatements(false);
+      out = await mustRun(roll.statements);
+    }
+    res.json({ success: true, result: { segmentId: Number(out[roll.newSegmentAt].lastID), startTime: now } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -1199,9 +1245,9 @@ app.post("/api/build/discard", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const buildId = Number(req.body?.buildId);
   if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
-  const withSegCrew = await hasSegCrew();
-  try {
-    const out = await mustRun([
+  // Built twice at most, like a roll: without the crew table's statements if
+  // RT-MCS refuses them (see isSegCrewRefusal).
+  const discardStatements = (withSegCrew: boolean) => [
       {
         query: `SELECT startTime, endTime, pauseReasonId FROM HARNBUILDTIMES
                  WHERE buildId = ? AND timeTypeId = 4 ORDER BY startTime`,
@@ -1234,7 +1280,17 @@ app.post("/api/build/discard", async (req, res) => {
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
       ...(withSegCrew ? [{ query: `DELETE FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }] : []),
-    ]);
+  ];
+  try {
+    let withSegCrew = await hasSegCrew();
+    let out;
+    try {
+      out = await mustRun(discardStatements(withSegCrew));
+    } catch (err) {
+      if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
+      withSegCrew = false;
+      out = await mustRun(discardStatements(false));
+    }
     res.json({
       success: true,
       result: {
@@ -1251,8 +1307,9 @@ app.post("/api/build/discard", async (req, res) => {
   }
 });
 
-/** Whether HARNBUILDSEGCREW exists yet - for the batch writes, which the page
- *  makes itself through /api/query (see hasSegCrew). */
+/** Whether HARNBUILDSEGCREW can be written - the table exists and RT-MCS has
+ *  not refused it this session - for the batch writes, which the page makes
+ *  itself through /api/query (see hasSegCrew). */
 app.get("/api/build/crew-table", async (_req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   res.json({ success: true, result: { present: await hasSegCrew() } });
@@ -1342,6 +1399,10 @@ app.post("/api/query", async (req, res) => {
     }
     const result = await runQuery(query, params ?? []);
     if (!result.success) {
+      // A batch writes its crew rows through here (timeDistribution.ts). An
+      // RT-MCS that refuses the table turns them off for the session, the
+      // same as a refused Start or roll does.
+      noteSegCrewRefusal(result.error);
       return res.status(500).json({ success: false, error: result.error });
     }
     res.json({ success: true, result: result.result });

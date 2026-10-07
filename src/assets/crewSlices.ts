@@ -60,6 +60,10 @@ export interface UnitCrew {
     pieces: UnitPiece[];
     /** HARNBUILDTIMES.builderId: whoever was on the build last, as a handover leaves it. */
     builderId: number | null;
+    /** SECONDARYBUILDERS for the unit: everyone in the crew of any piece it got,
+     *  so a helper who left before Submit still shows on the units they worked
+     *  (the Hub names crew from this table). Never the unit's builder. */
+    secondaryIds: number[];
     /** HARNBUILDTIMES.numberOfBuilders: the most people on any of its pieces (display only - labour comes from the segments). */
     numberOfBuilders: number;
 }
@@ -114,10 +118,12 @@ export function resolveCrewStretches(args: {
  * floor(a_j / units) seconds plus one of the a_j mod units leftover seconds if
  * it is among the first ones, so the per-segment sums are exact. Each piece
  * keeps its segment's primary, head-count and crew; the pieces sit back to
- * back inside the unit's own wall-clock slice, each as long as its segment's
- * share of the run. A segment with no worked seconds is skipped, and so is a
- * piece that comes to 0 s for this unit (fewer seconds than units).
- * With no crew change at all, every unit is one piece, as before.
+ * back inside the unit's own wall-clock slice, each as long as its share of
+ * THAT unit's seconds. A segment with no worked seconds is skipped, and so is
+ * a piece that comes to 0 s for this unit (fewer seconds than units); a unit
+ * that gets 0 s overall carries one 0 s piece of the latest segment. With no
+ * crew change at all, every unit is one piece, as before. The RT-MCS phone
+ * timer splits the same way (agreed 2026-10-07).
  */
 export function crewPerUnit(stretches: CrewStretch[], units: number): UnitCrew[] {
     const n = Math.max(1, Math.floor(units));
@@ -143,16 +149,24 @@ export function crewPerUnit(stretches: CrewStretch[], units: number): UnitCrew[]
                 { seconds: 0, weight: 1, primaryId: last.primaryId, crewIds: last.crewIds, numberOfBuilders: last.numberOfBuilders },
             ];
         }
-        const weight = pieces.reduce((t, p) => t + p.weight, 0) || 1;
+        const unitSeconds = pieces.reduce((t, p) => t + p.seconds, 0);
+        const builderId = last.primaryId;
+        const secondaryIds: number[] = [];
+        for (const p of pieces) {
+            for (const id of p.crewIds) {
+                if (id !== builderId && !secondaryIds.includes(id)) secondaryIds.push(id);
+            }
+        }
         result.push({
             pieces: pieces.map((p) => ({
                 seconds: p.seconds,
-                share: p.weight / weight,
+                share: unitSeconds > 0 ? p.seconds / unitSeconds : 1 / pieces.length,
                 primaryId: p.primaryId,
                 crewIds: [...p.crewIds],
                 numberOfBuilders: p.numberOfBuilders,
             })),
-            builderId: last.primaryId,
+            builderId,
+            secondaryIds,
             numberOfBuilders: pieces.reduce((m, p) => Math.max(m, p.numberOfBuilders), 1),
         });
     }

@@ -67,11 +67,11 @@ export interface DistributedTimeArgs {
      * (crewSlices.ts). When given, every unit gets an equal share of every
      * segment - one closed segment per live segment, each with that segment's
      * primary, head-count and crew - and the units' seconds come from the
-     * segments rather than from workedMs. builderId and numberOfBuilders above
-     * are then not used for the units; secondaryBuilderIds still is - it is
-     * the SECONDARYBUILDERS roster written on each unit (the live build's last
-     * one). Omitted or empty (manual entry, or a batch whose Start was never
-     * recorded): every unit gets those three as before.
+     * segments rather than from workedMs. builderId, numberOfBuilders and
+     * secondaryBuilderIds above are then not used for the units: each unit's
+     * SECONDARYBUILDERS is everyone in the crew of the pieces it got. Omitted
+     * or empty (manual entry, or a batch whose Start was never recorded):
+     * every unit gets those three as before.
      */
     crewStretches?: CrewStretch[];
     /** Write HARNBUILDSEGCREW rows for each segment (only once RT-MCS has
@@ -108,6 +108,7 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         const crew = unitCrews?.[k];
         const builderId = crew ? crew.builderId ?? args.builderId ?? null : args.builderId;
         const numberOfBuilders = crew ? crew.numberOfBuilders : args.numberOfBuilders;
+        const secondaryBuilderIds = crew ? crew.secondaryIds : args.secondaryBuilderIds;
         const pieces = crew
             ? crew.pieces
             : [
@@ -192,7 +193,7 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         // candidate list, but this writes straight from shared state, so it
         // gets its own defensive filter rather than trusting every caller
         // upstream got that right.
-        for (const secondaryId of args.secondaryBuilderIds) {
+        for (const secondaryId of secondaryBuilderIds) {
             if (Number(secondaryId) === Number(builderId ?? -1)) continue;
             await execQuery("INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)", [
                 buildId,
