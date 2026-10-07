@@ -98,7 +98,22 @@ function setHeartbeatError(message) {
     broadcastNonTimer(sharedTimerData);
 }
 
-async function writeHeartbeat() {
+// One heartbeat at a time, in the order they were asked for. A crew change
+// registers its new segment while the clock is still paused for the roll (a
+// PAUSE heartbeat) and restarts the clock straight after (a RUN heartbeat).
+// Sent side by side they can land in either order, and when PAUSE lands last
+// the segment reads paused for up to a minute while the clock runs - RT-MCS
+// then credits nothing for that stretch if it releases the build (bench,
+// 2026-10-07: 9 of 28 rolls). Each write reads the state when it is actually
+// sent, so the last one to land is always the current one.
+let heartbeatChain = Promise.resolve(true);
+function writeHeartbeat() {
+    const run = heartbeatChain.then(writeHeartbeatNow, writeHeartbeatNow);
+    heartbeatChain = run.catch(() => false);
+    return run;
+}
+
+async function writeHeartbeatNow() {
     if (!currentSegmentId) return false;
     const segmentId = currentSegmentId;
     const out = await postJson("/api/heartbeat", {
