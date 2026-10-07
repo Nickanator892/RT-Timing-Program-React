@@ -418,7 +418,17 @@ async function ensureModuleLoads(mayRebuild: boolean): Promise<boolean> {
 }
 
 /**
- * Is somebody timing a build on this station right now?
+ * Is somebody timing a build on this station right now - is a clock RUNNING?
+ *
+ * Randy, 2026-10-07: a PAUSED (or ended, awaiting Submit) build no longer holds
+ * the update. Its worked time is already in the database (the pause writes the
+ * frozen accumSeconds and heartbeatState PAUSE at once), and the app comes back
+ * on it after the restart: session restore + the recovery flow put the operator
+ * on the same build, paused, with the time it had and - since 1.0.29 - the
+ * pause they took, start and reason. Only a running clock (heartbeatState RUN,
+ * which a bobbin-change hold keeps too) or an unknown state holds. Updates are
+ * only pushed outside 07:50-16:15 anyway; this is what lets one go through
+ * when somebody left a build paused overnight or over a break.
  *
  * Asked of the app's own backend rather than the database directly, so the
  * updater never opens the shared SQLite file.
@@ -454,7 +464,7 @@ async function buildInProgress(): Promise<boolean> {
                 // another panel's open build can never hold this one's update.
                 body: JSON.stringify({
                     query:
-                        "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS " +
+                        "SELECT segmentId, buildId, heartbeatState FROM HARNBUILDSEGMENTS " +
                         "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
                     params: [os.hostname()],
                 }),
@@ -466,9 +476,18 @@ async function buildInProgress(): Promise<boolean> {
             if (data?.success !== true || !Array.isArray(data?.result)) {
                 throw new Error(data?.error ? String(data.error) : `unexpected answer (HTTP ${res.status})`);
             }
-            if (data.result.length > 0) {
-                console.log(`A build is in progress (segment ${data.result[0].segmentId}) - leaving the app alone.`);
+            // Anything but an explicit PAUSE - RUN, or no state recorded - is a
+            // clock that may be running: hold.
+            const running = data.result.find((r: any) => String(r.heartbeatState ?? "").toUpperCase() !== "PAUSE");
+            if (running) {
+                console.log(`A build is in progress (segment ${running.segmentId}, ${running.heartbeatState ?? "no state"}) - leaving the app alone.`);
                 return true;
+            }
+            if (data.result.length > 0) {
+                console.log(
+                    `Build ${data.result[0].buildId} is open but PAUSED (segment ${data.result[0].segmentId}) - ` +
+                    `updating; the app restores it, paused, on restart.`
+                );
             }
             return false;
         } catch (e) {

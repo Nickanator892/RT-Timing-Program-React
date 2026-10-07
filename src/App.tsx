@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Route, Routes, useNavigate } from "react-router-dom";
 import TimingPage from "./pages/timingPage/timingPage";
 import DatabaseSetup from "./pages/databaseSetup.tsx/databaseSetup";
@@ -26,6 +26,21 @@ function TimerLayout() {
     const { pauseReasons } = useSettings();
     const [_pauseReason, setPauseReason] = useState<PauseReason | undefined>();
     const [pauseStart, setPauseStart] = useState<string | null>(null);
+    // Mirrored into the main process's shared state so the session file carries
+    // it across a restart (an update under a paused build, Randy 2026-10-07).
+    // One-way on purpose: nothing reads it back into this state except the
+    // recovery page, through main's restoredPause snapshot - so main's 1 s
+    // broadcasts can never echo an old value over a pause just taken. The first
+    // run is skipped: an empty mirror at mount would wipe the saved value before
+    // the recovery page has read the snapshot taken from it.
+    const pauseMirrored = useRef(false);
+    useEffect(() => {
+        if (!pauseMirrored.current) {
+            pauseMirrored.current = true;
+            return;
+        }
+        window.electron.updateSharedData({ pauseStart });
+    }, [pauseStart]);
 
     const [activeButton, setActiveButton] = useState<"start" | "pause" | "end" | "submit" | null>(
         null
@@ -124,6 +139,7 @@ function TimerLayout() {
                         <RecoveryPage
                             setPauseStart={setPauseStart}
                             setActiveButton={setActiveButton}
+                            setStatus={setErr}
                         />
                     }
                 />
