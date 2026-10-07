@@ -98,7 +98,7 @@ function TimingPage({
         "batchPauses",
         []
     );
-    const { writeTime, fetchTimes } = useTimes();
+    const { writeTime, fetchTimes, countOnRev } = useTimes();
     const nav = useNavigate();
 
     // Straight off the kit - no effect, no state. The scheduled quantity is
@@ -498,13 +498,14 @@ function TimingPage({
         if (!selectedHarn || timesFetched.current) return;
         timesFetched.current = true;
         async function loadBuiltCount() {
-            const result = await fetchTimes(selectedHarn, timerMode.id);
+            // fetchTimes still loads the chart's history; the built COUNT is this
+            // job's run only (countOnRev - HYSC-10004, 2026-10-07).
+            await fetchTimes(selectedHarn, timerMode.id);
             if (buildKit) {
                 const harness = buildKit.harnesses.find((h) => h.partNum === selectedHarn);
                 if (harness) setHarnTotal(harness.buildNumber);
-            }
-            if (Array.isArray(result)) {
-                setHarnBuilt(result.length);
+                const n = await countOnRev(selectedHarn, timerMode.id, buildKit.REV);
+                if (n != null) setHarnBuilt(n);
             }
         }
         loadBuiltCount();
@@ -1203,9 +1204,10 @@ function TimingPage({
             setTimerDone(true);
             setPauseStart(null);
 
-            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
-            if (Array.isArray(updatedTimes)) {
-                setHarnBuilt(updatedTimes.length);
+            await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
+            if (buildKit?.REV != null) {
+                const n = await countOnRev(selectedHarn, timerMode.id, buildKit.REV).catch(() => null);
+                if (n != null) setHarnBuilt(n);
             }
             setRefreshTrigger((prev) => prev + 1);
             setDbSuccess(`${units} units ✅`);
@@ -1385,10 +1387,15 @@ function TimingPage({
             setCurrentSegmentId(0);
             setTimerDone(true);
 
-            const updatedTimes = await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
-            if (Array.isArray(updatedTimes)) {
-                setHarnBuilt(updatedTimes.length);
+            await fetchTimes(selectedHarn, timerMode.id).catch(() => undefined);
+            // This job's run only - another job's builds of the same part number
+            // must not finish this one (HYSC-10004 BA R3, 2026-10-07).
+            let builtOnRev = harnBuilt + 1;
+            if (buildKit?.REV != null) {
+                const n = await countOnRev(selectedHarn, timerMode.id, buildKit.REV).catch(() => null);
+                if (n != null) builtOnRev = n;
             }
+            setHarnBuilt(builtOnRev);
             setRefreshTrigger((prev) => prev + 1); // ← triggers analytics to refresh
             setDbSuccess("Success✅");
             setErr("");
@@ -1400,7 +1407,7 @@ function TimingPage({
             // builder-change effect will not try to roll a segment.
             releaseSecondOperator("timing operation submitted");
 
-            if (harnBuilt + 1 >= harnTotal) {
+            if (harnTotal > 0 && builtOnRev >= harnTotal) {
                 setDbSuccess("ALL BUILT ✅");
             }
         } catch (e: any) {
