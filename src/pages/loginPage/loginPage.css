@@ -63,6 +63,38 @@
     padding-left: 3em;
 }
 
+/* The database cannot be used. The timer page's .db-warning colours, and
+   louder than the recovery banner: an empty builder list with no reason given
+   got the panel rebooted twice on 2026-10-07. Pinned to the bottom, out of
+   the flow: body centres this page vertically, so an in-flow banner over a
+   loaded list pushed everything up under the Select Builder heading. Under
+   the keyboard, screensaver and dialogs (z-index 10000+). */
+.login-db-warning {
+    position: fixed;
+    left: 50%;
+    bottom: 2vh;
+    transform: translateX(-50%);
+    width: 90vw;
+    box-sizing: border-box;
+    z-index: 10;
+    color: #ffdf5d;
+    background: #7a1f1f;
+    border: 2px solid #ffdf5d;
+    border-radius: 8px;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(14px, 1.3vw, 22px);
+    font-weight: bold;
+    padding: 1vh 1.2vw;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.login-db-warning-note {
+    font-weight: normal;
+    font-size: 0.85em;
+    margin-top: 0.4em;
+}
+
 /* Crash recovery: surfaced at login because restoring needs a builder first. */
 .login-recovery-banner {
     border: 3px solid #f5d327;

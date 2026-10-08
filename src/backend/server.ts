@@ -683,8 +683,15 @@ app.get("/api/db-status", async (_req, res) => {
         ? "the database is in WAL journal mode, which does not work over a network share - switch it back with PRAGMA journal_mode=DELETE"
         : String(probe?.error ?? "the database did not answer a test query");
     console.warn("Database not usable:", detail);
-    return res.json({ ready: true, writable: false, writeError: detail, journalMode: mode });
+    // readable:false is what tells the login page this is the database itself
+    // (it shows the builder list), not the RtMcs write path the timer page reports.
+    return res.json({ ready: true, readable: false, writable: false, writeError: detail, journalMode: mode });
   }
+
+  // A start (or a path change) while the database could not be read left the
+  // RtMcs key unloaded, and every write would stay held "key not loaded" until
+  // a restart. The database answers now, so read the key again.
+  if (!rtmcsKey) await loadRtmcsKey().catch((err) => console.warn("RtMcs key reload failed:", err));
 
   // Writes happen on the Windows host, so ask RtMcs whether IT can take a
   // write lock right now. The old r+ open of the file only proved the share
@@ -696,6 +703,7 @@ app.get("/api/db-status", async (_req, res) => {
   if (remote.writable && writeQueue.pending > 0) void flushWriteQueue();
   res.json({
     ready: true,
+    readable: true,
     writable: remote.writable,
     writeError: remote.writeError,
     writer: rtmcsUrl,
