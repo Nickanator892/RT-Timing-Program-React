@@ -1,4 +1,4 @@
-import { execSync, exec, execFile, spawn } from "child_process";
+import { execSync, exec, execFile, spawn, type ChildProcess } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -24,58 +24,273 @@ const MODULE_CACHE = `${process.env.HOME}/better-sqlite3-build/node_modules/bett
 const NPM_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const NPM_REBUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const VERIFY_TIMEOUT_MS = 30 * 1000;
+// The same for the steps around it: the .deb download (wget's own defaults are
+// a 15 min read timeout and 20 tries; it is ~180 MB, fetched while the app is
+// still up), the GitHub check, which at boot is all that stands between the
+// panel and the app, and the sudo cp/mv of the module.
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const GITHUB_TIMEOUT_MS = 30 * 1000;
+const MODULE_COPY_TIMEOUT_MS = 2 * 60 * 1000;
+// dpkg has NO limit (see dpkgOnce); past this it is taken to be hung. It waits,
+// a little, for a dpkg lock held by apt-daily or PackageKit - before the app
+// is stopped, and again (as a backstop) if dpkg still finds it taken.
+const DPKG_SLOW_MS = 20 * 60 * 1000;
+const DPKG_LOCK_WAIT_MS = 2 * 60 * 1000;
+const DPKG_LOCK_RETRY_MS = 10 * 1000;
+// Per user: a root-owned log left by a manual `sudo` run could not be reopened
+// by pi in sticky /tmp (fs.protected_regular).
+const DPKG_LOG = `/tmp/rt-timing-dpkg.${os.userInfo().uid}.log`;
+// How long the update notice waits for the restarted app's server to answer,
+// and then for its window: main.js shows it only after a recovery scan (up to
+// 8 s) and the page load.
+const APP_UP_WAIT_MS = 60 * 1000;
+const APP_WINDOW_GRACE_MS = 15 * 1000;
+// How often a notice that should be up but is not (no session yet at boot,
+// zenity gone) is asked for again.
+const NOTICE_RETRY_MS = 5 * 1000;
+const DEB_PATH = "/tmp/rt-timing.deb";
 
 // Single-instance lock: the boot-time service and the Settings-tab updater can
 // run concurrently, and the loser's `dpkg -i` overwrites the winner's rebuilt
 // module with the .deb's unusable one (seen 2026-08-27). mkdir is atomic; a
-// lock older than 30 minutes is treated as stale (crashed run).
+// lock older than 30 minutes is treated as stale (crashed run). A live run
+// touches it every minute, so "stale" means crashed and never just slow - with
+// the time limits above, a run that rebuilds can legitimately pass 20 minutes.
+// It holds an owner token, so a run that was taken over as stale can never
+// remove the lock of the run that took over.
 const LOCK_DIR = "/tmp/rt-timing-updater.lock";
+const LOCK_OWNER = path.posix.join(LOCK_DIR, "owner");
+const lockToken = `${process.pid} ${Date.now()}`;
 let lockHeld = false;
+let lockBeat: NodeJS.Timeout | undefined;
+function beatLock() {
+    clearInterval(lockBeat);
+    lockBeat = setInterval(() => {
+        try {
+            const now = new Date();
+            fs.utimesSync(LOCK_DIR, now, now);
+        } catch { /* gone - releaseLock() or a reboot */ }
+    }, 60 * 1000);
+    lockBeat.unref();
+}
+/** Owner token in the lock dir just made; on failure the dir goes again, so
+ *  a full or read-only /tmp cannot leave a lock that nobody holds. */
+function holdLock(): boolean {
+    try {
+        fs.writeFileSync(LOCK_OWNER, lockToken);
+    } catch {
+        try {
+            fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+        } catch { /* nothing more to do */ }
+        return false;
+    }
+    lockHeld = true;
+    beatLock();
+    return true;
+}
+function readOwner(dir: string): string {
+    try {
+        return fs.readFileSync(path.posix.join(dir, "owner"), "utf8");
+    } catch {
+        return "";   // none (or a lock made by an older updater)
+    }
+}
 function acquireLock(): boolean {
     try {
         fs.mkdirSync(LOCK_DIR);
-        lockHeld = true;
-        return true;
     } catch {
+        // Taken. Stale? Moved aside by rename, which only one taker can do to a
+        // given dir; and if what got moved is not the stale lock that was looked
+        // at (another taker already replaced it), it is put back.
         try {
-            const ageMs = Date.now() - fs.statSync(LOCK_DIR).mtimeMs;
-            if (ageMs > 30 * 60 * 1000) {
-                fs.rmdirSync(LOCK_DIR);
-                fs.mkdirSync(LOCK_DIR);
-                lockHeld = true;
-                return true;
+            const staleOwner = readOwner(LOCK_DIR);
+            if (Date.now() - fs.statSync(LOCK_DIR).mtimeMs <= 30 * 60 * 1000) return false;
+            const aside = `${LOCK_DIR}.stale.${process.pid}`;
+            fs.renameSync(LOCK_DIR, aside);
+            if (readOwner(aside) !== staleOwner) {
+                fs.renameSync(aside, LOCK_DIR);
+                return false;
             }
-        } catch {}
-        return false;
+            fs.rmSync(aside, { recursive: true, force: true });
+            fs.mkdirSync(LOCK_DIR);
+        } catch {
+            return false;
+        }
     }
+    return holdLock();
 }
 function releaseLock() {
     if (!lockHeld) return;   // never another run's lock
     lockHeld = false;
+    clearInterval(lockBeat);
     try {
+        if (fs.readFileSync(LOCK_OWNER, "utf8") !== lockToken) {
+            console.error("The updater lock was taken over as stale by another run - leaving it to that run.");
+            return;
+        }
+        fs.unlinkSync(LOCK_OWNER);
         fs.rmdirSync(LOCK_DIR);
     } catch {}
 }
 
-// Process groups runBounded() has started that may still be running.
+// Process groups spawnBounded() has started that may still be running.
 const liveGroups = new Set<number>();
+// The dpkg -i in progress, if any (runDpkg).
+let dpkgChild: ChildProcess | undefined;
+// True from the moment this run stopped the app until it has started it again.
+let appStoppedByUs = false;
 
 /**
- * Killed - systemctl stop, a shutdown, Ctrl-C or a closed window on the
- * Settings-tab run: take down what runBounded() started, which is in its own
- * process group and so no longer goes down with this one, and give the lock
- * back, so the next run is not shut out for half an hour.
+ * SIGINT (Ctrl-C) or SIGTERM (systemctl stop, a shutdown): take down what
+ * spawnBounded() started - it is in its own process group, so it no longer
+ * goes down with this one - and give the lock back, so the next run is not
+ * shut out for half an hour. Except while dpkg is installing: dpkg is never
+ * killed from here (see runDpkg), and the lock is what keeps a second run's
+ * download and dpkg off a live install - it is let go once dpkg has finished.
+ * Under systemd the unit's control-group kill ends dpkg too, so that is quick.
+ *
+ * SIGHUP - the Settings-tab run's window was closed - is not a reason to stop
+ * half way through an update that has already taken the app down: carry on,
+ * and the app comes back at the end. Output to the dead terminal is dropped,
+ * the spinners never touch stdin (see spin), and anything else that slips
+ * through is logged rather than allowed to kill the run half way.
  */
-for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
         for (const pgid of liveGroups) {
             try {
                 process.kill(-pgid, "SIGKILL");
             } catch { /* already gone */ }
         }
-        releaseLock();
-        process.exit(128 + (os.constants.signals[sig] ?? 0));
+        const code = 128 + (os.constants.signals[sig] ?? 0);
+        const leave = () => {
+            if (appStoppedByUs) {
+                console.error(
+                    `!!! ${sig}: the updater stopped with the timer app DOWN. It comes back with the next updater ` +
+                    `run (a reboot, 07:30, or Settings > Check for update).`
+                );
+            }
+            closeNotice();
+            releaseLock();
+            process.exit(code);
+        };
+        const installing = dpkgChild;
+        if (installing && installing.exitCode === null && installing.signalCode === null) {
+            console.error(`${sig} while dpkg is installing - keeping the lock (and the notice) until dpkg has finished.`);
+            installing.once("close", leave);
+            return;
+        }
+        leave();
     });
+}
+process.on("SIGHUP", () => {
+    console.error("The terminal was closed - carrying on with the update.");
+});
+for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", () => { /* a closed terminal */ });
+}
+process.on("uncaughtException", (e) => {
+    console.error(`!!! Unexpected error in the updater, carrying on: ${e?.stack ?? e}`);
+});
+process.on("unhandledRejection", (e: any) => {
+    console.error(`!!! Unhandled rejection in the updater: ${e?.stack ?? e}`);
+});
+
+/** An ora spinner that leaves stdin alone. ora's default (discardStdin) puts a
+ *  terminal's stdin into raw mode; when the Settings-tab window is closed that
+ *  turns into an EIO error that nothing handles, and the run died half way. */
+function spin(text: string) {
+    return ora({ text, discardStdin: false }).start();
+}
+
+/**
+ * A window on the panel while the app is down for an update or a rebuild, so
+ * nobody takes the empty screen for a hang and switches the Pi off - most
+ * likely what cut the 2026-10-07 install short (somebody was at the panel, and
+ * the Pi went down twice in seven minutes, both clean shutdowns).
+ *
+ * Best effort: no zenity or no display, no window, and the update goes on
+ * regardless. While one is wanted it is asked for again every few seconds -
+ * at boot the session can come up after the first try. zenity runs in its own
+ * session, so a closed Settings-tab terminal or Ctrl-C does not take it down;
+ * it reads its stdin, so whenever this script ends, however it ends, the pipe
+ * closes and --auto-close takes the window down with it (zenity 3.44
+ * progress.c: EOF + autoclose = quit). It never keeps this script alive: the
+ * child and its pipe are unref'd.
+ */
+let notice: ChildProcess | undefined;
+let noticeWanted: string | undefined;    // what the panel should be saying
+let noticeRetry: NodeJS.Timeout | undefined;
+/** Put the window up saying `text`, or make the one that is up say it. */
+function notify(text: string) {
+    noticeWanted = text;
+    if (notice) sayNotice(text);
+    else spawnNotice(text);
+    if (!noticeRetry) {
+        noticeRetry = setInterval(() => {
+            if (noticeWanted && !notice) spawnNotice(noticeWanted);
+        }, NOTICE_RETRY_MS);
+        noticeRetry.unref();
+    }
+}
+/** A window if none is wanted yet; one that is wanted keeps what it says. */
+function showNotice(text: string) {
+    if (noticeWanted) {
+        if (!notice) spawnNotice(noticeWanted);
+        return;
+    }
+    notify(text);
+}
+function spawnNotice(text: string) {
+    if (notice) return;
+    // The service runs with DISPLAY only; the panel's session is labwc on
+    // Wayland, with Xwayland on :0 (2026-10-07).
+    const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${os.userInfo().uid}`;
+    try {
+        const child = spawn("zenity", [
+            "--progress", "--pulsate", "--no-cancel", "--auto-close",
+            "--title=RT Timing", `--text=${text}`, "--width=560",
+        ], {
+            stdio: ["pipe", "ignore", "ignore"],
+            detached: true,
+            env: {
+                ...process.env,
+                DISPLAY: process.env.DISPLAY || ":0",
+                XDG_RUNTIME_DIR: runtimeDir,
+                WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY || "wayland-0",
+                XAUTHORITY: process.env.XAUTHORITY || path.posix.join(os.homedir(), ".Xauthority"),
+                DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || `unix:path=${runtimeDir}/bus`,
+            },
+        });
+        child.stdin?.on("error", () => { /* zenity already gone */ });
+        const forget = () => { if (notice === child) notice = undefined; };
+        child.on("error", forget);   // no zenity
+        child.on("exit", forget);    // no display, or closed by hand
+        child.unref();
+        (child.stdin as unknown as { unref?: () => void } | null)?.unref?.();
+        notice = child;
+    } catch { /* no window, carry on */ }
+}
+/** Change what the window says ("#..." lines on zenity's stdin; \n escapes). */
+function sayNotice(text: string) {
+    try {
+        notice?.stdin?.write(`# ${text.replace(/\n/g, "\\n")}\n`);
+    } catch { /* gone */ }
+}
+function closeNotice() {
+    noticeWanted = undefined;
+    clearInterval(noticeRetry);
+    noticeRetry = undefined;
+    const child = notice;
+    notice = undefined;
+    if (!child) return;
+    child.kill();
+    // One stuck on its display gets no second chance to hold anything up.
+    setTimeout(() => {
+        try {
+            child.kill("SIGKILL");
+        } catch { /* gone */ }
+    }, 2000).unref();
 }
 
 function run(command: string, cwd?: string): Promise<string> {
@@ -94,9 +309,27 @@ function run(command: string, cwd?: string): Promise<string> {
  * (node-gyp, make, the compiler) hold open - so a stuck step still hangs. Here
  * the command gets its own process group and the whole group goes.
  */
-function runBounded(command: string, timeoutMs: number, cwd?: string): Promise<string> {
+function runBounded(command: string, timeoutMs: number, opts: BoundedOptions = {}): Promise<string> {
+    return spawnBounded("/bin/sh", ["-c", command], timeoutMs, { label: command, ...opts });
+}
+
+interface BoundedOptions {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    /** How the command is named in errors (default: file and args). */
+    label?: string;
+}
+
+/** The same without a shell: `file` gets `args` exactly as given. */
+function spawnBounded(file: string, args: string[], timeoutMs: number, opts: BoundedOptions = {}): Promise<string> {
+    const command = opts.label ?? [file, ...args].join(" ");
     return new Promise((resolve, reject) => {
-        const child = spawn("/bin/sh", ["-c", command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(file, args, {
+            cwd: opts.cwd,
+            env: opts.env ?? process.env,
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
         const pgid = child.pid;
         if (pgid) liveGroups.add(pgid);
         let output = "";
@@ -127,7 +360,7 @@ function runBounded(command: string, timeoutMs: number, cwd?: string): Promise<s
             stopGroup();
             reject(Object.assign(
                 new Error(`timed out after ${Math.round(timeoutMs / 1000)} s: ${command}`),
-                { timedOut: true }
+                { timedOut: true, output }
             ));
         }, timeoutMs);
         const finish = (code: number | null, signal: NodeJS.Signals | null) => {
@@ -136,10 +369,10 @@ function runBounded(command: string, timeoutMs: number, cwd?: string): Promise<s
             clearTimeout(timer);
             clearTimeout(grace);
             if (code === 0) resolve(output);
-            else {
-                const tail = output.trim().split("\n").slice(-5).join(" | ");
-                reject(new Error(`${command} failed (${signal ?? `exit ${code}`}): ${tail}`));
-            }
+            else reject(Object.assign(
+                new Error(`${command} failed (${signal ?? `exit ${code}`}): ${gist(output)}`),
+                { output }
+            ));
         };
         child.on("error", (err) => {
             if (settled) return;
@@ -171,28 +404,98 @@ function runBounded(command: string, timeoutMs: number, cwd?: string): Promise<s
     });
 }
 
-function download(url: string, dest: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-        const process = spawn('wget', ['-O', dest, url], { stdio: 'ignore' });
-        process.on('close', (code) => {
-            if (code === 0) resolve();
-            else reject(new Error(`wget exited with code ${code}`));
-        });
-        process.on('error', reject);
-    });
+/** The line that says what went wrong, plus the last few. The compiler's or
+ *  node-gyp's own complaint first; then node's "Error: <file>: cannot open
+ *  shared object file", which node prints ABOVE its stack trace (the last
+ *  lines alone were just the trace, "code: 'ERR_DLOPEN_FAILED'"); then npm's. */
+function gist(output: string): string {
+    const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
+    const what =
+        lines.find((l) => /fatal error|\berror:|gyp ERR! (stack Error|build error)/.test(l)) ??
+        lines.find((l) => /^(\w*Error\b|npm (ERR!|error)|wget:|dpkg:|cp:|mv:)/.test(l));
+    return [...new Set([what, ...lines.slice(-4)].filter(Boolean))].join(" | ");
+}
+
+/**
+ * Fetch the release's .deb - while the app is still running: it is ~180 MB
+ * over the shop Wi-Fi, and it used to be fetched after the app was stopped,
+ * with the panel blank for as long as it took. Null if it could not be had;
+ * nothing has changed then.
+ */
+async function downloadRelease(release: any): Promise<string | null> {
+    const spinner = spin('Downloading the update...');
+    try {
+        const asset = release.assets.find((a: any) => a.name.endsWith(".deb"));
+        if (!asset) throw new Error("No .deb asset found in release");
+        // --timeout gives up on a stalled connection, the overall limit on the rest.
+        await spawnBounded("wget", ["-nv", "--timeout=60", "--tries=3", "-O", DEB_PATH, asset.browser_download_url],
+            DOWNLOAD_TIMEOUT_MS);
+        const size = fs.statSync(DEB_PATH).size;
+        if (typeof asset.size === "number" && size !== asset.size) {
+            throw new Error(`downloaded ${size} bytes, the release says ${asset.size}`);
+        }
+        spinner.succeed(`Downloaded ${asset.name} (${Math.round(size / (1024 * 1024))} MB)`);
+        return DEB_PATH;
+    } catch (e: any) {
+        spinner.fail(`Download failed - nothing was changed: ${e}`);
+        return null;
+    }
+}
+
+/**
+ * The installed version as "v1.2.3", or something that can never equal a tag
+ * when there is no complete install. The STATUS matters as much as the
+ * version: a dpkg run cut short (a reboot mid-install) leaves the new version
+ * recorded as half-installed, unpacked or half-configured, and comparing the
+ * version alone said "Already on latest" over a half-replaced app - so that
+ * now installs again. Once per boot per version, though, whatever state the
+ * first try left behind: if a reinstall that really ran did not cure it, doing
+ * it on every run would only take the app down every day for nothing (/tmp is
+ * emptied at boot). The mark is written only once dpkg has actually run.
+ */
+const REINSTALL_MARK = "/tmp/rt-timing-reinstall-tried";
+let reinstallFor = "";   // the version this run is reinstalling to repair its state
+async function installedVersion(): Promise<string> {
+    let out = "";
+    try {
+        out = (await run(`dpkg-query -W -f='\${Status}|\${Version}' rt-timing`)).trim();
+    } catch {
+        return "Not Installed";   // dpkg-query exits non-zero for an unknown package
+    }
+    const [status = "", version = ""] = out.split("|");
+    if (!version) return "Not Installed";
+    const [, flag, state] = status.split(" ");
+    // Complete, whatever the "want" (install, hold): triggers-* only wait on
+    // OTHER packages' triggers, and the app's own files are all in place.
+    if (flag === "ok" && ["installed", "triggers-pending", "triggers-awaited"].includes(state)) {
+        return `v${version}`;
+    }
+    if (flag === "reinstreq" || ["half-installed", "unpacked", "half-configured"].includes(state)) {
+        let tried = "";
+        try {
+            tried = fs.readFileSync(REINSTALL_MARK, "utf8");
+        } catch { /* not this boot */ }
+        if (tried === version) {
+            console.error(`dpkg still has rt-timing ${version} as "${status}" after a reinstall this boot - not trying again until the next boot.`);
+            return `v${version}`;
+        }
+        console.error(`dpkg has rt-timing ${version} as "${status}" - an install was cut short; it will be installed again.`);
+        reinstallFor = version;
+        return `v${version} (${status})`;
+    }
+    return "Not Installed";   // config-files, not-installed
 }
 
 async function getLatestVersion() {
-    const spinner = ora('Checking for updates...').start();
+    const spinner = spin('Checking for updates...');
     try {
         const REPO = "Nickanator892/RT-Timing-Program-React";
-        const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+        const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+            signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`GitHub answered HTTP ${response.status}`);
         const latestVersion = await response.json();
-        let currentVersion = await run("dpkg -l rt-timing | grep rt-timing | awk '{print $3}'");
-        currentVersion = `v${currentVersion.trim()}`;
-        if (currentVersion == "v") {
-            currentVersion = "Not Installed"
-        }
+        const currentVersion = await installedVersion();
         const latestString: string = latestVersion.tag_name.toString().trim();
         if (currentVersion === latestString) {
             spinner.succeed(`Already on latest version ${currentVersion}`);
@@ -238,7 +541,7 @@ async function appRunning(): Promise<boolean> {
 }
 
 async function killApplication() {
-    const spinner = ora('Stopping application...').start();
+    const spinner = spin('Stopping application...');
     try {
         await run(`fuser -k ${serverPort}/tcp`);
         spinner.text = 'Killed server, stopping the app...';
@@ -276,26 +579,148 @@ async function killApplication() {
     spinner.succeed('Application stopped (forced)');
 }
 
-async function installFiles(newVersion: any) {
-    const spinner = ora('Preparing installation...').start();
+/** Install the downloaded .deb. False if dpkg failed - part way, possibly,
+ *  which the module check before the start copes with. */
+async function installDeb(deb: string): Promise<boolean> {
+    const spinner = spin('Running installer...');
+    let ran = false;
     try {
-        const asset = newVersion.assets.find((a: any) => a.name.endsWith(".deb"));
-        if (!asset) throw new Error("No .deb asset found in release");
-        spinner.text = 'Downloading installer...';
-        await download(asset.browser_download_url, '/tmp/rt-timing.deb');
-        spinner.text = 'Running installer...';
-        await run(`sudo dpkg -i /tmp/rt-timing.deb`);
+        await runDpkg(deb);
+        ran = true;
         spinner.succeed('Installation complete!');
+        return true;
     } catch(e: any) {
+        // A lock that never came free, or a dpkg that never started, is not a
+        // reinstall that failed.
+        ran = !e?.locked && !e?.notRun;
         spinner.fail(`Installation failed: ${e}`);
+        return false;
+    } finally {
+        if (reinstallFor && ran) {
+            try {
+                fs.writeFileSync(REINSTALL_MARK, reinstallFor);
+            } catch { /* then it may be tried again; no worse than before */ }
+        }
     }
+}
+
+/** Is another package tool (apt-daily, PackageKit, a desktop update) holding
+ *  dpkg's locks? Asked BEFORE the app is stopped, so waiting costs nothing. */
+async function dpkgBusy(): Promise<boolean> {
+    try {
+        await run("sudo -n fuser -s /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock");
+        return true;    // fuser found a process with one of them open
+    } catch {
+        return false;   // none (or no fuser/sudo - then dpkg's own retry is the backstop)
+    }
+}
+async function waitForDpkg(): Promise<boolean> {
+    const giveUp = Date.now() + DPKG_LOCK_WAIT_MS;
+    while (await dpkgBusy()) {
+        if (Date.now() > giveUp) return false;
+        console.log(`Another package tool is using dpkg - waiting ${DPKG_LOCK_RETRY_MS / 1000} s before stopping the app...`);
+        await new Promise((r) => setTimeout(r, DPKG_LOCK_RETRY_MS));
+    }
+    return true;
+}
+
+/** dpkg -i, waiting up to DPKG_LOCK_WAIT_MS for a dpkg lock held by another
+ *  package tool (apt-daily, PackageKit): dpkg itself fails at once on it. */
+async function runDpkg(deb: string): Promise<void> {
+    const giveUp = Date.now() + DPKG_LOCK_WAIT_MS;
+    for (;;) {
+        try {
+            await dpkgOnce(deb);
+            return;
+        } catch (e: any) {
+            if (!e?.locked || Date.now() > giveUp) throw e;
+            console.error(`dpkg is locked by another package tool - trying again in ${DPKG_LOCK_RETRY_MS / 1000} s.`);
+            await new Promise((r) => setTimeout(r, DPKG_LOCK_RETRY_MS));
+        }
+    }
+}
+
+/**
+ * One `sudo dpkg -i`, with NO time limit and in its own session: killing dpkg
+ * part way is exactly the half-installed app this script has to look out for,
+ * so nothing here kills it - not a limit, not the signal handler (it waits for
+ * dpkg instead), and not a closed window on the Settings-tab run (no terminal
+ * signals reach another session). `systemctl stop` still can, deliberately.
+ * Its output goes to a file, not to pipes into this script, so dpkg and its
+ * maintainer scripts never write into a closed pipe, and nothing they leave
+ * running can keep this waiting once dpkg has exited. Non-interactive, keeping
+ * any locally changed conffile: with no terminal a prompt would abort it.
+ * Past DPKG_SLOW_MS it is taken to be hung: said loudly (and on the panel),
+ * and the lock is no longer kept fresh, so a later run can take over.
+ */
+function dpkgOnce(deb: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let fd: number;
+        try {
+            fd = fs.openSync(DPKG_LOG, "w");
+        } catch (e) {
+            reject(Object.assign(e as Error, { notRun: true }));
+            return;
+        }
+        let child: ChildProcess;
+        try {
+            child = spawn("sudo", [
+                "env", "DEBIAN_FRONTEND=noninteractive",
+                "dpkg", "--force-confdef", "--force-confold", "-i", deb,
+            ], { detached: true, stdio: ["ignore", fd, fd] });
+        } finally {
+            fs.closeSync(fd);   // the child has its own copy
+        }
+        dpkgChild = child;
+        let settled = false;
+        const slow = setTimeout(() => {
+            console.error(
+                `dpkg has been running for ${DPKG_SLOW_MS / 60000} minutes and looks hung - leaving it be. ` +
+                `The lock is no longer kept fresh, so a later run can take over.`
+            );
+            notify("This is taking much longer than it should.\nLeave the Pi switched on and get someone to look at it.");
+            clearInterval(lockBeat);
+        }, DPKG_SLOW_MS);
+        const done = (err?: Error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(slow);
+            if (dpkgChild === child) dpkgChild = undefined;
+            if (lockHeld) beatLock();   // in case the slow mark stopped it
+            if (err) reject(err);
+            else resolve();
+        };
+        child.on("error", (err) => done(Object.assign(err, { notRun: true })));
+        child.on("close", (code, signal) => {
+            if (code === 0) return done();
+            let output = "";
+            try {
+                output = fs.readFileSync(DPKG_LOG, "utf8").slice(-4000);
+            } catch { /* no log */ }
+            done(Object.assign(new Error(`sudo dpkg -i failed (${signal ?? `exit ${code}`}): ${gist(output)}`), {
+                output,
+                locked: /locked by another process|could not get lock|frontend lock/i.test(output),
+            }));
+        });
+    });
 }
 
 /** dlopen the EXACT file - a bare require() can resolve a different copy of
  *  the module and pass while the file we are about to ship does not exist
  *  (seen 2026-08-27: verify passed, cp then failed, app came up broken). */
 async function verifyModuleFile(file: string) {
-    await runBounded(`node -e "process.dlopen(module, '${file}')"`, VERIFY_TIMEOUT_MS);
+    await spawnBounded("node", ["-e", "process.dlopen(module, process.argv[1])", file], VERIFY_TIMEOUT_MS);
+}
+
+/** verifyModuleFile, asked again once if it only TIMED OUT - a Pi still busy
+ *  after a two-minute compile is not a reason to throw a good build away. */
+async function verifyPatiently(file: string) {
+    try {
+        await verifyModuleFile(file);
+    } catch (e: any) {
+        if (!e?.timedOut) throw e;
+        await verifyModuleFile(file);
+    }
 }
 
 /** Put `source` in place as the app's module, then prove the installed file
@@ -303,12 +728,68 @@ async function verifyModuleFile(file: string) {
  *  the old file open keeps its own copy rather than having it rewritten
  *  underneath it. */
 async function installModule(source: string) {
-    await run(`sudo cp ${source} ${MODULE_TARGET}.new && sudo mv -f ${MODULE_TARGET}.new ${MODULE_TARGET}`);
-    await verifyModuleFile(MODULE_TARGET);
+    await spawnBounded("sudo", ["cp", source, `${MODULE_TARGET}.new`], MODULE_COPY_TIMEOUT_MS);
+    await spawnBounded("sudo", ["mv", "-f", `${MODULE_TARGET}.new`, MODULE_TARGET], MODULE_COPY_TIMEOUT_MS);
+    await verifyPatiently(MODULE_TARGET);
 }
 
-async function fixSQLite() {
-    const spinner = ora('Rebuilding better-sqlite3 for the system Node - this may take a few minutes...').start();
+/**
+ * Build better-sqlite3 from source in this clone, for the system node, and
+ * prove the result loads.
+ *
+ * `npm rebuild` first, as always, but with build-from-source passed in the
+ * environment rather than as `--build-from-source`: npm 11.19 already warns
+ * that flag "will stop working in the next major version", npm 12 rejects
+ * unknown flags outright, and the environment form is still honoured there.
+ * npm 12 also stops running dependencies' install scripts unless package.json
+ * allows them. When npm compiled nothing at all, the package's own
+ * `build-release` script (node-gyp rebuild --release - all the install script
+ * ends up running here) is run explicitly: an `npm run` in the package is not
+ * a dependency install script, so allowScripts does not apply, and npm still
+ * hands it its environment and its node-gyp. Never a second compile after a
+ * first one that RAN - failed, timed out, or built a module that will not
+ * load: it would only do the same again, with the app still down.
+ *
+ * The old build is deleted first, so a module found afterwards is this run's.
+ */
+async function buildModule() {
+    try {
+        fs.rmSync(MODULE_BUILT, { force: true });
+    } catch { /* then the dlopen check below is still the judge */ }
+    let rebuildErr: any;
+    try {
+        await runBounded("npm rebuild better-sqlite3", NPM_REBUILD_TIMEOUT_MS, {
+            cwd: REPO_ROOT,
+            env: { ...process.env, npm_config_build_from_source: "true" },
+        });
+    } catch (e) {
+        rebuildErr = e;
+    }
+    if (!rebuildErr && fs.existsSync(MODULE_BUILT)) {
+        await verifyPatiently(MODULE_BUILT);
+        return;
+    }
+    const compiled = /gyp (info|ERR!)|make(\[\d+\])?: \*\*\*/.test(String(rebuildErr?.output ?? ""));
+    if (rebuildErr && (rebuildErr.timedOut || compiled)) throw rebuildErr;
+    console.error(
+        `npm rebuild ${rebuildErr ? `failed before compiling (${rebuildErr})` : "left no module (its install script did not run)"}` +
+        ` - running better-sqlite3's build-release.`
+    );
+    await runBounded("npm run build-release", NPM_REBUILD_TIMEOUT_MS, {
+        cwd: path.posix.join(REPO_ROOT, "node_modules", "better-sqlite3"),
+    });
+    await verifyPatiently(MODULE_BUILT);
+}
+
+const REPAIRING = "Repairing the build timer.\nIt will be back in a few minutes - please do not switch the Pi off.";
+
+/** `repairNotice`: what the panel says while this runs, if the app is down
+ *  (none during an update - the update's own notice is up then). */
+async function fixSQLite(repairNotice?: string) {
+    if (repairNotice && !(await appRunning())) {
+        notify(repairNotice);
+    }
+    const spinner = spin('Rebuilding better-sqlite3 for the system Node - this may take a few minutes...');
     // The packaged app spawns its server with the system `node` from PATH
     // (see electron/main.js), so the module must match system Node's ABI.
     // The .deb does not ship a usable binary at all, so this step is the ONLY
@@ -316,9 +797,8 @@ async function fixSQLite() {
     try {
         let source = "";
         try {
-            await runBounded(`npm install --omit=dev --no-audit --no-fund`, NPM_INSTALL_TIMEOUT_MS, REPO_ROOT);
-            await runBounded(`npm rebuild better-sqlite3 --build-from-source`, NPM_REBUILD_TIMEOUT_MS, REPO_ROOT);
-            await verifyModuleFile(MODULE_BUILT);
+            await runBounded(`npm install --omit=dev --no-audit --no-fund`, NPM_INSTALL_TIMEOUT_MS, { cwd: REPO_ROOT });
+            await buildModule();
             source = MODULE_BUILT;
         } catch (buildErr: any) {
             // Fallback: the last known-good binary. Only used if it still
@@ -327,13 +807,22 @@ async function fixSQLite() {
             // prints only start/succeed/warn/fail lines, so this used to vanish.
             spinner.warn(`Rebuild failed (${buildErr}); trying the last known-good binary...`);
             spinner.start("Installing the last known-good better-sqlite3...");
-            await verifyModuleFile(MODULE_CACHE);
+            await verifyPatiently(MODULE_CACHE);
             source = MODULE_CACHE;
         }
         await installModule(source);
-        // Refresh the fallback for next time.
+        // Refresh the fallback for next time - copied in and renamed over, as
+        // the Pi does get switched off, and only a warning if it fails: the
+        // module the app needs is already in place by now.
         if (source === MODULE_BUILT) {
-            await run(`mkdir -p ${path.dirname(MODULE_CACHE)} && cp ${MODULE_BUILT} ${MODULE_CACHE}`);
+            try {
+                await run(
+                    `mkdir -p ${path.dirname(MODULE_CACHE)} && cp ${MODULE_BUILT} ${MODULE_CACHE}.new && ` +
+                    `mv -f ${MODULE_CACHE}.new ${MODULE_CACHE}`
+                );
+            } catch (e) {
+                console.error(`Could not refresh the known-good cache (${e}) - the installed module is fine; the old cache stays.`);
+            }
         }
         spinner.succeed(`better-sqlite3 verified and installed (from ${source === MODULE_BUILT ? "fresh build" : "known-good cache"})`);
     } catch (e: any) {
@@ -393,7 +882,7 @@ async function ensureModuleLoads(mayRebuild: boolean): Promise<boolean> {
     }
     if (installed === "unknown") return false;
     try {
-        await verifyModuleFile(MODULE_CACHE);
+        await verifyPatiently(MODULE_CACHE);
         await installModule(MODULE_CACHE);
         console.log("better-sqlite3: restored from the known-good cache, and the installed module now loads.");
         return true;
@@ -403,9 +892,9 @@ async function ensureModuleLoads(mayRebuild: boolean): Promise<boolean> {
             (mayRebuild ? " - rebuilding from source." : " - and this run's rebuild already failed.")
         );
     }
-    if (mayRebuild) await fixSQLite();
+    if (mayRebuild) await fixSQLite(REPAIRING);
     try {
-        await verifyModuleFile(MODULE_TARGET);
+        await verifyPatiently(MODULE_TARGET);
         return true;
     } catch (e) {
         console.error(
@@ -549,10 +1038,11 @@ async function buildInProgress(): Promise<boolean> {
  * Never starts a second copy. Now that this script actually exits, the daily
  * check runs while the app is up, and the app has no single-instance lock.
  */
-async function startApplication(): Promise<void> {
+/** True if this started the app; false if it was running already. */
+async function startApplication(): Promise<boolean> {
     if (await appRunning()) {
         console.log("The app is already running - leaving it alone.");
-        return;
+        return false;
     }
     const me = os.userInfo();
     const unit = `rt-timing-app-${Math.floor(Date.now() / 1000)}`;
@@ -577,7 +1067,7 @@ async function startApplication(): Promise<void> {
             );
         });
         console.log(`App started in its own unit: ${unit}.service`);
-        return;
+        return true;
     } catch (e) {
         console.error(`Could not start the app through systemd-run (${e}) - starting it directly instead.`);
     }
@@ -585,6 +1075,7 @@ async function startApplication(): Promise<void> {
     // has to stay alive as long as the app does - if it exited, systemd would
     // kill the app along with it. The station keeps a timer, the daily check
     // is back to not running until this is sorted out.
+    closeNotice();   // this waits for as long as the app runs
     await new Promise<void>((resolve) => {
         const child = spawn(APP_BINARY, [], { stdio: "inherit" });
         child.on("exit", () => resolve());
@@ -593,6 +1084,7 @@ async function startApplication(): Promise<void> {
             resolve();
         });
     });
+    return true;
 }
 
 async function updateApplication() {
@@ -603,47 +1095,120 @@ async function updateApplication() {
     }
     let rebuilt = false;
     try {
-        const latestVersion = await getLatestVersion();
-        if (latestVersion) {
+        // At boot the panel is empty until the app is up: say so from the start
+        // (best effort - the session may not be up yet; it is asked again below).
+        if (!(await appRunning())) showNotice(STARTING);
+        try {
+            const latestVersion = await getLatestVersion();
             // Checked AFTER we know an update is even available, so a routine
             // daily poll with nothing new never touches a running build at all.
             // The app is up when the update is held or aborted, so the station
             // keeps working on the version it has (and startApplication()
             // below leaves it alone).
-            if (!(await buildInProgress())) {
-                let stopped = true;
+            if (latestVersion && !(await buildInProgress())) {
+                const updating =
+                    `Updating the build timer to ${latestVersion.tag_name}.\n` +
+                    `It will be back in a few minutes - please do not switch the Pi off.`;
+                // At boot, or after the Settings tab quit it, the app is down already.
+                if (!(await appRunning())) notify(updating);
+                // And it can go during the download (the Settings tab quits it half
+                // a second after starting this): the window goes up when it does.
+                let watching = true;
+                const watch = setInterval(() => {
+                    void appRunning().then((up) => { if (watching && !up && !noticeWanted) notify(updating); });
+                }, 5000);
+                let deb: string | null;
                 try {
-                    await killApplication();
-                } catch (e) {
-                    // Installing over a running app is what produced two
-                    // instances on one panel.
-                    console.error(`Update aborted - could not stop the running app: ${e}`);
-                    stopped = false;
+                    deb = await downloadRelease(latestVersion);
+                } finally {
+                    watching = false;
+                    clearInterval(watch);
                 }
-                if (stopped) {
-                    await installFiles(latestVersion);
-                    await fixSQLite();
-                    rebuilt = true;
-                    console.log("Update Complete!")
+                // Asked again: somebody may have started timing during the download.
+                // And dpkg must be free (apt-daily, PackageKit) before the app is
+                // stopped - waiting for it with the app down was downtime for nothing.
+                if (deb && !(await buildInProgress()) && await waitForDpkgOrSay()) {
+                    let stopped = true;
+                    try {
+                        await killApplication();
+                        appStoppedByUs = true;
+                    } catch (e) {
+                        // Installing over a running app is what produced two
+                        // instances on one panel.
+                        console.error(`Update aborted - could not stop the running app: ${e}`);
+                        stopped = false;
+                    }
+                    if (stopped) {
+                        notify(updating);
+                        if (await installDeb(deb)) {
+                            await fixSQLite();
+                            rebuilt = true;
+                            console.log("Update Complete!")
+                        } else {
+                            // Nothing new to rebuild for: the check below sees
+                            // to the module, and the panel gets its app back.
+                            console.error("Update failed - starting the version that is installed.");
+                        }
+                    }
                 }
             }
+            // Every path, "Already on latest" and a failed GitHub check included.
+            // Also when the app was left running: a running app whose module does
+            // not load cannot answer the open-build question either, so it holds
+            // every update and would otherwise never be repaired. Inside the lock,
+            // so another updater's dpkg cannot land on top of the repair.
+            await ensureModuleLoads(!rebuilt);
+        } finally {
+            releaseLock();
         }
-        // Every path, "Already on latest" and a failed GitHub check included.
-        // Also when the app was left running: a running app whose module does
-        // not load cannot answer the open-build question either, so it holds
-        // every update and would otherwise never be repaired. Inside the lock,
-        // so another updater's dpkg cannot land on top of the repair.
-        await ensureModuleLoads(!rebuilt);
+        // Outside the lock: in the last-resort path this waits as long as the app
+        // runs, and a lock held for days would read as a crashed updater.
+        // Every path, held and aborted updates too. The app is normally still
+        // running then and is left alone - but it may have quit while the lock was
+        // held (the Settings tab's "Check for update" quits it, and the updater it
+        // starts finds the lock taken and goes), and then this brings it back.
+        if (!(await appRunning())) notify(STARTING);
+        const started = await startApplication();
+        appStoppedByUs = false;
+        if (!started) {
+            // Running already (left alone, or started by someone else meanwhile):
+            // nothing to cover, and a "do not switch off" over a live timer is wrong.
+            closeNotice();
+        } else if (noticeWanted) {
+            // The notice stays until the app's server answers and its window has
+            // had time to show, rather than leave the panel blank while it starts.
+            await appAnswers(APP_UP_WAIT_MS);
+        }
     } finally {
-        releaseLock();
+        closeNotice();
     }
-    // Outside the lock: in the last-resort path this waits as long as the app
-    // runs, and a lock held for days would read as a crashed updater.
-    // Every path, held and aborted updates too. The app is normally still
-    // running then and is left alone - but it may have quit while the lock was
-    // held (the Settings tab's "Check for update" quits it, and the updater it
-    // starts finds the lock taken and goes), and then this brings it back.
-    await startApplication();
+}
+
+const STARTING = "Starting the build timer...";
+
+async function waitForDpkgOrSay(): Promise<boolean> {
+    if (await waitForDpkg()) return true;
+    console.error(
+        `Another package tool kept dpkg busy for ${DPKG_LOCK_WAIT_MS / 60000} minutes - not updating this run; ` +
+        `the app keeps running and the next run tries again.`
+    );
+    return false;
+}
+
+/** Wait, at most `ms`, for the app's own server to answer, then a while for
+ *  its window: electron/main.js creates it once /api/db-status answers and
+ *  shows it when the page has loaded. */
+async function appAnswers(ms: number): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+        try {
+            await fetch(`http://localhost:${serverPort}/api/db-status`, { signal: AbortSignal.timeout(2000) });
+            await new Promise((r) => setTimeout(r, APP_WINDOW_GRACE_MS));
+            return;
+        } catch {
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+    }
 }
 
 /**
