@@ -22,7 +22,7 @@ import { requestGuardedChange } from "../../common/carryoverLock/carryoverLock";
  * the live list and comes after it, dimmed, under a "Completed" divider, in the
  * same pages. It stays tappable: a late unit or a rework still has to be
  * findable, just not in the way. A job that is only ALL BUILT stays live - it
- * may still have Braid, Overmold or Final Test to time.
+ * may still have Braid, Overmold, Final Test or Packaging to time.
  */
 
 const JOBS_PER_PAGE = 4;

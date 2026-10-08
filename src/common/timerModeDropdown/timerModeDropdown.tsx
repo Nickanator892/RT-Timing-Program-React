@@ -8,6 +8,10 @@ import "./timerModeDropdown.css"
 // timeTypeId 4, so new modes must never reuse it. id 10 is reserved too: it was
 // "Bobbin Change" for a day (1.0.22) before Randy moved bobbin changes onto the
 // Braid screen as a side timer (2026-09-14) - braiding time, tracked apart.
+// id 11 is Packaging: a finishing step after Final Test, per unit or batch. It
+// has no pricing target and never counts as a built harness (only Build, id 1,
+// does), so the analytics screen draws no Build estimate for it.
+export const PACKAGING_MODE = 11;
 export const timerModes = [
     { header: "Timing Build", id: 1, label: "Timer Mode: Build" },
     { header: "Timing Setup", id: 2, label: "Timer Mode: Setup" },
@@ -16,7 +20,8 @@ export const timerModes = [
     { header: "Timing Prebuild", id: 6, label: "Timer Mode: Prebuild" },
     { header: "Timing Strip & Crimp", id: 7, label: "Timer Mode: Strip & Crimp" },
     { header: "Timing Braid", id: 8, label: "Timer Mode: Braid" },
-    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" }
+    { header: "Timing Final Test", id: 9, label: "Timer Mode: Final Test" },
+    { header: "Timing Packaging", id: PACKAGING_MODE, label: "Timer Mode: Packaging" }
 ];
 
 // Was a native <select>, whose popup opened off the bottom of the bench panel
