@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { matchQbUser, isAutoLinkable } from "../assets/qbUserMatch";
 
 interface PauseReason {
@@ -48,6 +48,9 @@ const USERS_BY_LAST_USE =
     " OR s.buildId IN (SELECT sb.buildId FROM SECONDARYBUILDERS sb WHERE sb.builderId = b.Id)) AS lastUsed" +
     " FROM HARNBUILDERS b WHERE b.active != 0 ORDER BY lastUsed IS NULL, lastUsed DESC, b.Id";
 
+/** Why the most recent query failed, so a load that gives up can say why. */
+let lastQueryError: string | null = null;
+
 const execQuery = async (query: string, params: unknown[] = []): Promise<any> => {
     try {
         console.log("Sending query:", query);
@@ -59,10 +62,14 @@ const execQuery = async (query: string, params: unknown[] = []): Promise<any> =>
         console.log("Response status:", response.status);
         const data = await response.json();
         console.log("Response data:", data);
-        if (data.success === false) return undefined;
+        if (data.success === false) {
+            lastQueryError = String(data.error ?? `HTTP ${response.status}`);
+            return undefined;
+        }
         return data.result;
     } catch (err) {
         console.log("execQuery error:", err);
+        lastQueryError = err instanceof Error ? err.message : String(err);
         return undefined;
     }
 };
@@ -106,13 +113,23 @@ async function tryAutoLinkQbUser(builderId: number, userName: string): Promise<v
 export function useSettings() {
     const [settings, setSettings] = useState<Settings | null>(null);
     const [loading, setLoading] = useState(true);
+    // Why the last load gave up, null once one succeeds. The login page shows
+    // it instead of a bare empty builder list and calls reload() to try again.
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [reloadCount, setReloadCount] = useState(0);
+    const reload = useCallback(() => setReloadCount((n) => n + 1), []);
 
 useEffect(() => {
     const loadSettings = async () => {
         let success = false;
         let attempts = 0;
+        let why: string | null = null;
+        // A reload is a single try: the page that asked keeps asking.
+        const maxAttempts = reloadCount === 0 ? 10 : 1;
+        setLoading(true);
 
-        while (!success && attempts < 10) {
+        while (!success && attempts < maxAttempts) {
+            lastQueryError = null;
             try {
                 const [reasonRows, allPauseReasonsRows, userRows, allUserRows] = await Promise.all([
                     await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS WHERE active = 1"),
@@ -152,26 +169,29 @@ useEffect(() => {
                     }));
 
                     setSettings({ pauseReasons, allPauseReasons, users, allUsers });
+                    setLoadError(null);
                     success = true;
                 } else {
                     throw new Error("One or more queries returned undefined");
                 }
             } catch (err) {
                 attempts++;
-                console.log(`Settings load attempt ${attempts}/10 failed, retrying in 1s...`);
+                why = lastQueryError ?? (err instanceof Error ? err.message : String(err));
+                console.log(`Settings load attempt ${attempts}/${maxAttempts} failed, retrying in 1s...`);
                 await new Promise(res => setTimeout(res, 1000));
             }
         }
 
         if (!success) {
-            console.error("Failed to load settings after 10 attempts");
+            console.error(`Failed to load settings after ${maxAttempts} attempts`);
+            setLoadError(why ?? "the builder list query kept failing");
         }
 
         setLoading(false);
     };
 
     loadSettings();
-}, []);
+}, [reloadCount]);
 
     const addPauseReason = async (name: string) => {
         if (!settings) return;
@@ -272,6 +292,8 @@ useEffect(() => {
         allUsers: settings?.allUsers ?? [],
         allPauseReasons: settings?.allPauseReasons ?? [],
         loading,
+        loadError,
+        reload,
         addUser,
         deActivateUser,
         activateUser,
