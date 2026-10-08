@@ -807,8 +807,15 @@ app.post("/api/heartbeat", async (req, res) => {
     // stamp are taken when the write actually runs, in that order.
     const accum = Math.max(0, Math.floor(Number(accumSeconds) || 0));
     const heartbeatState = state === "PAUSE" ? "PAUSE" : "RUN";
-    const run = heartbeatQueue.then(() =>
-      runOrQueue("heartbeat", [
+    const run = heartbeatQueue.then(() => {
+      // A fresh heartbeat makes any for this segment still queued from an
+      // outage pointless (its accumSeconds is at least theirs) - and replayed
+      // AFTER it, an old PAUSE would overwrite a running segment's state, which
+      // the 1.0.29 updater reads as safe to restart under.
+      writeQueue.discard(
+        (e) => e.kind === "heartbeat" && Number(e.statements?.[0]?.params?.[4]) === Number(segmentId)
+      );
+      return runOrQueue("heartbeat", [
         {
           query: `UPDATE HARNBUILDSEGMENTS
             SET heartbeatAt = ?, heartbeatState = ?,
@@ -817,8 +824,8 @@ app.post("/api/heartbeat", async (req, res) => {
           WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
           params: [nowLocal(), heartbeatState, accum, STATION_ID, segmentId],
         },
-      ])
-    );
+      ]);
+    });
     heartbeatQueue = run.catch(() => undefined);
     const out = await run;
     res.json(out);
