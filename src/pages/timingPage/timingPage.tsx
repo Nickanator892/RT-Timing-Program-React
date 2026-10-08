@@ -1037,6 +1037,33 @@ function TimingPage({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // The pause a restart came back with, when the recovery page never ran (the
+    // boot scan could not see the build - a file server still waking up after a
+    // power cut - and the restored session landed straight here). The recovery
+    // page consumes main's restoredPause itself, so this only ever picks up what
+    // it left: without it, Resume would write no pause row and the break would
+    // simply vanish. Matched on the restored session's own ids, read in the same
+    // call, never on this page's not-yet-loaded shared state.
+    useEffect(() => {
+        let cancelled = false;
+        window.electron.getSharedData().then((shared: any) => {
+            const kept = shared?.restoredPause;
+            if (cancelled || !kept?.start || pauseStart || shared?.isRunning || shared?.timerDone) return;
+            const sameBuild =
+                (Number(kept.segmentId) > 0 && Number(kept.segmentId) === Number(shared?.currentSegmentId)) ||
+                (Number(kept.buildId) > 0 && Number(kept.buildId) === Number(shared?.currentBuildId));
+            if (!sameBuild) return;
+            setPauseStart(kept.start);
+            if (kept.reason?.Id) _setSharedPauseReason(kept.reason);
+            setActiveButton("pause");
+            window.electron.updateSharedData({ restoredPause: null });
+        });
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // --- QuickBooks Time clock link -------------------------------------
     // A builder who is opted in (HARNBUILDERS.qbAutoPause) cannot be timed
     // while clocked out: a running build pauses itself, and Start is blocked
@@ -1407,6 +1434,10 @@ function TimingPage({
         // paused - the operator has stopped it on purpose (see handleBuilderChange).
         if (inFlight.roll) inFlight.stoppedDuringRoll = true;
         closeBobbin();
+        // A new pause starts with no reason: the reason page sets it. Left over
+        // from the last pause, it labelled this one if the operator walked away
+        // from the reason page (and survived an update restart that way too).
+        _setSharedPauseReason(undefined);
         window.electron.timerPause();
         const pauseStartTime = formatTimestamp(new Date().toISOString())
         setPauseStart(pauseStartTime);

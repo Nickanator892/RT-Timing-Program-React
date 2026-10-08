@@ -266,11 +266,21 @@ function restoreSession(parsed) {
     // whole break - the restart included - becomes ONE pause row with the
     // operator's reason, instead of "Interrupted" from the last heartbeat.
     sharedTimerData.restoredPause = s.pauseStart
-        ? { start: s.pauseStart, reason: s.pauseReason ?? null, segmentId: s.currentSegmentId ?? null }
+        ? { start: s.pauseStart, reason: s.pauseReason ?? null,
+            segmentId: s.currentSegmentId ?? null, buildId: s.currentBuildId ?? null }
         : null;
+    // The snapshot is the only copy: left in shared state too it would ride along
+    // in every later session save even after the pause was over, and a second
+    // restart would bring back a pause nobody is taking.
+    sharedTimerData.pauseStart = null;
     timerElapsed = Math.max(0, Number(s.elapsedTime) || 0);
     timerStart = null;
     segmentBase = timerElapsed - Math.max(0, Number(s.segmentAccumSeconds) || 0) * 1000;
+    // Aim heartbeats at the restored segment now, not only when the recovery
+    // flow runs: if the boot scan cannot see the build (file server still
+    // waking up) and the operator resumes from the restored screen, a running
+    // clock must still write RUN - the updater's guard reads that state.
+    currentSegmentId = Number(s.currentSegmentId) > 0 ? Number(s.currentSegmentId) : null;
     sharedTimerData.elapsedTime = timerElapsed;
     sharedTimerData.displayTimer = formatTime(timerElapsed);
     // Consumed: the state is live in memory now and will be written again on
@@ -494,6 +504,8 @@ ipcMain.on("timer-reset", () => {
     // timer (RT-MCS closes its open change rows) would otherwise leave the next
     // build showing a held clock that is not held.
     sharedTimerData.bobbinStart = null;
+    // A finished build's last pause reason must not label the next build's pause.
+    sharedTimerData.pauseReason = undefined;
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();
@@ -585,6 +597,12 @@ ipcMain.handle("get-window-type", (event) => {
 ipcMain.on("update-shared-data", (event, newData) => {
     sharedTimerData = { ...sharedTimerData, ...newData };
     broadcastNonTimer(sharedTimerData);
+    // A pause starting or ending is saved at once (2026-10-07): left for the 60 s
+    // heartbeat tick, a power cut just after Resume restored the OLD pause and the
+    // next Resume wrote a second pause row over time already worked.
+    // The reason is picked a moment after the pause starts, so it saves too.
+    const has = (k) => newData && Object.prototype.hasOwnProperty.call(newData, k);
+    if (has("pauseStart") || has("pauseReason")) saveSession("pause");
 });
 
 ipcMain.on("add-session", (event, sessionData) => {
