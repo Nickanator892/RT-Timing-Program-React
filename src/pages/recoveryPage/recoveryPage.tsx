@@ -94,9 +94,14 @@ function RecoveryPage({ setPauseStart, setActiveButton, setStatus }: recoveryPag
             // break and the restart inside it are ONE pause row, with no gap
             // between the real pause and the last heartbeat.
             const shared = await window.electron.getSharedData();
+            // Same build is enough (a segment rolled while the app was down still
+            // belongs to it). A pause whose reason was never picked keeps its real
+            // start and is labelled Interrupted.
             const kept = shared?.restoredPause;
             const operatorPause =
-                kept?.start && kept?.reason?.Id && Number(kept.segmentId) === Number(candidate.segmentId)
+                kept?.start &&
+                (Number(kept.segmentId) === Number(candidate.segmentId) ||
+                    (kept.buildId != null && Number(kept.buildId) === Number(candidate.buildId)))
                     ? kept
                     : null;
             const pauseStart = operatorPause?.start || candidate.heartbeatAt || candidate.startTime;
@@ -138,7 +143,7 @@ function RecoveryPage({ setPauseStart, setActiveButton, setStatus }: recoveryPag
                 timerDone: false,
                 isRunning: false,
                 secondaryBuilders: Array.isArray(secondaries) ? secondaries : [],
-                pauseReason: operatorPause
+                pauseReason: operatorPause?.reason?.Id
                     ? operatorPause.reason
                     : reasonRows?.[0]
                       ? { Id: String(reasonRows[0].Id), name: INTERRUPTED_REASON }

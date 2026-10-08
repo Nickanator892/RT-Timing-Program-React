@@ -464,7 +464,7 @@ async function buildInProgress(): Promise<boolean> {
                 // another panel's open build can never hold this one's update.
                 body: JSON.stringify({
                     query:
-                        "SELECT segmentId, buildId, heartbeatState FROM HARNBUILDSEGMENTS " +
+                        "SELECT segmentId, buildId, heartbeatState, heartbeatAt FROM HARNBUILDSEGMENTS " +
                         "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
                     params: [os.hostname()],
                 }),
@@ -478,14 +478,34 @@ async function buildInProgress(): Promise<boolean> {
             }
             // Anything but an explicit PAUSE - RUN, or no state recorded - is a
             // clock that may be running: hold.
-            const running = data.result.find((r: any) => String(r.heartbeatState ?? "").toUpperCase() !== "PAUSE");
+            // A running clock heartbeats every minute. One silent for ORPHAN_MIN
+            // minutes is not running on this panel (the app died mid-build and
+            // the operator moved on): holding for it would block every update
+            // for good. Stamps are local time on this same host.
+            const ORPHAN_MIN = 10;
+            const ageMin = (stamp: unknown): number => {
+                const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(stamp ?? ""));
+                if (!m) return Number.NaN;
+                const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+                return (Date.now() - t) / 60_000;
+            };
+            const running = data.result.find((r: any) => {
+                if (String(r.heartbeatState ?? "").toUpperCase() === "PAUSE") return false;
+                const age = ageMin(r.heartbeatAt);
+                if (Number.isFinite(age) && age > ORPHAN_MIN) {
+                    console.log(`Segment ${r.segmentId} says ${r.heartbeatState ?? "no state"} but its last heartbeat was ${Math.round(age)} min ago - not a running clock.`);
+                    return false;
+                }
+                return true;
+            });
             if (running) {
                 console.log(`A build is in progress (segment ${running.segmentId}, ${running.heartbeatState ?? "no state"}) - leaving the app alone.`);
                 return true;
             }
-            if (data.result.length > 0) {
+            const paused = data.result.find((r: any) => String(r.heartbeatState ?? "").toUpperCase() === "PAUSE");
+            if (paused) {
                 console.log(
-                    `Build ${data.result[0].buildId} is open but PAUSED (segment ${data.result[0].segmentId}) - ` +
+                    `Build ${paused.buildId} is open but PAUSED (segment ${paused.segmentId}) - ` +
                     `updating; the app restores it, paused, on restart.`
                 );
             }
