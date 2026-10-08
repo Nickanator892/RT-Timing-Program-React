@@ -153,6 +153,17 @@ export class WriteQueue {
         this.rewrite();
     }
 
+    /** Drop queued writes that a newer one makes pointless - an older heartbeat
+     *  for a segment that is about to get a fresh one. Returns how many. */
+    discard(match: (e: QueuedWrite) => boolean): number {
+        this.load();
+        const before = this.entries.length;
+        this.entries = this.entries.filter((e) => !match(e));
+        const dropped = before - this.entries.length;
+        if (dropped) this.rewrite();
+        return dropped;
+    }
+
     parkedEntries(): QueuedWrite[] {
         return this.parked.slice();
     }

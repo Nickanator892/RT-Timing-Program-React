@@ -64,7 +64,7 @@ function postJson(pathname, body) {
                     let parsed = null;
                     try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
                     const httpOk = res.statusCode >= 200 && res.statusCode < 300;
-                    if (httpOk && parsed?.success !== false) return resolve({ ok: true });
+                    if (httpOk && parsed?.success !== false) return resolve({ ok: true, body: parsed });
                     resolve({ ok: false, error: parsed?.error || `HTTP ${res.statusCode}` });
                 });
             }
@@ -98,18 +98,50 @@ function setHeartbeatError(message) {
     broadcastNonTimer(sharedTimerData);
 }
 
-async function writeHeartbeat() {
+// One heartbeat at a time, in the order they were asked for. A crew change
+// registers its new segment while the clock is still paused for the roll (a
+// PAUSE heartbeat) and restarts the clock straight after (a RUN heartbeat).
+// Sent side by side they can land in either order, and when PAUSE lands last
+// the segment reads paused for up to a minute while the clock runs - RT-MCS
+// then credits nothing for that stretch if it releases the build (bench,
+// 2026-10-07: 9 of 28 rolls). Each write reads the state when it is actually
+// sent, so the last one to land is always the current one.
+let heartbeatChain = Promise.resolve(true);
+function writeHeartbeat() {
+    const run = heartbeatChain.then(writeHeartbeatNow, writeHeartbeatNow);
+    heartbeatChain = run.catch(() => false);
+    return run;
+}
+
+async function writeHeartbeatNow() {
     if (!currentSegmentId) return false;
+    const segmentId = currentSegmentId;
     const out = await postJson("/api/heartbeat", {
-        segmentId: currentSegmentId,
+        segmentId,
         accumSeconds: segmentSeconds(),
         state: sharedTimerData.isRunning ? "RUN" : "PAUSE",
     });
     if (out.ok) {
         heartbeatFailures = 0;
         setHeartbeatError(null);
+        // Randy, 2026-10-07: "anyone can end/submit a blocking time" - RT-MCS
+        // can now close this build, or roll someone off its crew, from the
+        // phone or another station. The heartbeat is the first write to
+        // notice: it lands but changes nothing, because the segment is no
+        // longer open. Tell the page, which works out which it was (and
+        // ignores it if the panel's own roll moved on in the meantime). Not
+        // for a held write: a queued heartbeat has no answer yet.
+        const changes = out.body?.queued ? undefined : out.body?.result?.[0]?.changes;
+        if (changes === 0 && currentSegmentId === segmentId) {
+            sharedTimerData.segmentLost = { segmentId, at: Date.now() };
+            broadcastNonTimer(sharedTimerData);
+        }
         return true;
     }
+    // Not for a segment this panel has already moved on from (a reset or a
+    // roll while the write was out): that failure says nothing about the
+    // build being timed now, and counting it lit the banner a write early.
+    if (currentSegmentId !== segmentId) return false;
     heartbeatFailures++;
     if (heartbeatFailures >= HEARTBEAT_FAIL_LIMIT) setHeartbeatError(out.error || "unknown error");
     return false;
@@ -180,6 +212,10 @@ const SESSION_KEYS = [
     // updater now holds only for a running one), so the pause itself has to
     // survive the restart - see restoredPause below.
     "pauseStart",
+    // A batch's crew stretches, carried past a failed write the way
+    // batchPauses carries its pauses: the live build - and its
+    // HARNBUILDSEGCREW rows - are already dropped by then (timingPage batchCrew).
+    "batchCrew",
 ];
 
 function saveSession(why) {
@@ -452,6 +488,12 @@ ipcMain.on("timer-reset", () => {
     sharedTimerData.endTime = "";
     sharedTimerData.pauseStart = null;
     sharedTimerData.restoredPause = null;
+    sharedTimerData.batchCrew = [];
+    sharedTimerData.segmentLost = null;
+    // A Braid bobbin change cannot outlive its build: a build ended from another
+    // timer (RT-MCS closes its open change rows) would otherwise leave the next
+    // build showing a held clock that is not held.
+    sharedTimerData.bobbinStart = null;
     broadcastToAll(sharedTimerData);
     // The build is submitted: stop heartbeating a segment that is now closed.
     stopHeartbeat();

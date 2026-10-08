@@ -8,6 +8,7 @@ import {
     hasUnsubmittedTime,
     isSegmentStale,
 } from "../../assets/carryoverGuard";
+import { describeRelease, readLiveBuild } from "../../assets/crewSlices";
 import "./carryoverLock.css";
 
 /**
@@ -162,9 +163,30 @@ function CarryoverLockGuard({ setPauseStart }: Props) {
                     // treatment below instead of clearing and proceeding.
                     const fresh = await window.electron.getSharedData();
                     if (Number(fresh?.currentSegmentId ?? 0) === Number(shared?.currentSegmentId ?? 0)) {
-                        clear(result.message);
-                        detail.onProceed();
-                        return;
+                        // 2026-10-07: RT-MCS can close this segment from another
+                        // timer too - ending the build (cleared here, with who
+                        // did it) or rolling a crew member off it, in which case
+                        // the build goes on in a newer segment and is NOT
+                        // submitted: ask, like any open build, and leave it to
+                        // the timer page to pick that segment up. Cleared only
+                        // when the database says the build really is over.
+                        const live =
+                            result.status === "closed"
+                                ? await readLiveBuild(
+                                      Number(fresh?.currentBuildId ?? 0),
+                                      Number(fresh?.currentSegmentId ?? 0)
+                                  ).catch(() => ({ kind: "unknown" as const }))
+                                : { kind: "missing" as const };
+                        if (live.kind === "ended" || live.kind === "missing") {
+                            clear(
+                                live.kind === "ended" && live.release
+                                    ? `${displayTimer} on ${live.harnNumber || "this harness"}: this build was ended ` +
+                                          `${describeRelease(live.release)} - the clock has been cleared.`
+                                    : result.message
+                            );
+                            detail.onProceed();
+                            return;
+                        }
                     }
                 }
                 // Genuinely locked - ask. Reached both for a still-open
@@ -217,6 +239,22 @@ function CarryoverLockGuard({ setPauseStart }: Props) {
                 );
             }
             await submit();
+            // Submit can come back without having written anything - a crew
+            // change from another timer it wants checked first, or an error it
+            // has put on the timer page. Only move on once there is nothing
+            // left on the clock to lose.
+            const after = await window.electron.getSharedData();
+            if (
+                hasUnsubmittedTime(
+                    after?.isRunning,
+                    after?.elapsedTime,
+                    after?.timerDone,
+                    after?.currentBuildId,
+                    after?.currentSegmentId
+                )
+            ) {
+                throw new Error("Not submitted - see the message on the timer page, then Submit again.");
+            }
             if (pending) resolve(pending);
         } catch (e: any) {
             setDialogErr(String(e?.message ?? e));

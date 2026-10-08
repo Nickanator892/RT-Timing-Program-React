@@ -206,6 +206,41 @@ hr {
     margin: 0.2em 0;
 }
 
+/* The way out of a ONE PLACE AT A TIME refusal (2026-10-07): end the build that
+   blocks the person, wherever it is. Two taps - the first only arms it. Scoped
+   by #error-timer like the message it sits under: every stylesheet is global. */
+#error-timer .release-offer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0.2em 0 0.4em;
+}
+
+#error-timer .release-offer button {
+    font-size: clamp(16px, 2.6vh, 24px);
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+#error-timer .release-offer-button {
+    color: #ffdf5d;
+    background: #7a1f1f;
+    border: 2px solid #ffdf5d;
+    font-weight: bold;
+}
+
+#error-timer .release-offer-button.armed {
+    color: #7a1f1f;
+    background: #ffdf5d;
+}
+
+#error-timer .release-offer-cancel {
+    color: inherit;
+    background: transparent;
+    border: 2px solid #888;
+}
+
 /* Louder than #error-message on purpose: this one means the time on screen is
    not reaching the database, and it has to be readable across the bench. */
 .db-warning {

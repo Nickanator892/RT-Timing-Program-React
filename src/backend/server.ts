@@ -281,6 +281,60 @@ function runTransaction(
     return runWorker({ statements });
 }
 
+/**
+ * HARNBUILDSEGCREW - everyone on a segment besides its primary (Randy,
+ * 2026-10-07: "record hours per person"; contract shared with the RT-MCS phone
+ * timer, see src/assets/crewSlices.ts). RT-MCS 1.0.32 creates it and lets
+ * /api/timer/exec write it. Before that RT-MCS is out the table does not exist
+ * and an INSERT naming it would be refused - taking the whole Start or roll
+ * with it - so no statement names it until the table has been seen. A
+ * "present" answer is kept for good; "not yet" is asked again after a minute.
+ */
+let segCrewSeen = false;
+let segCrewCheckedAt = 0;
+/**
+ * The table existing is not enough: on 2026-10-07 a dev RT-MCS started against
+ * the live file by mistake created it while the RT-MCS serving the shop
+ * (1.0.31) still refused it - "table not allowed for the timer:
+ * HARNBUILDSEGCREW" - so a table-exists check alone would have failed every
+ * Start and every crew change. What decides is how RT-MCS answers: a write is
+ * sent with its crew rows, and if the proxy refuses the table, the same write
+ * goes again without them and this panel stops naming the table until it
+ * restarts (the next app start asks again).
+ */
+let segCrewRefused = false;
+function isSegCrewRefusal(err: unknown): boolean {
+  return /not allowed[^\n]*HARNBUILDSEGCREW/i.test(String((err as any)?.message ?? err ?? ""));
+}
+function noteSegCrewRefusal(err: unknown): boolean {
+  if (!isSegCrewRefusal(err)) return false;
+  if (!segCrewRefused) {
+    console.warn("RtMcs refuses HARNBUILDSEGCREW - writing without per-segment crew rows until restart:", String(err));
+  }
+  segCrewRefused = true;
+  return true;
+}
+/** Whether HARNBUILDSEGCREW can be WRITTEN: it exists and RT-MCS has not
+ *  refused it this session. Reading it needs only segCrewExists. */
+async function hasSegCrew(): Promise<boolean> {
+  if (segCrewRefused) return false;
+  return segCrewExists();
+}
+/** Whether the table exists at all - enough for a read (a SELECT goes through
+ *  RT-MCS whatever its allow-list), so names RT-MCS itself pinned are still
+ *  found after this panel stopped writing them. */
+async function segCrewExists(): Promise<boolean> {
+  if (segCrewSeen) return true;
+  if (Date.now() - segCrewCheckedAt < 60_000) return false;
+  segCrewCheckedAt = Date.now();
+  const out = await runQuery(
+    `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'HARNBUILDSEGCREW'`,
+    []
+  );
+  segCrewSeen = !!(out?.success && Array.isArray(out.result) && out.result.length > 0);
+  return segCrewSeen;
+}
+
 /** Throws with the worker's message instead of returning a failure envelope. */
 async function mustRun(
     statements: { query: string; params?: any[]; requireChanges?: number }[]
@@ -735,6 +789,7 @@ app.get("/api/write-queue", (_req, res) => {
  * Persist how much this segment has earned so far, and prove the app is alive.
  * Fire-and-forget from the main process; a failure must never disturb the timer.
  */
+let heartbeatQueue: Promise<unknown> = Promise.resolve();
 app.post("/api/heartbeat", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const { segmentId, accumSeconds, state } = req.body ?? {};
@@ -744,16 +799,35 @@ app.post("/api/heartbeat", async (req, res) => {
     // never claw back time the operator actually worked. That is also what
     // makes a heartbeat safe to queue and replay late - an old one landing
     // after a newer one changes nothing.
-    const out = await runOrQueue("heartbeat", [
-      {
-        query: `UPDATE HARNBUILDSEGMENTS
-          SET heartbeatAt = ?, heartbeatState = ?,
-              accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
-              stationId = COALESCE(stationId, ?)
-        WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
-        params: [nowLocal(), state === "PAUSE" ? "PAUSE" : "RUN", Math.max(0, Math.floor(Number(accumSeconds) || 0)), STATION_ID, segmentId],
-      },
-    ]);
+    // One at a time, in the order they arrive - main sends them in order, but
+    // gives up waiting on one after 8 s while this keeps going (a lock wait
+    // can be 16 s), and without the queue the next could overtake it at the
+    // database: a stale PAUSE landing last on a running segment, which RT-MCS
+    // then credits nothing for if it releases the build. The state and the
+    // stamp are taken when the write actually runs, in that order.
+    const accum = Math.max(0, Math.floor(Number(accumSeconds) || 0));
+    const heartbeatState = state === "PAUSE" ? "PAUSE" : "RUN";
+    const run = heartbeatQueue.then(() => {
+      // A fresh heartbeat makes any for this segment still queued from an
+      // outage pointless (its accumSeconds is at least theirs) - and replayed
+      // AFTER it, an old PAUSE would overwrite a running segment's state, which
+      // the 1.0.29 updater reads as safe to restart under.
+      writeQueue.discard(
+        (e) => e.kind === "heartbeat" && Number(e.statements?.[0]?.params?.[4]) === Number(segmentId)
+      );
+      return runOrQueue("heartbeat", [
+        {
+          query: `UPDATE HARNBUILDSEGMENTS
+            SET heartbeatAt = ?, heartbeatState = ?,
+                accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
+                stationId = COALESCE(stationId, ?)
+          WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
+          params: [nowLocal(), heartbeatState, accum, STATION_ID, segmentId],
+        },
+      ]);
+    });
+    heartbeatQueue = run.catch(() => undefined);
+    const out = await run;
     res.json(out);
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
@@ -849,8 +923,10 @@ app.post("/api/build/start", async (req, res) => {
   // it filters again server-side and recomputes numberOfBuilders from the
   // filtered list rather than trusting the client-supplied count.
   const primary = Number(builderId) > 0 ? Number(builderId) : null;
-  const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
-    (id: any) => primary == null || Number(id) !== primary
+  // Unique as well: a repeated id would break HARNBUILDSEGCREW's primary key
+  // and take the whole Start down with it.
+  const filteredSecondaryIds = [...new Set((Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map(Number))].filter(
+    (id: number) => id > 0 && (primary == null || id !== primary)
   );
   const builders = Math.max(1, filteredSecondaryIds.length + 1);
   void numberOfBuilders; // superseded by the recomputed `builders` above.
@@ -868,7 +944,7 @@ app.post("/api/build/start", async (req, res) => {
   // by this app's own migrate() (see ensureColumn above), which is skipped
   // entirely while RtMcs is unreachable - if the column is not there yet,
   // insert without it and log, rather than failing the whole build/start.
-  function buildStatements(withDecisionColumn: boolean) {
+  function buildStatements(withDecisionColumn: boolean, withSegCrew: boolean) {
     return [
       { query: `INSERT INTO HARNBUILDS (harnNumber) VALUES (?)`, params: [harnNumber], requireChanges: 1 },
       withDecisionColumn
@@ -895,18 +971,35 @@ app.post("/api/build/start", async (req, res) => {
         query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (${NEW_BUILD_ID}, ?)`,
         params: [id],
       })),
+      // Who else is on the first segment (crew contract, see hasSegCrew).
+      ...(withSegCrew ? filteredSecondaryIds : []).map((id: any) => ({
+        query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
+                VALUES ((SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ${NEW_BUILD_ID}), ${NEW_BUILD_ID}, ?)`,
+        params: [id],
+      })),
     ];
   }
 
   try {
+    let withSegCrew = await hasSegCrew();
+    let withDecision = decision != null;
     let out;
-    try {
-      out = await mustRun(buildStatements(decision != null));
-    } catch (err) {
-      if (decision != null && /(no such column|has no column named).*unitDecision/i.test(String(err))) {
-        console.warn("build/start: HARNBUILDTIMES.unitDecision not present yet - inserting without it:", err);
-        out = await mustRun(buildStatements(false));
-      } else {
+    // Each fallback is taken at most once: an RT-MCS that refuses the crew
+    // table, and a database without unitDecision yet.
+    for (;;) {
+      try {
+        out = await mustRun(buildStatements(withDecision, withSegCrew));
+        break;
+      } catch (err) {
+        if (withSegCrew && noteSegCrewRefusal(err)) {
+          withSegCrew = false;
+          continue;
+        }
+        if (withDecision && /(no such column|has no column named).*unitDecision/i.test(String(err))) {
+          console.warn("build/start: HARNBUILDTIMES.unitDecision not present yet - inserting without it:", err);
+          withDecision = false;
+          continue;
+        }
         throw err;
       }
     }
@@ -958,11 +1051,14 @@ app.post("/api/build/segment-roll", async (req, res) => {
         resolvedPrimary = Number(primaryLookup.result?.[0]?.builderId ?? 0) || null;
       }
     }
-    const filteredSecondaryIds = (Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).filter(
-      (id: any) => resolvedPrimary == null || Number(id) !== resolvedPrimary
+    const filteredSecondaryIds = [...new Set((Array.isArray(secondaryBuilderIds) ? secondaryBuilderIds : []).map(Number))].filter(
+      (id: number) => id > 0 && (resolvedPrimary == null || id !== resolvedPrimary)
     );
     const builders = Math.max(1, filteredSecondaryIds.length + 1);
-    const out = await mustRun([
+    // Built twice at most: with the crew rows, and - if RT-MCS refuses the
+    // table (see isSegCrewRefusal) - the same roll without them.
+    const rollStatements = (withSegCrew: boolean) => {
+    const statements: { query: string; params?: any[]; requireChanges?: number }[] = [
       {
         query: `UPDATE HARNBUILDSEGMENTS
                    SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?), heartbeatAt = ?
@@ -970,6 +1066,25 @@ app.post("/api/build/segment-roll", async (req, res) => {
         params: [now, Math.max(0, Math.floor(Number(accumSeconds) || 0)), now, segmentId, STATION_ID],
         requireChanges: 1,
       },
+    ];
+    if (withSegCrew) {
+      // A segment opened before HARNBUILDSEGCREW existed (or by a Pi release
+      // older than this one) has its people only in SECONDARYBUILDERS, which
+      // the DELETE below is about to replace. Pin them to the segment that is
+      // closing first, or a helper who leaves now loses every second they
+      // worked. Same rule as RT-MCS's own rolls.
+      statements.push({
+        query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
+                SELECT DISTINCT ?, ?, sb.builderId FROM SECONDARYBUILDERS sb
+                 WHERE sb.buildId = ?
+                   AND sb.builderId <> COALESCE((SELECT s.builderId FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?), -1)
+                   AND (SELECT COALESCE(s.numberOfBuilders, 1) FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?) > 1
+                   AND NOT EXISTS (SELECT 1 FROM HARNBUILDSEGCREW c WHERE c.segmentId = ?)`,
+        params: [segmentId, buildId, buildId, segmentId, segmentId, segmentId],
+      });
+    }
+    const newSegmentAt = statements.length;
+    statements.push(
       {
         // COALESCE, not the raw value: on a plain crew change newPrimary is
         // null and the new segment inherits the builder the build already has.
@@ -993,8 +1108,28 @@ app.post("/api/build/segment-roll", async (req, res) => {
         query: `INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)`,
         params: [buildId, id],
       })),
-    ]);
-    res.json({ success: true, result: { segmentId: Number(out[1].lastID), startTime: now } });
+      // The new segment's crew, in the same transaction that opens it. A crew
+      // member the database refuses (ONE PLACE AT A TIME, on the
+      // SECONDARYBUILDERS insert above) takes the whole roll down with them.
+      ...(withSegCrew ? filteredSecondaryIds : []).map((id: any) => ({
+        query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
+                VALUES ((SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ?), ?, ?)`,
+        params: [buildId, buildId, id],
+      }))
+    );
+    return { statements, newSegmentAt };
+    };
+    const withSegCrew = await hasSegCrew();
+    let roll = rollStatements(withSegCrew);
+    let out;
+    try {
+      out = await mustRun(roll.statements);
+    } catch (err) {
+      if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
+      roll = rollStatements(false);
+      out = await mustRun(roll.statements);
+    }
+    res.json({ success: true, result: { segmentId: Number(out[roll.newSegmentAt].lastID), startTime: now } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -1004,8 +1139,9 @@ app.post("/api/build/segment-roll", async (req, res) => {
  * Drop a build that is still LIVE on this station - the single-build rows
  * written at Start - because the operator switched it to a batch mid-run and
  * Submit is about to write the batch's units instead. Hands back the build's
- * pause rows so the batch can carry them. One transaction, and the guard on the
- * HARNBUILDS delete (an OPEN segment on this station) means a build that was
+ * pause rows so the batch can carry them, and its segment rows and crew so the
+ * batch can give each unit the people who worked it. One transaction, and the
+ * guard on the HARNBUILDS delete (an OPEN segment on this station) means a build that was
  * already submitted, or belongs to another station, can never be discarded.
  */
 // --------------------
@@ -1161,8 +1297,9 @@ app.post("/api/build/discard", async (req, res) => {
   if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
   const buildId = Number(req.body?.buildId);
   if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
-  try {
-    const out = await mustRun([
+  // Built twice at most, like a roll: without the crew table's statements if
+  // RT-MCS refuses them (see isSegCrewRefusal).
+  const discardStatements = (readCrew: boolean, withSegCrew: boolean) => [
       {
         query: `SELECT startTime, endTime, pauseReasonId FROM HARNBUILDTIMES
                  WHERE buildId = ? AND timeTypeId = 4 ORDER BY startTime`,
@@ -1177,13 +1314,96 @@ app.post("/api/build/discard", async (req, res) => {
         params: [buildId, STATION_ID],
         requireChanges: 1,
       },
+      // Who worked which segment, read in the same transaction that drops it:
+      // the batch gives every unit a share of every segment, with that
+      // segment's people (timingPage submitBatch). SECONDARYBUILDERS is the
+      // LATEST roster only - every roll replaces it - so it names the crew of
+      // the open segment and nothing earlier; HARNBUILDSEGCREW names the rest.
+      {
+        query: `SELECT segmentId, builderId, numberOfBuilders, accumSeconds, startTime, endTime
+                  FROM HARNBUILDSEGMENTS WHERE buildId = ? ORDER BY segmentId`,
+        params: [buildId],
+      },
+      { query: `SELECT builderId FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
+      readCrew
+        ? { query: `SELECT segmentId, builderId FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }
+        : { query: `SELECT 0 AS segmentId WHERE 0`, params: [] },
       { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
-    ]);
-    res.json({ success: true, result: { pauses: Array.isArray(out[0]) ? out[0] : [] } });
+      ...(withSegCrew ? [{ query: `DELETE FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }] : []),
+  ];
+  try {
+    const readCrew = await segCrewExists();
+    let withSegCrew = await hasSegCrew();
+    let out;
+    try {
+      out = await mustRun(discardStatements(readCrew, withSegCrew));
+    } catch (err) {
+      if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
+      withSegCrew = false;
+      out = await mustRun(discardStatements(readCrew, false));
+    }
+    res.json({
+      success: true,
+      result: {
+        pauses: Array.isArray(out[0]) ? out[0] : [],
+        segments: Array.isArray(out[2]) ? out[2] : [],
+        crewIds: Array.isArray(out[3]) ? out[3].map((r: any) => Number(r.builderId)).filter((n: number) => n > 0) : [],
+        // null, not []: "no table yet" and "nobody else on any segment" must
+        // stay distinguishable to the batch.
+        segCrew: readCrew && Array.isArray(out[4]) ? out[4] : null,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/** Whether HARNBUILDSEGCREW can be written - the table exists and RT-MCS has
+ *  not refused it this session - for the batch writes, which the page makes
+ *  itself through /api/query (see hasSegCrew). */
+app.get("/api/build/crew-table", async (_req, res) => {
+  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  // station: this panel's name on its segments, so the page can treat a build
+  // open on THIS station the way the one-place triggers do.
+  res.json({ success: true, result: { present: await hasSegCrew(), station: STATION_ID } });
+});
+
+/**
+ * Randy, 2026-10-07: "anyone can end/submit a blocking time". When the
+ * database refuses someone ONE PLACE AT A TIME, the panel offers to end the
+ * build that blocks them, wherever it is open. RT-MCS does the work (it owns
+ * the rule: a blocked PRIMARY's build is ended and submitted, a blocked crew
+ * member is rolled off it, and every release is audited in MSTIMERRELEASE);
+ * this only carries the request with the machine key, the same way every
+ * write goes. `builderId` is the blocked person, `buildId` the blocking build,
+ * `byBuilderId` whoever pressed the button here.
+ */
+app.post("/api/timer/release", async (req, res) => {
+  const builderId = Number(req.body?.builderId);
+  const buildId = Number(req.body?.buildId);
+  const byBuilderId = Number(req.body?.byBuilderId) || undefined;
+  if (!(builderId > 0) || !(buildId > 0)) {
+    return res.status(400).json({ success: false, error: "builderId and buildId are required" });
+  }
+  if (!rtmcsKey) return res.status(503).json({ success: false, error: "RtMcs key not loaded - nothing was released" });
+  try {
+    const r = await fetch(`${rtmcsUrl}/api/timer/release`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-RtMcs-Key": rtmcsKey },
+      body: JSON.stringify({ builderId, buildId, byBuilderId, station: STATION_ID }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const out: any = await r.json().catch(() => null);
+    if (!out?.success) {
+      const why = out?.error || (r.status === 404 ? "this RT-MCS has no release route yet" : `RtMcs answered HTTP ${r.status}`);
+      return res.status(r.ok ? 409 : r.status).json({ success: false, error: String(why) });
+    }
+    res.json({ success: true, result: { action: String(out.action ?? ""), message: String(out.message ?? "") } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` });
   }
 });
 
@@ -1234,6 +1454,10 @@ app.post("/api/query", async (req, res) => {
     }
     const result = await runQuery(query, params ?? []);
     if (!result.success) {
+      // A batch writes its crew rows through here (timeDistribution.ts). An
+      // RT-MCS that refuses the table turns them off for the session, the
+      // same as a refused Start or roll does.
+      noteSegCrewRefusal(result.error);
       return res.status(500).json({ success: false, error: result.error });
     }
     res.json({ success: true, result: result.result });
