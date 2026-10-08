@@ -18,8 +18,61 @@ interface loginProps {
     setUser: React.Dispatch<React.SetStateAction<User | undefined>>;
 }
 
+/** How often this page asks the backend whether the database answers. */
+const DB_CHECK_MS = 10_000;
+
+/** Short enough to read across the bench. Cut from the middle: a module
+ *  error names the file first and the reason last ("...better_sqlite3.node:
+ *  cannot open shared object file"), and both halves matter. */
+function shortError(text: string): string {
+    const line = text.replace(/\s+/g, " ").trim();
+    return line.length > 200 ? line.slice(0, 110) + " ... " + line.slice(-80) : line;
+}
+
 function LoginPage({ setUser }: loginProps) {
-    const { users } = useSettings();
+    const { users, loading, loadError, reload } = useSettings();
+    // Why the database cannot be used right now, or null. On 2026-10-07 the
+    // panel ran 20 minutes on a better-sqlite3 module that would not load:
+    // every query failed, this page showed an empty builder list and nothing
+    // else, and it was rebooted twice. /api/db-status's test query fails in
+    // exactly that state (readable:false); ready:false is the file itself gone,
+    // e.g. the share dropped after start. RtMcs write trouble is the timer
+    // page's to report, not this one's.
+    const [dbProblem, setDbProblem] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const check = async () => {
+            let problem: string | null = null;
+            try {
+                const data = await (await fetch("http://localhost:5000/api/db-status")).json();
+                if (data?.readable === false || data?.ready === false)
+                    problem = String(data.writeError || data.error || "it did not answer a test query");
+            } catch (err) {
+                problem = `the timer's own server did not answer (${err instanceof Error ? err.message : String(err)})`;
+            }
+            if (!cancelled) setDbProblem(problem);
+        };
+
+        check();
+        // Every query starts a fresh worker that loads the module again, so a
+        // repair takes effect without a restart - and this warning clears itself.
+        const id = setInterval(check, DB_CHECK_MS);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
+    }, []);
+
+    // The first load gives up after 10 tries. Once the database answers
+    // again, try once every DB_CHECK_MS until the list arrives.
+    useEffect(() => {
+        if (dbProblem !== null || !loadError || loading) return;
+        const id = setTimeout(reload, DB_CHECK_MS);
+        return () => clearTimeout(id);
+    }, [dbProblem, loadError, loading, reload]);
+
+    const dbWarning = dbProblem ?? loadError;
     const [password, setPassword] = useState<string>();
     const [disablePassword, setDisablePassword] = useState<boolean>(true);
     const [localSelectedUser, setLocalSelectedUser] = useState<User>();
@@ -132,6 +185,15 @@ function LoginPage({ setUser }: loginProps) {
     return (
         <div className="login-page">
             <h2 className="login-header">Select Builder</h2>
+            {dbWarning && (
+                <div className="login-db-warning">
+                    The database is not answering - the builder list cannot load. Leave the
+                    timer running and get someone to look at it (the error: {shortError(dbWarning)}).
+                    <div className="login-db-warning-note">
+                        This clears by itself once the database answers again.
+                    </div>
+                </div>
+            )}
             {recovery && (
                 <div className="login-recovery-banner">
                     Unfinished build found: <strong>{recovery.harnNumber}</strong>
