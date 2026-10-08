@@ -147,7 +147,17 @@ function runWorkerLocal(workerPayload: any): Promise<any> {
             }
         });
         worker.on("message", (msg) => {
-            console.log("Worker result:", JSON.stringify(msg));
+            // The outcome only, never the rows: they include the RtMcs machine
+            // key (loadRtmcsKey) and builder passwords, and main.js copies this
+            // output into server.log on the panel.
+            console.log(
+                "Worker result:",
+                !msg?.success
+                    ? `failed: ${msg?.error}`
+                    : Array.isArray(msg.result)
+                      ? `ok, ${msg.result.length} row(s)`
+                      : "ok"
+            );
             resolve(msg);
         });
         worker.on("error", (err) => {
