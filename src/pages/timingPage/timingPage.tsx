@@ -539,10 +539,15 @@ function TimingPage({
         }
         const harn = state.harnNumber || selectedHarn;
         const at = /(\d{2}:\d{2}:\d{2})\s*$/.exec(state.endTime)?.[1];
+        // Main's own count, not this render's clock: right after a restart the
+        // page can still be showing 00:00:00 when this runs.
+        const secs = Math.max(0, Math.floor(Number(fresh?.elapsedTime ?? 0) / 1000));
+        const p2 = (n: number) => String(n).padStart(2, "0");
+        const shown = `${p2(Math.floor(secs / 3600))}:${p2(Math.floor((secs % 3600) / 60))}:${p2(secs % 60)}`;
         clearCarryoverClock(
             state.release
-                ? `${displayTimer} on ${harn}: this build was ended ${describeRelease(state.release)} - the clock has been cleared.`
-                : `${displayTimer} on ${harn} was already submitted${at ? ` at ${at}` : ""} - the clock has been cleared.`
+                ? `${shown} on ${harn}: this build was ended ${describeRelease(state.release)} - the clock has been cleared.`
+                : `${shown} on ${harn} was already submitted${at ? ` at ${at}` : ""} - the clock has been cleared.`
         );
         setPauseStart(null);
         setActiveButton(null);
