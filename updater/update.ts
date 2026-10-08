@@ -10,15 +10,31 @@ const serverPort = 5000;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MODULE_TARGET =
     "/opt/rt-timing/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node";
+// A fresh from-source build lands here (in this clone)...
+const MODULE_BUILT = `${REPO_ROOT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
+// ...and the last one that loaded is kept here, as the fallback.
+const MODULE_CACHE = `${process.env.HOME}/better-sqlite3-build/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
+
+// Hard limits on the from-source rebuild. Neither npm step had one, so a stuck
+// npm (registry or network trouble) held the updater - and the app, which is
+// down for the whole update - for as long as it liked. When a limit is hit,
+// everything npm started is killed and the known-good cache is used instead,
+// so the fallback is always reached. For scale: the install took 3 s and the
+// rebuild about 2 min on the Pi 5 (2026-10-06/07).
+const NPM_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+const NPM_REBUILD_TIMEOUT_MS = 10 * 60 * 1000;
+const VERIFY_TIMEOUT_MS = 30 * 1000;
 
 // Single-instance lock: the boot-time service and the Settings-tab updater can
 // run concurrently, and the loser's `dpkg -i` overwrites the winner's rebuilt
 // module with the .deb's unusable one (seen 2026-08-27). mkdir is atomic; a
 // lock older than 30 minutes is treated as stale (crashed run).
 const LOCK_DIR = "/tmp/rt-timing-updater.lock";
+let lockHeld = false;
 function acquireLock(): boolean {
     try {
         fs.mkdirSync(LOCK_DIR);
+        lockHeld = true;
         return true;
     } catch {
         try {
@@ -26,6 +42,7 @@ function acquireLock(): boolean {
             if (ageMs > 30 * 60 * 1000) {
                 fs.rmdirSync(LOCK_DIR);
                 fs.mkdirSync(LOCK_DIR);
+                lockHeld = true;
                 return true;
             }
         } catch {}
@@ -33,9 +50,32 @@ function acquireLock(): boolean {
     }
 }
 function releaseLock() {
+    if (!lockHeld) return;   // never another run's lock
+    lockHeld = false;
     try {
         fs.rmdirSync(LOCK_DIR);
     } catch {}
+}
+
+// Process groups runBounded() has started that may still be running.
+const liveGroups = new Set<number>();
+
+/**
+ * Killed - systemctl stop, a shutdown, Ctrl-C or a closed window on the
+ * Settings-tab run: take down what runBounded() started, which is in its own
+ * process group and so no longer goes down with this one, and give the lock
+ * back, so the next run is not shut out for half an hour.
+ */
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+        for (const pgid of liveGroups) {
+            try {
+                process.kill(-pgid, "SIGKILL");
+            } catch { /* already gone */ }
+        }
+        releaseLock();
+        process.exit(128 + (os.constants.signals[sig] ?? 0));
+    });
 }
 
 function run(command: string, cwd?: string): Promise<string> {
@@ -43,6 +83,90 @@ function run(command: string, cwd?: string): Promise<string> {
         exec(command, { cwd, maxBuffer: 1024 * 1024 * 500 }, (error, stdout, stderr) => {
             if (error) reject(error);
             else resolve(stdout);
+        });
+    });
+}
+
+/**
+ * run(), but it gives up after `timeoutMs` and kills everything the command
+ * started. exec()'s own `timeout` is not enough for npm: it signals only the
+ * shell, and its callback waits for stdout to close, which npm's children
+ * (node-gyp, make, the compiler) hold open - so a stuck step still hangs. Here
+ * the command gets its own process group and the whole group goes.
+ */
+function runBounded(command: string, timeoutMs: number, cwd?: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = spawn("/bin/sh", ["-c", command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const pgid = child.pid;
+        if (pgid) liveGroups.add(pgid);
+        let output = "";
+        const keep = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-4000); };
+        child.stdout?.on("data", keep);
+        child.stderr?.on("data", keep);
+        const killGroup = (signal: NodeJS.Signals) => {
+            try {
+                if (pgid) process.kill(-pgid, signal);
+            } catch { /* already gone */ }
+        };
+        // SIGTERM now, SIGKILL for anything still there five seconds later.
+        let stopping = false;
+        const stopGroup = () => {
+            stopping = true;
+            killGroup("SIGTERM");
+            setTimeout(() => {
+                killGroup("SIGKILL");
+                if (pgid) liveGroups.delete(pgid);
+            }, 5000);
+        };
+        let settled = false;
+        let grace: NodeJS.Timeout | undefined;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(grace);
+            stopGroup();
+            reject(Object.assign(
+                new Error(`timed out after ${Math.round(timeoutMs / 1000)} s: ${command}`),
+                { timedOut: true }
+            ));
+        }, timeoutMs);
+        const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            clearTimeout(grace);
+            if (code === 0) resolve(output);
+            else {
+                const tail = output.trim().split("\n").slice(-5).join(" | ");
+                reject(new Error(`${command} failed (${signal ?? `exit ${code}`}): ${tail}`));
+            }
+        };
+        child.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            clearTimeout(grace);
+            if (pgid) liveGroups.delete(pgid);
+            reject(err);
+        });
+        // 'close' comes once the output is all in, so the error text is whole.
+        child.on("close", (code, signal) => {
+            if (pgid && !stopping) liveGroups.delete(pgid);
+            finish(code, signal);
+        });
+        // But a leftover grandchild can hold the output open long after the
+        // command itself has finished. Give it two seconds, then stop waiting
+        // and stop it - an open pipe would keep this script, and so the oneshot
+        // unit, alive for as long as the leftover runs.
+        child.on("exit", (code, signal) => {
+            if (settled) return;
+            clearTimeout(timer);   // the command is done; only the leftover is waited for
+            grace = setTimeout(() => {
+                child.stdout?.destroy();
+                child.stderr?.destroy();
+                stopGroup();
+                finish(code, signal);
+            }, 2000);
         });
     });
 }
@@ -171,7 +295,16 @@ async function installFiles(newVersion: any) {
  *  the module and pass while the file we are about to ship does not exist
  *  (seen 2026-08-27: verify passed, cp then failed, app came up broken). */
 async function verifyModuleFile(file: string) {
-    await run(`node -e "process.dlopen(module, '${file}')"`);
+    await runBounded(`node -e "process.dlopen(module, '${file}')"`, VERIFY_TIMEOUT_MS);
+}
+
+/** Put `source` in place as the app's module, then prove the installed file
+ *  loads. Copied in beside it and renamed over it, so a running app that has
+ *  the old file open keeps its own copy rather than having it rewritten
+ *  underneath it. */
+async function installModule(source: string) {
+    await run(`sudo cp ${source} ${MODULE_TARGET}.new && sudo mv -f ${MODULE_TARGET}.new ${MODULE_TARGET}`);
+    await verifyModuleFile(MODULE_TARGET);
 }
 
 async function fixSQLite() {
@@ -180,30 +313,29 @@ async function fixSQLite() {
     // (see electron/main.js), so the module must match system Node's ABI.
     // The .deb does not ship a usable binary at all, so this step is the ONLY
     // source of a working module - it must fail loudly, never silently.
-    const built = `${REPO_ROOT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
-    const cached = `${process.env.HOME}/better-sqlite3-build/node_modules/better-sqlite3/build/Release/better_sqlite3.node`;
     try {
         let source = "";
         try {
-            await run(`npm install --omit=dev --no-audit --no-fund`, REPO_ROOT);
-            await run(`npm rebuild better-sqlite3 --build-from-source`, REPO_ROOT);
-            await verifyModuleFile(built);
-            source = built;
+            await runBounded(`npm install --omit=dev --no-audit --no-fund`, NPM_INSTALL_TIMEOUT_MS, REPO_ROOT);
+            await runBounded(`npm rebuild better-sqlite3 --build-from-source`, NPM_REBUILD_TIMEOUT_MS, REPO_ROOT);
+            await verifyModuleFile(MODULE_BUILT);
+            source = MODULE_BUILT;
         } catch (buildErr: any) {
             // Fallback: the last known-good binary. Only used if it still
             // loads under the current node (an old-ABI cache must not ship).
-            spinner.text = `Rebuild failed (${buildErr}); trying last known-good binary...`;
-            await verifyModuleFile(cached);
-            source = cached;
+            // Its own line, not spinner.text: off a terminal (the journal) ora
+            // prints only start/succeed/warn/fail lines, so this used to vanish.
+            spinner.warn(`Rebuild failed (${buildErr}); trying the last known-good binary...`);
+            spinner.start("Installing the last known-good better-sqlite3...");
+            await verifyModuleFile(MODULE_CACHE);
+            source = MODULE_CACHE;
         }
-        await run(`sudo cp ${source} ${MODULE_TARGET}`);
-        // Final gate: the file actually installed into the app loads.
-        await verifyModuleFile(MODULE_TARGET);
+        await installModule(source);
         // Refresh the fallback for next time.
-        if (source === built) {
-            await run(`mkdir -p ${path.dirname(cached)} && cp ${built} ${cached}`);
+        if (source === MODULE_BUILT) {
+            await run(`mkdir -p ${path.dirname(MODULE_CACHE)} && cp ${MODULE_BUILT} ${MODULE_CACHE}`);
         }
-        spinner.succeed(`better-sqlite3 verified and installed (from ${source === built ? "fresh build" : "known-good cache"})`);
+        spinner.succeed(`better-sqlite3 verified and installed (from ${source === MODULE_BUILT ? "fresh build" : "known-good cache"})`);
     } catch (e: any) {
         spinner.fail(
             `better-sqlite3 could not be rebuilt OR restored - every database query will fail ` +
@@ -213,7 +345,90 @@ async function fixSQLite() {
 }
 
 /**
- * Is somebody timing a build on this station right now?
+ * Does the installed module load? A check that TIMES OUT is asked once more;
+ * if node still does not answer, that is the Pi struggling, not proof that the
+ * module is bad (a bad module fails at once), so the answer is "unknown" and
+ * nothing gets replaced - or rebuilt, on a station somebody may be timing on.
+ */
+async function installedModuleLoads(): Promise<"yes" | "no" | "unknown"> {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            await verifyModuleFile(MODULE_TARGET);
+            return "yes";
+        } catch (e: any) {
+            if (!e?.timedOut) {
+                console.error(`better-sqlite3: the installed module does NOT load (${e}) - repairing it before the app starts.`);
+                return "no";
+            }
+            if (attempt >= 2) {
+                console.error(`better-sqlite3: could not check the installed module - node did not answer, twice (${e}). Leaving it as it is.`);
+                return "unknown";
+            }
+        }
+    }
+}
+
+/**
+ * The gate in front of every start of the app: the module the app loads must
+ * load. fixSQLite() used to be the only check, and it runs only right after an
+ * install - so an install cut short (2026-10-07: the Pi restarted mid-rebuild)
+ * left the .deb's x86-64 module in place, and the next run said "Already on
+ * latest", started the app on it, and every query failed until it was fixed by
+ * hand. Now every run checks it, cheapest repair first: the file already
+ * installed, then the known-good cache, then a (time-limited) rebuild.
+ *
+ * If nothing loads, the app is started anyway (returns false, logged loudly):
+ * a panel with no app on it tells nobody anything and gets switched off and on,
+ * while a running app keeps /api/db-status up with the exact load error, and
+ * the next run (07:30, a reboot, Settings > Check for update) tries again.
+ *
+ * `mayRebuild` is false when this run has already been through fixSQLite():
+ * a second rebuild would only fail the same way, with the app still down.
+ */
+async function ensureModuleLoads(mayRebuild: boolean): Promise<boolean> {
+    const installed = await installedModuleLoads();
+    if (installed === "yes") {
+        console.log("better-sqlite3: the installed module loads.");
+        return true;
+    }
+    if (installed === "unknown") return false;
+    try {
+        await verifyModuleFile(MODULE_CACHE);
+        await installModule(MODULE_CACHE);
+        console.log("better-sqlite3: restored from the known-good cache, and the installed module now loads.");
+        return true;
+    } catch (e) {
+        console.error(
+            `better-sqlite3: the known-good cache did not fix it (${e})` +
+            (mayRebuild ? " - rebuilding from source." : " - and this run's rebuild already failed.")
+        );
+    }
+    if (mayRebuild) await fixSQLite();
+    try {
+        await verifyModuleFile(MODULE_TARGET);
+        return true;
+    } catch (e) {
+        console.error(
+            `!!! better-sqlite3 STILL DOES NOT LOAD (${e}). EVERY database query will fail (empty Select ` +
+            `Builder) until it is fixed by hand - copy a module that loads to ${MODULE_TARGET}. ` +
+            `Starting the app anyway so /api/db-status reports the error.`
+        );
+        return false;
+    }
+}
+
+/**
+ * Is somebody timing a build on this station right now - is a clock RUNNING?
+ *
+ * Randy, 2026-10-07: a PAUSED (or ended, awaiting Submit) build no longer holds
+ * the update. Its worked time is already in the database (the pause writes the
+ * frozen accumSeconds and heartbeatState PAUSE at once), and the app comes back
+ * on it after the restart: session restore + the recovery flow put the operator
+ * on the same build, paused, with the time it had and - since 1.0.29 - the
+ * pause they took, start and reason. Only a running clock (heartbeatState RUN,
+ * which a bobbin-change hold keeps too) or an unknown state holds. Updates are
+ * only pushed outside 07:50-16:15 anyway; this is what lets one go through
+ * when somebody left a build paused overnight or over a break.
  *
  * Asked of the app's own backend rather than the database directly, so the
  * updater never opens the shared SQLite file.
@@ -249,7 +464,7 @@ async function buildInProgress(): Promise<boolean> {
                 // another panel's open build can never hold this one's update.
                 body: JSON.stringify({
                     query:
-                        "SELECT segmentId, buildId FROM HARNBUILDSEGMENTS " +
+                        "SELECT segmentId, buildId, heartbeatState FROM HARNBUILDSEGMENTS " +
                         "WHERE COALESCE(endTime,'') = '' AND stationId = ?",
                     params: [os.hostname()],
                 }),
@@ -261,9 +476,18 @@ async function buildInProgress(): Promise<boolean> {
             if (data?.success !== true || !Array.isArray(data?.result)) {
                 throw new Error(data?.error ? String(data.error) : `unexpected answer (HTTP ${res.status})`);
             }
-            if (data.result.length > 0) {
-                console.log(`A build is in progress (segment ${data.result[0].segmentId}) - leaving the app alone.`);
+            // Anything but an explicit PAUSE - RUN, or no state recorded - is a
+            // clock that may be running: hold.
+            const running = data.result.find((r: any) => String(r.heartbeatState ?? "").toUpperCase() !== "PAUSE");
+            if (running) {
+                console.log(`A build is in progress (segment ${running.segmentId}, ${running.heartbeatState ?? "no state"}) - leaving the app alone.`);
                 return true;
+            }
+            if (data.result.length > 0) {
+                console.log(
+                    `Build ${data.result[0].buildId} is open but PAUSED (segment ${data.result[0].segmentId}) - ` +
+                    `updating; the app restores it, paused, on restart.`
+                );
             }
             return false;
         } catch (e) {
@@ -357,31 +581,48 @@ async function updateApplication() {
         console.log("Another updater instance is already running - exiting without touching the install.");
         return;
     }
+    let rebuilt = false;
     try {
         const latestVersion = await getLatestVersion();
         if (latestVersion) {
             // Checked AFTER we know an update is even available, so a routine
             // daily poll with nothing new never touches a running build at all.
-            // The app is up in both of these early returns, so the station keeps
-            // working on the version it has.
-            if (await buildInProgress()) return;
-            try {
-                await killApplication();
-            } catch (e) {
-                // Installing over a running app is what produced two
-                // instances on one panel.
-                console.error(`Update aborted - could not stop the running app: ${e}`);
-                return;
+            // The app is up when the update is held or aborted, so the station
+            // keeps working on the version it has (and startApplication()
+            // below leaves it alone).
+            if (!(await buildInProgress())) {
+                let stopped = true;
+                try {
+                    await killApplication();
+                } catch (e) {
+                    // Installing over a running app is what produced two
+                    // instances on one panel.
+                    console.error(`Update aborted - could not stop the running app: ${e}`);
+                    stopped = false;
+                }
+                if (stopped) {
+                    await installFiles(latestVersion);
+                    await fixSQLite();
+                    rebuilt = true;
+                    console.log("Update Complete!")
+                }
             }
-            await installFiles(latestVersion);
-            await fixSQLite();
-            console.log("Update Complete!")
         }
+        // Every path, "Already on latest" and a failed GitHub check included.
+        // Also when the app was left running: a running app whose module does
+        // not load cannot answer the open-build question either, so it holds
+        // every update and would otherwise never be repaired. Inside the lock,
+        // so another updater's dpkg cannot land on top of the repair.
+        await ensureModuleLoads(!rebuilt);
     } finally {
         releaseLock();
     }
     // Outside the lock: in the last-resort path this waits as long as the app
     // runs, and a lock held for days would read as a crashed updater.
+    // Every path, held and aborted updates too. The app is normally still
+    // running then and is left alone - but it may have quit while the lock was
+    // held (the Settings tab's "Check for update" quits it, and the updater it
+    // starts finds the lock taken and goes), and then this brings it back.
     await startApplication();
 }
 
@@ -398,7 +639,30 @@ async function checkGuard() {
         : "decision: GO - an update now would stop the app and install");
 }
 
-void (process.argv.includes("--check-guard") ? checkGuard() : updateApplication());
+/**
+ * `npx tsx update.ts --check-module` - read-only. Says whether each copy of the
+ * better-sqlite3 module loads under this Pi's node (each check is a separate
+ * `node` process; nothing is copied, built or started).
+ */
+async function checkModule() {
+    const copies: [string, string][] = [
+        ["installed in the app", MODULE_TARGET],
+        ["known-good cache", MODULE_CACHE],
+        ["last fresh build", MODULE_BUILT],
+    ];
+    for (const [name, file] of copies) {
+        try {
+            await verifyModuleFile(file);
+            console.log(`${name}: loads (${file})`);
+        } catch (e) {
+            console.log(`${name}: does NOT load (${file}): ${e}`);
+        }
+    }
+}
+
+void (process.argv.includes("--check-guard") ? checkGuard()
+    : process.argv.includes("--check-module") ? checkModule()
+    : updateApplication());
 
 /** Useful Commands 
  *  sudo dpkg --remove --force-remove-reinstreq rt-timing

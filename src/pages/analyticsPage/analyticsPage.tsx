@@ -9,6 +9,7 @@ import { useBuildKit } from "../../hooks/useBuildKit";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import { usePixelShift } from "../../hooks/usePixelShift";
 import { parseTimestamp } from "../../assets/timeDistribution";
+import { PACKAGING_MODE } from "../../common/timerModeDropdown/timerModeDropdown";
 import {
     fetchScheduleWindow,
     computeScheduleStatus,
@@ -264,9 +265,11 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                 <div className="progress-list">{getProgress()}</div>
                 <div className="harn-build-chart-info">
                     <p id="current-build-pn">Part #: {harn}</p>
-                    <p id="build-time-estimate">
-                        Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes
-                    </p>
+                    {timerMode.id !== PACKAGING_MODE && (
+                        <p id="build-time-estimate">
+                            Estimate: ~{Math.round(buildTimeEst.seconds / 60)} Minutes
+                        </p>
+                    )}
                     {createInfoElement()}
                     <p id="version-tag">RT Timing - v{__APP_VERSION__}</p>
                 </div>
@@ -289,6 +292,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         harnNumber={harn || ""}
                         buildNumber={30}
                         buildTimeEst={buildTimeEst}
+                        showEstimate={timerMode.id !== PACKAGING_MODE}
                         currentTimeSeconds={displayTimer}
                     />
                 </div>

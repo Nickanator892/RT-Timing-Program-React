@@ -1,4 +1,5 @@
 import { execQuery } from "./execQueryFunction";
+import { crewPerUnit, type CrewStretch, type UnitCrew } from "./crewSlices";
 
 /** Local time as "YYYY-MM-DD HH:mm:ss" - text-sortable and new Date() parseable. */
 export function formatTimestamp(d: Date): string {
@@ -61,6 +62,22 @@ export interface DistributedTimeArgs {
     /** How many of the `units` slices (counting from the END) get unitDecision.
      *  0 or omitted writes no flag at all - the default, unaffected path. */
     excessUnits?: number;
+    /**
+     * Randy, 2026-10-07: the live build's segments and who was on each
+     * (crewSlices.ts). When given, every unit gets an equal share of every
+     * segment - one closed segment per live segment, each with that segment's
+     * primary, head-count and crew - and the units' seconds come from the
+     * segments rather than from workedMs. builderId, numberOfBuilders and
+     * secondaryBuilderIds above are then not used for the units: each unit's
+     * SECONDARYBUILDERS is everyone in the crew of the pieces it got. Omitted
+     * or empty (manual entry, or a batch whose Start was never recorded):
+     * every unit gets those three as before.
+     */
+    crewStretches?: CrewStretch[];
+    /** Write HARNBUILDSEGCREW rows for each segment (only once RT-MCS has
+     *  created the table - see crewSlices.ts). Manual entry never does: it has
+     *  a head-count and no names. */
+    writeSegCrew?: boolean;
 }
 
 /**
@@ -70,7 +87,9 @@ export interface DistributedTimeArgs {
  * single-unit session, once per unit, with the window sliced into equal
  * consecutive segments: unit counts, progress bars, the analytics chart, and
  * HARNBUILDTIMES_VIEW all work unchanged, and each unit carries the honest
- * per-unit average. Returns the new buildIds (first = oldest slice).
+ * per-unit average. With `crewStretches`, each unit gets one segment per live
+ * segment, like a single build that rolled. Returns the new buildIds (first =
+ * oldest slice).
  */
 export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<number[]> {
     const buildIds: number[] = [];
@@ -80,7 +99,28 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
     // the operator types the time they actually worked).
     const workedSlice = (args.workedMs ?? args.endMs - args.startMs) / args.units;
     const excessUnits = Math.max(0, Math.min(args.units, Math.floor(args.excessUnits ?? 0)));
+    const unitSeconds = Math.max(0, Math.round(workedSlice / 1000));
+    // Each unit's share of every live segment. null keeps the one-roster-for-
+    // every-unit path exactly as it was.
+    const unitCrews: UnitCrew[] | null =
+        args.crewStretches && args.crewStretches.length ? crewPerUnit(args.crewStretches, args.units) : null;
     for (let k = 0; k < args.units; k++) {
+        const crew = unitCrews?.[k];
+        const builderId = crew ? crew.builderId ?? args.builderId ?? null : args.builderId;
+        const numberOfBuilders = crew ? crew.numberOfBuilders : args.numberOfBuilders;
+        const secondaryBuilderIds = crew ? crew.secondaryIds : args.secondaryBuilderIds;
+        const pieces = crew
+            ? crew.pieces
+            : [
+                  {
+                      share: 1,
+                      seconds: unitSeconds,
+                      primaryId: args.builderId ?? null,
+                      crewIds: args.secondaryBuilderIds.map(Number).filter((id) => id !== Number(args.builderId ?? -1)),
+                      numberOfBuilders: args.numberOfBuilders,
+                  },
+              ];
+
         const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
             args.harnNumber,
         ])) as { lastID?: number } | undefined;
@@ -96,12 +136,12 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
                 `INSERT INTO HARNBUILDTIMES
                     (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
                  VALUES(?, ?, ?, ?, ?, ?, ?)`,
-                [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders, args.unitDecision]
+                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, args.unitDecision]
             );
         } else {
             await execQuery(
                 "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-                [buildId, args.harnNumber, args.rev, args.builderId, args.timeTypeId, args.numberOfBuilders]
+                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
             );
         }
         // accumSeconds must be written here too: it is the duration authority
@@ -109,27 +149,52 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         // builderId as well: every other writer of a segment stamps it, and a
         // batch that left it NULL would be the one shape of build whose
         // per-person time cannot be read back off the segment rows.
-        await execQuery(
-            `INSERT INTO HARNBUILDSEGMENTS
-                (buildId, startTime, endTime, numberOfBuilders, accumSeconds, builderId)
-             VALUES(?, ?, ?, ?, ?, ?)`,
-            [
-                buildId,
-                formatTimestamp(new Date(args.startMs + k * sliceMs)),
-                formatTimestamp(new Date(args.startMs + (k + 1) * sliceMs)),
-                args.numberOfBuilders,
-                Math.max(0, Math.round(workedSlice / 1000)),
-                args.builderId ?? null,
-            ]
-        );
+        //
+        // One segment per live segment (one, unless the crew changed during
+        // the run), back to back inside the unit's wall-clock slice. Each
+        // carries its own primary, head-count and - in HARNBUILDSEGCREW - the
+        // names of everyone else on it, so per-person hours add up.
+        const sliceStart = args.startMs + k * sliceMs;
+        let shareBefore = 0;
+        for (let j = 0; j < pieces.length; j++) {
+            const p = pieces[j];
+            const pieceStart = sliceStart + shareBefore * sliceMs;
+            shareBefore += p.share;
+            const pieceEnd = j === pieces.length - 1 ? args.startMs + (k + 1) * sliceMs : sliceStart + shareBefore * sliceMs;
+            const primaryId = p.primaryId ?? builderId ?? null;
+            const segment = (await execQuery(
+                `INSERT INTO HARNBUILDSEGMENTS
+                    (buildId, startTime, endTime, numberOfBuilders, accumSeconds, builderId)
+                 VALUES(?, ?, ?, ?, ?, ?)`,
+                [
+                    buildId,
+                    formatTimestamp(new Date(pieceStart)),
+                    formatTimestamp(new Date(pieceEnd)),
+                    p.numberOfBuilders,
+                    p.seconds,
+                    primaryId,
+                ]
+            )) as { lastID?: number } | undefined;
+            const segmentId = Number(segment?.lastID ?? 0);
+            if (args.writeSegCrew && segmentId) {
+                for (const crewId of p.crewIds) {
+                    if (Number(crewId) === Number(primaryId ?? -1)) continue;
+                    await execQuery("INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId) VALUES (?, ?, ?)", [
+                        segmentId,
+                        buildId,
+                        crewId,
+                    ]);
+                }
+            }
+        }
         // Randy, 2026-09-25: nobody is the builder AND the second operator on
         // the same segment - that bills one pair of hands as two. The picker
         // (secondOperator.tsx) already excludes the primary from its
         // candidate list, but this writes straight from shared state, so it
         // gets its own defensive filter rather than trusting every caller
         // upstream got that right.
-        for (const secondaryId of args.secondaryBuilderIds) {
-            if (Number(secondaryId) === Number(args.builderId ?? -1)) continue;
+        for (const secondaryId of secondaryBuilderIds) {
+            if (Number(secondaryId) === Number(builderId ?? -1)) continue;
             await execQuery("INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)", [
                 buildId,
                 secondaryId,
