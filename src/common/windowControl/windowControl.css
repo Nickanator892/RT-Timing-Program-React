@@ -1,0 +1,74 @@
+/* Corner menu for the full-screen timer window (windowControl.tsx).
+   Under the pickers' backdrop (9000), the on-screen keyboard (10000) and the
+   screensaver (20000): while any of those is up, a tap on the corner goes to
+   them, not here. */
+
+.window-control-button {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 8500;
+    width: 52px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 0 0 0 8px;
+    color: #8a8a8a;
+    opacity: 0.7;
+}
+
+.window-control-button svg {
+    fill: currentColor;
+}
+
+.window-control-button:hover {
+    border-color: transparent;
+}
+
+.window-control-button.is-open {
+    background: #101010;
+    color: #f0f0f0;
+    opacity: 1;
+}
+
+.window-control-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 8501;
+    background: transparent;
+}
+
+.window-control-menu {
+    position: fixed;
+    top: 44px;
+    right: 6px;
+    z-index: 8502;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    padding: 0.5em;
+    background: #101010;
+    border: 3px solid #555;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+/* Finger-sized, like the pickers: the panel is driven by hand, often gloved. */
+.window-control-item {
+    min-width: 13em;
+    min-height: 2.6em;
+    padding: 0.35em 0.9em;
+    font-family: "Orbitron", monospace;
+    font-size: 1.3em;
+    text-align: left;
+    background: #2a2a2a;
+    color: #f0f0f0;
+}
+
+.window-control-close {
+    background: #5a2a2a;
+}
