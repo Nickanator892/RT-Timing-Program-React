@@ -1457,7 +1457,14 @@ app.post("/api/query", async (req, res) => {
   }
 
   try {
-    console.log(query, params);
+    // Not the values of a statement that names a password or the RtMcs key: a
+    // builder added on the settings page left theirs in server.log.
+    console.log(
+      query,
+      /password|KEYVAL/i.test(String(query))
+        ? `[${Array.isArray(params) ? params.length : 0} value(s) withheld]`
+        : params
+    );
     // `queueable` is the caller saying "I do not need the result of this, and
     // it is safe to apply late". Only writes whose parameters are already
     // settled qualify - a pause row, closing a segment. Anything that hands
