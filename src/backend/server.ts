@@ -5,6 +5,17 @@ import path from "path";
 import cors from "cors";
 import { Worker } from "worker_threads";
 import { WriteQueue } from "./writeQueue.js";
+import {
+  checkSchemaStamp,
+  openPool,
+  pgBlocked,
+  pgRunPayload,
+  pgTarget,
+  pgWithWriteTx,
+  readPgConfig,
+  readSecretFile,
+  type PgConfig,
+} from "./pgEngine.js";
 
 const app = express();
 const port = 5000;
@@ -43,7 +54,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
+// Above the 100 kB default: a big /api/build/batch carries every unit's
+// segments and crew (up to 500 units). Every other body is far smaller.
+app.use(express.json({ limit: "5mb" }));
 
 // --------------------
 // Persistent config
@@ -52,6 +65,30 @@ const CONFIG_FILE = process.env.DB_CONFIG_PATH ?? path.join(process.cwd(), "db-c
 const WORKER_PATH = process.env.WORKER_PATH ?? path.join(process.cwd(), "src/backend/db.worker.cjs");
 
 let dbPath: string | null = null;
+
+// --------------------
+// Engine switch
+// --------------------
+// db-config "engine": "sqlite" (the default, and everything below behaves as it
+// always has) or "pg": the shared WHPP database on PostgreSQL, written directly
+// as timing_app (pgEngine.ts). Read once at start; switching needs a restart.
+type Engine = "sqlite" | "pg";
+let engine: Engine = "sqlite";
+let pgConfig: PgConfig | null = null;
+/** Why the pg engine could not start (bad config, no password file). */
+let pgStartError: string | null = null;
+let pgKeyTriedAt = Date.now();
+
+/** Is there a database to talk to at all? */
+function dbConfigured(): boolean {
+  return engine === "pg" ? pgConfig != null : dbPath != null;
+}
+
+/** The statement text for the engine in use. Only the SQLite-only constructs
+ *  (MAX(a, b), COLLATE NOCASE, sqlite_master, ...) need a second spelling. */
+function sqlFor(sqlite: string, pg: string): string {
+  return engine === "pg" ? pg : sqlite;
+}
 
 // --------------------
 // RtMcs write proxy
@@ -183,6 +220,17 @@ function isWrite(payload: any): boolean {
  */
 async function loadRtmcsKey(): Promise<void> {
     rtmcsKey = null;
+    if (engine === "pg") {
+        // timing_app has no SELECT on msapikey (ruling 106): on PostgreSQL the
+        // key lives in a file next to the password, for /api/timer/release only.
+        try {
+            rtmcsKey = readSecretFile(pgConfig!.keyFile, "RT-MCS machine key");
+            console.log("RtMcs machine key loaded from", pgConfig!.keyFile);
+        } catch (err) {
+            console.warn("RtMcs key not loaded - releases are held until it is:", err instanceof Error ? err.message : err);
+        }
+        return;
+    }
     const out = await runWorkerLocal({
         query: "SELECT KEYVAL FROM MSAPIKEY WHERE KEYNAME = 'HPP'",
         params: [],
@@ -243,6 +291,9 @@ async function runWorkerRemote(workerPayload: any): Promise<any> {
  * the same statement would fail the same way over there.
  */
 async function runWorker(workerPayload: any): Promise<any> {
+    // PostgreSQL takes reads and writes alike - there is no file to read and
+    // no proxy to write through.
+    if (engine === "pg") return pgRunPayload(workerPayload);
     if (isWrite(workerPayload)) return runWorkerRemote(workerPayload);
     let local: any;
     try {
@@ -335,6 +386,9 @@ async function hasSegCrew(): Promise<boolean> {
  *  found after this panel stopped writing them. */
 async function segCrewExists(): Promise<boolean> {
   if (segCrewSeen) return true;
+  // On PostgreSQL the table is schema script 0008's and the Pi writes it
+  // itself, so it is always there and never refused.
+  if (engine === "pg") return (segCrewSeen = true);
   if (Date.now() - segCrewCheckedAt < 60_000) return false;
   segCrewCheckedAt = Date.now();
   const out = await runQuery(
@@ -369,7 +423,7 @@ writeQueue.load();
  */
 function isUnreachable(error: unknown): boolean {
     const s = String(error ?? "");
-    return /RtMcs unreachable|RtMcs key not loaded|database busy|fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|timed out|abort|readonly|unable to open|disk I[/]O|database is locked|SQLITE_(READONLY|CANTOPEN|IOERR|BUSY)|without a result envelope|HTTP 5\d\d/i.test(
+    return /RtMcs unreachable|RtMcs key not loaded|PostgreSQL unreachable|database busy|fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|timed out|abort|readonly|unable to open|disk I[/]O|database is locked|SQLITE_(READONLY|CANTOPEN|IOERR|BUSY)|without a result envelope|HTTP 5\d\d/i.test(
         s
     );
 }
@@ -383,16 +437,37 @@ let lastFlushError: string | null = null;
  * that belongs inside it would land on a row that is already finished.
  */
 async function flushWriteQueue(): Promise<void> {
-    if (flushing || !dbPath || !rtmcsKey) return;
+    if (flushing || !dbConfigured() || (engine === "sqlite" && !rtmcsKey)) return;
     flushing = true;
     try {
+        // While the pg engine refuses to run (not started yet, stamp or 0011
+        // objects missing) every replay would come back refused and be PARKED
+        // - in memory only, so a restart would lose it. Hold the queue
+        // instead, and look at the schema again: after a power cut this tick
+        // can come before the startup check has finished.
+        if (engine === "pg" && pgBlocked()) {
+            if (!pgStartError && writeQueue.pending > 0) await checkSchemaStamp();
+            if (pgBlocked()) {
+                lastFlushError = pgStartError ?? pgBlocked();
+                return;
+            }
+        }
         for (;;) {
             const entry = writeQueue.peek();
             if (!entry) {
                 lastFlushError = null;
                 break;
             }
-            const out = await runWorkerRemote({ dbPath, statements: entry.statements });
+            // A write is replayed only on the engine it was written for: its SQL
+            // is that engine's. One left over across the cutover is set aside.
+            if ((entry.engine ?? "sqlite") !== engine) {
+                writeQueue.park(entry.id, `written for ${entry.engine ?? "sqlite"}, this station now runs ${engine}`);
+                continue;
+            }
+            const out =
+                engine === "pg"
+                    ? await pgRunPayload({ statements: entry.statements })
+                    : await runWorkerRemote({ dbPath, statements: entry.statements });
             if (out?.success) {
                 writeQueue.done(entry.id);
                 console.log(`write queue: uploaded ${entry.kind} from ${entry.createdAt}`);
@@ -430,7 +505,7 @@ async function runOrQueue(
     }
     const error = String(out?.error ?? "unknown error");
     if (!isUnreachable(error)) return out;
-    const entry = writeQueue.add(kind, statements, nowLocal());
+    const entry = writeQueue.add(kind, statements, nowLocal(), engine === "pg" ? "pg" : undefined);
     if (!entry) return out;
     console.warn(`write queue: holding ${kind} locally (${error})`);
     return { success: true, queued: true, pending: writeQueue.pending, error: null };
@@ -448,6 +523,10 @@ setInterval(() => { void flushWriteQueue(); }, 15_000);
   try {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
     const config = JSON.parse(raw);
+    if (config.engine === "pg") {
+      await startPg(config);
+      return;
+    }
     if (!config.dbPath) return;
 
     validateSQLitePath(config.dbPath);
@@ -473,6 +552,37 @@ setInterval(() => { void flushWriteQueue(); }, 15_000);
     console.warn("migrate skipped - schema left as-is until the next start:", err);
   }
 })();
+
+/**
+ * PostgreSQL start. No migrate(): the numbered schema scripts own the schema
+ * and timing_app may not change it (ruling 1). Instead the start fails closed
+ * on the whpp_schema stamp - while it is behind, db-status reports the
+ * database unreadable with the reason and every query is refused.
+ */
+async function startPg(config: any): Promise<void> {
+  try {
+    const cfg = readPgConfig(config);
+    engine = "pg";
+    if (typeof config.rtmcsUrl === "string" && config.rtmcsUrl !== "" && !process.env.RTMCS_URL) {
+      rtmcsUrl = config.rtmcsUrl;
+    }
+    openPool(cfg);
+    // Only once there is a pool: a config whose password file cannot be read
+    // must not count as a configured database.
+    pgConfig = cfg;
+  } catch (err) {
+    // engine stays "pg" once the config says so: a broken pg config must not
+    // quietly fall back to a SQLite path nobody configured.
+    engine = "pg";
+    pgStartError = err instanceof Error ? err.message : String(err);
+    console.warn("PostgreSQL engine not started:", pgStartError);
+    return;
+  }
+  await loadRtmcsKey();
+  const blocked = await checkSchemaStamp();
+  if (blocked) console.warn("PostgreSQL refused:", blocked);
+  else console.log("PostgreSQL schema stamp OK - timer ready on", pgTarget());
+}
 
 /** SQLite has no ADD COLUMN IF NOT EXISTS - check pragma first. Idempotent. */
 async function ensureColumn(table: string, column: string, decl: string) {
@@ -723,6 +833,7 @@ app.get("/api/jobs/shipped", async (_req, res) => {
  * timer page is what acts on it.
  */
 app.get("/api/db-status", async (_req, res) => {
+  if (engine === "pg") return res.json(await pgStatus());
   if (!dbPath) {
     return res.json({ ready: false, writable: false, error: "No database path configured" });
   }
@@ -783,6 +894,45 @@ app.get("/api/db-status", async (_req, res) => {
   });
 });
 
+/**
+ * db-status on PostgreSQL, same fields. `ready` stays true for a configured
+ * engine (false would send the operator to the SQLite path screen); what is
+ * wrong - unreachable, schema behind, bad config - is readable:false with the
+ * reason, which the login page shows. A test query is the proof, as on SQLite.
+ */
+async function pgStatus(): Promise<any> {
+  const base = { engine: "pg", writer: pgTarget() };
+  if (pgStartError || !pgConfig) {
+    return { ...base, ready: true, readable: false, writable: false, writeError: pgStartError ?? "PostgreSQL not configured" };
+  }
+  // Fail closed until the stamp is right, but look again each time: the
+  // scripts may have been applied since.
+  if (pgBlocked()) await checkSchemaStamp();
+  const probe = await runQuery("SELECT 1 AS ok", []);
+  if (!probe?.success) {
+    const detail = String(probe?.error ?? "the database did not answer a test query");
+    console.warn("Database not usable:", detail);
+    return { ...base, ready: true, readable: false, writable: false, writeError: detail };
+  }
+  // A missing key file is looked for again, but not on every poll.
+  if (!rtmcsKey && Date.now() - pgKeyTriedAt > 5 * 60_000) {
+    pgKeyTriedAt = Date.now();
+    await loadRtmcsKey();
+  }
+  if (writeQueue.pending > 0) void flushWriteQueue();
+  return {
+    ...base,
+    ready: true,
+    readable: true,
+    writable: true,
+    writeError: undefined,
+    pendingWrites: writeQueue.pending,
+    pendingOldest: writeQueue.oldestAt,
+    rejectedWrites: writeQueue.parkedCount,
+    queueError: lastFlushError,
+  };
+}
+
 /** Detail for anyone diagnosing a queue that is not draining. */
 app.get("/api/write-queue", (_req, res) => {
   res.json({
@@ -809,7 +959,7 @@ app.get("/api/write-queue", (_req, res) => {
  */
 let heartbeatQueue: Promise<unknown> = Promise.resolve();
 app.post("/api/heartbeat", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const { segmentId, accumSeconds, state } = req.body ?? {};
   if (!segmentId) return res.status(400).json({ success: false, error: "segmentId is required" });
   try {
@@ -837,7 +987,7 @@ app.post("/api/heartbeat", async (req, res) => {
         {
           query: `UPDATE HARNBUILDSEGMENTS
             SET heartbeatAt = ?, heartbeatState = ?,
-                accumSeconds = MAX(COALESCE(accumSeconds, 0), ?),
+                accumSeconds = ${sqlFor("MAX", "GREATEST")}(COALESCE(accumSeconds, 0), ?),
                 stationId = COALESCE(stationId, ?)
           WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
           params: [nowLocal(), heartbeatState, accum, STATION_ID, segmentId],
@@ -865,7 +1015,7 @@ app.post("/api/heartbeat", async (req, res) => {
  * Returns { recovery: null } when there is nothing to recover.
  */
 app.get("/api/recovery/scan", async (_req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   try {
     const out = await runQuery(
       `SELECT s.segmentId, s.buildId, s.startTime, s.heartbeatAt, s.heartbeatState,
@@ -927,9 +1077,19 @@ app.get("/api/recovery/scan", async (_req, res) => {
  * first INSERT holds the write lock until COMMIT, so no other writer can add
  * a build in between and MAX(buildId) is this one.
  */
-const NEW_BUILD_ID = `(SELECT MAX(buildId) FROM HARNBUILDS)`;
+//
+// On PostgreSQL there is no whole-database write lock to lean on, so the ids
+// come from the identity sequences instead: currval() is this transaction's own
+// session's last value - the row it just inserted, whatever other writers do
+// (the same answer RT-MCS's FloorTimer gets from lastval()). The transaction
+// also holds the RT-MCS advisory lock from its first statement (pgEngine.ts).
+const SQLITE_NEW_BUILD_ID = `(SELECT MAX(buildId) FROM HARNBUILDS)`;
+const PG_NEW_BUILD_ID = `currval(pg_get_serial_sequence('harnbuilds', 'buildid'))`;
+const PG_NEW_SEGMENT_ID = `currval(pg_get_serial_sequence('harnbuildsegments', 'segmentid'))`;
 app.post("/api/build/start", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  const NEW_BUILD_ID = sqlFor(SQLITE_NEW_BUILD_ID, PG_NEW_BUILD_ID);
+  const NEW_SEGMENT_ID = sqlFor(`(SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ${NEW_BUILD_ID})`, PG_NEW_SEGMENT_ID);
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime, unitDecision } =
     req.body ?? {};
   if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
@@ -992,7 +1152,7 @@ app.post("/api/build/start", async (req, res) => {
       // Who else is on the first segment (crew contract, see hasSegCrew).
       ...(withSegCrew ? filteredSecondaryIds : []).map((id: any) => ({
         query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
-                VALUES ((SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ${NEW_BUILD_ID}), ${NEW_BUILD_ID}, ?)`,
+                VALUES (${NEW_SEGMENT_ID}, ${NEW_BUILD_ID}, ?)`,
         params: [id],
       })),
     ];
@@ -1041,7 +1201,7 @@ app.post("/api/build/start", async (req, res) => {
  * roster changes, which is the older crew-change case.
  */
 app.post("/api/build/segment-roll", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds, builderId } =
     req.body ?? {};
   if (!buildId || !segmentId) {
@@ -1079,7 +1239,7 @@ app.post("/api/build/segment-roll", async (req, res) => {
     const statements: { query: string; params?: any[]; requireChanges?: number }[] = [
       {
         query: `UPDATE HARNBUILDSEGMENTS
-                   SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?), heartbeatAt = ?
+                   SET endTime = ?, accumSeconds = ${sqlFor("MAX", "GREATEST")}(COALESCE(accumSeconds, 0), ?), heartbeatAt = ?
                  WHERE segmentId = ? AND COALESCE(endTime, '') = '' AND stationId = ?`,
         params: [now, Math.max(0, Math.floor(Number(accumSeconds) || 0)), now, segmentId, STATION_ID],
         requireChanges: 1,
@@ -1093,7 +1253,7 @@ app.post("/api/build/segment-roll", async (req, res) => {
       // worked. Same rule as RT-MCS's own rolls.
       statements.push({
         query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
-                SELECT DISTINCT ?, ?, sb.builderId FROM SECONDARYBUILDERS sb
+                SELECT DISTINCT ${sqlFor("?, ?", "?::integer, ?::integer")}, sb.builderId FROM SECONDARYBUILDERS sb
                  WHERE sb.buildId = ?
                    AND sb.builderId <> COALESCE((SELECT s.builderId FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?), -1)
                    AND (SELECT COALESCE(s.numberOfBuilders, 1) FROM HARNBUILDSEGMENTS s WHERE s.segmentId = ?) > 1
@@ -1131,8 +1291,8 @@ app.post("/api/build/segment-roll", async (req, res) => {
       // SECONDARYBUILDERS insert above) takes the whole roll down with them.
       ...(withSegCrew ? filteredSecondaryIds : []).map((id: any) => ({
         query: `INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId)
-                VALUES ((SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ?), ?, ?)`,
-        params: [buildId, buildId, id],
+                VALUES (${sqlFor("(SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ?)", PG_NEW_SEGMENT_ID)}, ?, ?)`,
+        params: engine === "pg" ? [buildId, id] : [buildId, buildId, id],
       }))
     );
     return { statements, newSegmentAt };
@@ -1150,6 +1310,81 @@ app.post("/api/build/segment-roll", async (req, res) => {
     res.json({ success: true, result: { segmentId: Number(out[roll.newSegmentAt].lastID), startTime: now } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * A batch's units in ONE transaction (PostgreSQL only). timeDistribution.ts
+ * still works out every unit's rows; on SQLite it writes them one /api/query
+ * at a time as it always has. On PostgreSQL that would interleave build ids
+ * with any other station's batch - the advisory lock is released at every
+ * commit - and RT-MCS groups a session's units by consecutive build ids
+ * (TimingSessions.cs, u.B == prev.B + 1; ruling 101). So the page posts the
+ * units here and they are written under one lock, ids from RETURNING. Same
+ * statements, same order, as writeDistributedTimes.
+ */
+app.post("/api/build/batch", async (req, res) => {
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (engine !== "pg") {
+    return res.status(400).json({ success: false, error: "/api/build/batch is the PostgreSQL engine's batch write" });
+  }
+  const { harnNumber, rev, timeTypeId, writeSegCrew, units } = req.body ?? {};
+  if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
+  if (!Array.isArray(units) || units.length < 1 || units.length > 500) {
+    return res.status(400).json({ success: false, error: "units must list 1 to 500 units" });
+  }
+  const id = (v: any) => (Number(v) > 0 ? Number(v) : null);
+  try {
+    const buildIds = await pgWithWriteTx(async (run) => {
+      const ids: number[] = [];
+      for (const u of units) {
+        const builderId = id(u?.builderId);
+        const insert = await run({ query: "INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", params: [harnNumber] });
+        const buildId = Number(insert?.lastID ?? 0);
+        if (!buildId) throw new Error("Failed to create build row");
+        ids.push(buildId);
+        if (u?.unitDecision === "EXTRA" || u?.unitDecision === "SPREAD") {
+          await run({
+            query: `INSERT INTO HARNBUILDTIMES
+                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
+                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+            params: [buildId, harnNumber, rev ?? null, builderId, timeTypeId, u.numberOfBuilders, u.unitDecision],
+          });
+        } else {
+          await run({
+            query: "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
+            params: [buildId, harnNumber, rev ?? null, builderId, timeTypeId, u.numberOfBuilders],
+          });
+        }
+        for (const s of Array.isArray(u?.segments) ? u.segments : []) {
+          const primaryId = id(s?.builderId);
+          const segment = await run({
+            query: `INSERT INTO HARNBUILDSEGMENTS
+                    (buildId, startTime, endTime, numberOfBuilders, accumSeconds, builderId)
+                 VALUES(?, ?, ?, ?, ?, ?)`,
+            params: [buildId, s.startTime, s.endTime, s.numberOfBuilders, s.accumSeconds, primaryId],
+          });
+          const segmentId = Number(segment?.lastID ?? 0);
+          if (writeSegCrew && segmentId) {
+            for (const crewId of Array.isArray(s?.crewIds) ? s.crewIds : []) {
+              if (Number(crewId) === Number(primaryId ?? -1)) continue;
+              await run({
+                query: "INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId) VALUES (?, ?, ?)",
+                params: [segmentId, buildId, crewId],
+              });
+            }
+          }
+        }
+        for (const secondaryId of Array.isArray(u?.secondaryIds) ? u.secondaryIds : []) {
+          if (Number(secondaryId) === Number(builderId ?? -1)) continue;
+          await run({ query: "INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)", params: [buildId, secondaryId] });
+        }
+      }
+      return ids;
+    });
+    res.json({ success: true, result: { buildIds } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -1184,7 +1419,7 @@ const HANDOFF_KINDS = ["OFFER_TIMING_PN", "OFFER_TIMING"];
 
 /** Offers waiting for this station, newest first. Read-only. */
 app.get("/api/handoff/pending", async (_req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   try {
     const out = await runQuery(
       `SELECT HandoffId, Kind, FromApp, FromStation, HarnPn, Rev, TimeTypeId, BatchUnits, Note,
@@ -1211,7 +1446,7 @@ app.get("/api/handoff/pending", async (_req, res) => {
  * and is told so, rather than both showing a dialog for one harness.
  */
 app.post("/api/handoff/claim", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const handoffId = Number(req.body?.handoffId);
   if (!handoffId) return res.status(400).json({ success: false, error: "handoffId is required" });
   try {
@@ -1238,7 +1473,7 @@ app.post("/api/handoff/claim", async (req, res) => {
  * at a 30-minute lifetime that window is six times wider than it used to be.
  */
 app.post("/api/handoff/respond", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const handoffId = Number(req.body?.handoffId);
   const response = String(req.body?.response ?? "").toUpperCase();
   if (!handoffId) return res.status(400).json({ success: false, error: "handoffId is required" });
@@ -1269,9 +1504,9 @@ app.post("/api/handoff/respond", async (req, res) => {
  * renderer that crashed should not wait for the next power cut.
  */
 async function sweepStaleClaims(): Promise<number> {
-  if (!dbPath || !rtmcsKey) return 0;
+  if (!dbConfigured() || (engine === "sqlite" && !rtmcsKey)) return 0;
   try {
-    const stale = await runQuery(
+    const stale = await runQuery(sqlFor(
       // COLLATE NOCASE on the station: a hostname is not case-sensitive, and
       // the same machine really does arrive spelled differently depending on
       // who wrote the row - os.hostname() gives "RandyMartens-PC" where
@@ -1282,6 +1517,10 @@ async function sweepStaleClaims(): Promise<number> {
         WHERE ToApp = 'TIMING' AND SeenAt IS NOT NULL AND Response IS NULL
           AND (ToStation IS NULL OR ToStation = ? COLLATE NOCASE)
           AND (ExpiresAt IS NULL OR ExpiresAt < ?)`,
+      `SELECT HandoffId FROM RTCT_ShopHandoff
+        WHERE ToApp = 'TIMING' AND SeenAt IS NOT NULL AND Response IS NULL
+          AND (ToStation IS NULL OR lower(ToStation) = lower(?::text))
+          AND (ExpiresAt IS NULL OR ExpiresAt < ?)`),
       [STATION_ID, nowLocal()]
     );
     const rows: any[] = stale?.success && Array.isArray(stale.result) ? stale.result : [];
@@ -1312,7 +1551,7 @@ setTimeout(() => { void sweepStaleClaims(); }, 20_000);
 setInterval(() => { void sweepStaleClaims(); }, 5 * 60_000);
 
 app.post("/api/build/discard", async (req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   const buildId = Number(req.body?.buildId);
   if (!buildId) return res.status(400).json({ success: false, error: "buildId is required" });
   // Built twice at most, like a roll: without the crew table's statements if
@@ -1345,7 +1584,7 @@ app.post("/api/build/discard", async (req, res) => {
       { query: `SELECT builderId FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       readCrew
         ? { query: `SELECT segmentId, builderId FROM HARNBUILDSEGCREW WHERE buildId = ?`, params: [buildId] }
-        : { query: `SELECT 0 AS segmentId WHERE 0`, params: [] },
+        : { query: sqlFor(`SELECT 0 AS segmentId WHERE 0`, `SELECT 0 AS segmentId WHERE false`), params: [] },
       { query: `DELETE FROM HARNBUILDSEGMENTS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM SECONDARYBUILDERS WHERE buildId = ?`, params: [buildId] },
       { query: `DELETE FROM HARNBUILDTIMES WHERE buildId = ?`, params: [buildId] },
@@ -1382,7 +1621,7 @@ app.post("/api/build/discard", async (req, res) => {
  *  not refused it this session - for the batch writes, which the page makes
  *  itself through /api/query (see hasSegCrew). */
 app.get("/api/build/crew-table", async (_req, res) => {
-  if (!dbPath) return res.status(400).json({ success: false, error: "Database not configured" });
+  if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
   // station: this panel's name on its segments, so the page can treat a build
   // open on THIS station the way the one-place triggers do.
   res.json({ success: true, result: { present: await hasSegCrew(), station: STATION_ID } });
@@ -1427,6 +1666,12 @@ app.post("/api/timer/release", async (req, res) => {
 
 app.post("/api/set-db-path", (req, res) => {
   const incomingPath = req.body?.path;
+  if (engine === "pg") {
+    return res.status(400).json({
+      success: false,
+      error: `This station uses PostgreSQL (${pgTarget() || "db-config engine pg"}) - there is no database file to choose`,
+    });
+  }
 
   if (!incomingPath) {
     return res.status(400).json({ success: false, error: "Path is required" });
@@ -1446,7 +1691,7 @@ app.post("/api/set-db-path", (req, res) => {
 });
 
 app.post("/api/query", async (req, res) => {
-  if (!dbPath) {
+  if (!dbConfigured()) {
     return res.status(400).json({ success: false, error: "Database not configured" });
   }
 

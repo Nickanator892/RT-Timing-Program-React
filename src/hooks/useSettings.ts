@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { matchQbUser, isAutoLinkable } from "../assets/qbUserMatch";
+import { sqlFor } from "../assets/dbEngine";
 
 interface PauseReason {
     Id: string;
@@ -42,11 +43,16 @@ interface Settings {
  *  the same rule as the RT-MCS phone timer's builder list (FloorTimer.cs
  *  BuilderLastUsedSql): last time on a timer anywhere, as primary, handed a
  *  segment, or crew. */
-const USERS_BY_LAST_USE =
+const usersByLastUse = () =>
     "SELECT b.*, (SELECT MAX(s.startTime) FROM HARNBUILDSEGMENTS s WHERE s.builderId = b.Id" +
     " OR s.buildId IN (SELECT t.buildId FROM HARNBUILDTIMES t WHERE t.builderId = b.Id)" +
     " OR s.buildId IN (SELECT sb.buildId FROM SECONDARYBUILDERS sb WHERE sb.builderId = b.Id)) AS lastUsed" +
-    " FROM HARNBUILDERS b WHERE b.active != 0 ORDER BY lastUsed IS NULL, lastUsed DESC, b.Id";
+    // PostgreSQL cannot use an output alias inside an ORDER BY expression;
+    // NULLS LAST is the same order (FloorTimer.cs FloorBuilders).
+    sqlFor(
+        " FROM HARNBUILDERS b WHERE b.active != 0 ORDER BY lastUsed IS NULL, lastUsed DESC, b.Id",
+        " FROM HARNBUILDERS b WHERE b.active != 0 ORDER BY lastUsed DESC NULLS LAST, b.Id"
+    );
 
 /** Why the most recent query failed, so a load that gives up can say why. */
 let lastQueryError: string | null = null;
@@ -136,7 +142,7 @@ useEffect(() => {
                     await execQuery("SELECT * FROM HARNBUILDPAUSEREASONS"),
                     // Latest used first (assets/operatorOrder.ts). The plain list is the
                     // fallback, so a failed usage lookup can never empty the login page.
-                    (await execQuery(USERS_BY_LAST_USE)) ??
+                    (await execQuery(usersByLastUse())) ??
                         (await execQuery("SELECT * FROM HARNBUILDERS WHERE active != 0")),
                     await execQuery("SELECT * FROM HARNBUILDERS ORDER BY active DESC"),
                 ]);

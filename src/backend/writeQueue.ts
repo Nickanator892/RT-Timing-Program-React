@@ -36,6 +36,8 @@ export interface QueuedWrite {
     statements: QueuedStatement[];
     attempts: number;
     lastError?: string;
+    /** "pg" when written for the PostgreSQL engine; absent = SQLite (sent to RT-MCS). */
+    engine?: "pg";
 }
 
 /** Kept small enough to replay quickly, large enough to cover a long outage. */
@@ -98,7 +100,7 @@ export class WriteQueue {
         return this.entries.length ? this.entries[0].createdAt : null;
     }
 
-    add(kind: string, statements: QueuedStatement[], createdAt: string): QueuedWrite | null {
+    add(kind: string, statements: QueuedStatement[], createdAt: string, engine?: "pg"): QueuedWrite | null {
         this.load();
         if (this.entries.length >= MAX_ENTRIES) {
             console.error("write queue is full - refusing to queue another write");
@@ -111,6 +113,7 @@ export class WriteQueue {
             kind,
             statements,
             attempts: 0,
+            ...(engine ? { engine } : {}),
         };
         this.entries.push(entry);
         this.rewrite();

@@ -18,6 +18,7 @@ import Screensaver from "./common/screensaver/screensaver";
 import HandoffOffer from "./common/handoffOffer/handoffOffer";
 import CarryoverLockGuard, { requestGuardedChange } from "./common/carryoverLock/carryoverLock";
 import WindowControl from "./common/windowControl/windowControl";
+import { setDbEngine } from "./assets/dbEngine";
 
 const API_BASE = "http://localhost:5000";
 
@@ -170,6 +171,7 @@ function App() {
             .then((res) => res.json())
             .then((data) => {
                 console.log("DB status response:", data);
+                setDbEngine(data.engine);
                 setDbReady(data.ready === true);
             })
             .catch((err) => {
