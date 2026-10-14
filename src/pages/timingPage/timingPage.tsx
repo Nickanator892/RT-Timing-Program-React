@@ -35,6 +35,7 @@ import {
 import { fetchHarnProgress } from "../../hooks/useJobs";
 import { checkSegmentStatus, clearCarryoverClock, isSegmentStale } from "../../assets/carryoverGuard";
 import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
+import { sqlFor } from "../../assets/dbEngine";
 
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
@@ -988,7 +989,7 @@ function TimingPage({
             // the operator is still standing at the machine.
             await execWrite(
                 `INSERT INTO MSTIMERBOBBIN (HARN, REV, BUILDID, BUILDERID, STATION, STARTTIME, ENDTIME)
-                 SELECT ?, ?, ?, ?, stationId, ?, '' FROM HARNBUILDSEGMENTS WHERE segmentId = ?`,
+                 SELECT ${sqlFor("?, ?, ?, ?", "?::text, ?::integer, ?::integer, ?::integer")}, stationId, ${sqlFor("?", "?::text")}, '' FROM HARNBUILDSEGMENTS WHERE segmentId = ?`,
                 [selectedHarn, buildKit?.REV ?? null, currentBuildId || null, selectedUser?.Id, at, currentSegmentId]
             );
             setBobbinStart(at);
@@ -1013,7 +1014,11 @@ function TimingPage({
         try {
             await execWrite(
                 `UPDATE MSTIMERBOBBIN
-                    SET ENDTIME = ?, SECONDS = MAX(0, CAST(strftime('%s', ?) AS INTEGER) - CAST(strftime('%s', STARTTIME) AS INTEGER))
+                    SET ENDTIME = ?, SECONDS = ${sqlFor(
+                        "MAX(0, CAST(strftime('%s', ?) AS INTEGER) - CAST(strftime('%s', STARTTIME) AS INTEGER))",
+                        // RT-MCS FloorTimer CloseBobbin's PostgreSQL twin.
+                        "GREATEST(0, CAST(EXTRACT(EPOCH FROM CAST(? AS timestamp) - CAST(STARTTIME AS timestamp)) AS integer))"
+                    )}
                   WHERE BUILDERID = ? AND ENDTIME = ''`,
                 [at, at, selectedUser?.Id],
                 // The row already exists, so ending it late is still correct.
@@ -1083,7 +1088,11 @@ function TimingPage({
                 `SELECT b.qbAutoPause, b.qbTimeUserId, s.onTheClock, p.lastPollAt,
                         (SELECT Id FROM HARNBUILDPAUSEREASONS WHERE reason_name = ? LIMIT 1) AS reasonId
                    FROM HARNBUILDERS b
-              LEFT JOIN QBTIMESTATUS s ON s.qbTimeUserId = b.qbTimeUserId
+              LEFT JOIN QBTIMESTATUS s ON ${sqlFor(
+                  "s.qbTimeUserId = b.qbTimeUserId",
+                  // integer against text on PostgreSQL (FloorTimer.cs FloorClockedOut)
+                  "CAST(s.qbTimeUserId AS text) = CAST(b.qbTimeUserId AS text)"
+              )}
               LEFT JOIN QBTIMEPOLL   p ON p.id = 1
                   WHERE b.Id = ?`,
                 [CLOCKED_OUT_REASON, selectedUser!.Id]
@@ -1482,7 +1491,11 @@ function TimingPage({
         if (unitDecisionColumnRef.current !== null) return unitDecisionColumnRef.current;
         try {
             const data = await execQuery(
-                `SELECT COUNT(*) AS n FROM pragma_table_info('HARNBUILDTIMES') WHERE name = 'unitDecision'`
+                sqlFor(
+                    `SELECT COUNT(*) AS n FROM pragma_table_info('HARNBUILDTIMES') WHERE name = 'unitDecision'`,
+                    `SELECT COUNT(*) AS n FROM information_schema.columns
+                      WHERE table_schema = current_schema() AND table_name = 'harnbuildtimes' AND column_name = 'unitdecision'`
+                )
             );
             const present = !!data?.result && Number(data.result[0]?.n ?? 0) > 0;
             unitDecisionColumnRef.current = present;

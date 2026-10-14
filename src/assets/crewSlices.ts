@@ -1,4 +1,5 @@
 import { execQuery } from "./execQueryFunction";
+import { sqlFor } from "./dbEngine";
 import type { User } from "./types/UserType";
 
 /**
@@ -232,7 +233,7 @@ export async function findOpenElsewhere(builderIds: number[], excludeBuildId: nu
            FROM HARNBUILDERS b
            JOIN HARNBUILDSEGMENTS s
              ON COALESCE(s.endTime, '') = '' AND s.stationId IS NOT NULL AND s.buildId <> ?
-            AND (s.stationId <> ? COLLATE NOCASE OR s.stationId = 'RT-MCS phone')
+            AND (${sqlFor("s.stationId <> ? COLLATE NOCASE", "lower(s.stationId) <> lower(?::text)")} OR s.stationId = 'RT-MCS phone')
             AND (s.builderId = b.Id
                  OR EXISTS (SELECT 1 FROM SECONDARYBUILDERS sb WHERE sb.buildId = s.buildId AND sb.builderId = b.Id))
            LEFT JOIN HARNBUILDS h ON h.buildId = s.buildId
@@ -355,7 +356,13 @@ async function readReleaseAudit(buildId: number, action: "SUBMIT" | "DROP", clos
            LEFT JOIN HARNBUILDERS rb ON rb.Id = r.BYBUILDERID
            LEFT JOIN HARNBUILDERS rw ON rw.Id = r.BUILDERID
           WHERE r.BUILDID = ? AND r.ACTION = ?
-            AND r.AT BETWEEN datetime(?, '-10 seconds') AND datetime(?, '+10 seconds')
+            AND r.AT BETWEEN ${sqlFor(
+                "datetime(?, '-10 seconds') AND datetime(?, '+10 seconds')",
+                // Text against text, as SQLite compares it: the stamps are
+                // 'YYYY-MM-DD HH:MM:SS' local wall time (ruling 79).
+                "to_char(?::timestamp - interval '10 seconds', 'YYYY-MM-DD HH24:MI:SS')" +
+                    " AND to_char(?::timestamp + interval '10 seconds', 'YYYY-MM-DD HH24:MI:SS')"
+            )}
           ORDER BY r.ID DESC LIMIT 1`,
         [buildId, action, closedAt, closedAt]
     );

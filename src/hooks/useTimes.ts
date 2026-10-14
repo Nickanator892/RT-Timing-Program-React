@@ -1,4 +1,5 @@
 import { useSharedState } from "./useSharedState";
+import { sqlFor } from "../assets/dbEngine";
 
 export interface LoggedTime {
     startTime: string;
@@ -128,7 +129,7 @@ export function useTimes() {
             const result = segmentId
                 ? await execQuery(
                       `UPDATE HARNBUILDSEGMENTS
-                          SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?)
+                          SET endTime = ?, accumSeconds = ${sqlFor("MAX", "GREATEST")}(COALESCE(accumSeconds, 0), ?)
                         WHERE segmentId = ? AND COALESCE(endTime, '') = ''`,
                       [time.endTime, accumSeconds, segmentId]
                   )
@@ -136,7 +137,7 @@ export function useTimes() {
                       // Pre-recovery builds started before this release have no
                       // segment id in shared state; fall back to the old form.
                       `UPDATE HARNBUILDSEGMENTS
-                          SET endTime = ?, accumSeconds = MAX(COALESCE(accumSeconds, 0), ?)
+                          SET endTime = ?, accumSeconds = ${sqlFor("MAX", "GREATEST")}(COALESCE(accumSeconds, 0), ?)
                         WHERE buildId = ? AND COALESCE(endTime, '') = ''`,
                       [time.endTime, accumSeconds, buildId]
                   );

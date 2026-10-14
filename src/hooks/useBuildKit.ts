@@ -1,4 +1,5 @@
 import { useSharedState } from "./useSharedState";
+import { sqlFor } from "../assets/dbEngine";
 
 export interface BuildKit {
     REV: number;
@@ -35,7 +36,12 @@ export function useBuildKit() {
      */
     async function fetchKit(rev: number, phkid: number | null = null): Promise<BuildKit | undefined> {
         const result = await execQuery(
+            sqlFor(
             `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS 'Kit Name', PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS 'Qty To Build', printf('%.2f',PH.SCHTIMEDAYS) AS 'Days To Complete PN', printf('%.2f',PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY) AS 'Target Setup Time (Minutes)', printf('%.2f',PH.SPLBUILDTIME) AS 'Target Build Time (Minutes)', printf('%.2f',PH.BRDTIME) AS 'Target Braid Time (Minutes)' FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID WHERE BKL.REV=(?) AND ((?) IS NULL OR BKL.PHKID = (?)) ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC;`,
+            // PostgreSQL: double-quoted aliases, to_char for printf (NULL is
+            // '0.00' there too), and a typed parameter for the IS NULL test.
+            `SELECT CASE WHEN LAG(PHK.PHKITNAME) OVER (ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC) = PHK.PHKITNAME THEN '' ELSE PHK.PHKITNAME END AS "Kit Name", PH.HARNPN, BKL.REV, (PH.QTY * PH.ALTQTY) AS "Qty To Build", to_char(COALESCE(PH.SCHTIMEDAYS, 0), 'FM9999999990.00') AS "Days To Complete PN", to_char(COALESCE(PH.SPLSETUPTIME * PH.QTY * PH.ALTQTY, 0), 'FM9999999990.00') AS "Target Setup Time (Minutes)", to_char(COALESCE(PH.SPLBUILDTIME, 0), 'FM9999999990.00') AS "Target Build Time (Minutes)", to_char(COALESCE(PH.BRDTIME, 0), 'FM9999999990.00') AS "Target Braid Time (Minutes)" FROM BUILDKITLIST BKL LEFT JOIN PROJHARN PH ON PH.KITID = BKL.PHKID AND PH.RID = BKL.REV LEFT JOIN PERMHARNKITS PHK ON PHK.PHKID = BKL.PHKID WHERE BKL.REV=(?) AND ((?::integer) IS NULL OR BKL.PHKID = (?::integer)) ORDER BY BKL.BLDORD ASC, PH.INBUILD ASC;`
+            ),
             [rev, phkid, phkid]
         );
 

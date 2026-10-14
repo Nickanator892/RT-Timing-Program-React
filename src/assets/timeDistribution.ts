@@ -1,5 +1,6 @@
 import { execQuery } from "./execQueryFunction";
 import { crewPerUnit, type CrewStretch, type UnitCrew } from "./crewSlices";
+import { dbEngine } from "./dbEngine";
 
 /** Local time as "YYYY-MM-DD HH:mm:ss" - text-sortable and new Date() parseable. */
 export function formatTimestamp(d: Date): string {
@@ -80,19 +81,29 @@ export interface DistributedTimeArgs {
     writeSegCrew?: boolean;
 }
 
+/** One unit's rows, worked out before anything is written. */
+export interface DistributedUnit {
+    builderId: number | null | undefined;
+    numberOfBuilders: number;
+    /** Set only on the excess units (see DistributedTimeArgs.unitDecision). */
+    unitDecision: "EXTRA" | "SPREAD" | null;
+    segments: {
+        startTime: string;
+        endTime: string;
+        numberOfBuilders: number;
+        accumSeconds: number;
+        builderId: number | null;
+        crewIds: number[];
+    }[];
+    secondaryIds: number[];
+}
+
 /**
- * Records one timed window that covered `units` physical units of a PN -
- * batched operations like "strip every cable for all 12 harnesses" or a
- * manually entered total. Writes the exact same row shape as a normal
- * single-unit session, once per unit, with the window sliced into equal
- * consecutive segments: unit counts, progress bars, the analytics chart, and
- * HARNBUILDTIMES_VIEW all work unchanged, and each unit carries the honest
- * per-unit average. With `crewStretches`, each unit gets one segment per live
- * segment, like a single build that rolled. Returns the new buildIds (first =
- * oldest slice).
+ * The rows writeDistributedTimes writes, unit by unit, without writing them.
+ * Pure, so the same plan goes to either engine.
  */
-export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<number[]> {
-    const buildIds: number[] = [];
+export function planDistributedTimes(args: DistributedTimeArgs): DistributedUnit[] {
+    const units: DistributedUnit[] = [];
     const sliceMs = (args.endMs - args.startMs) / args.units;
     // The share of EARNED time each unit gets. Falls back to the wall-clock
     // slice for callers that have no separate worked total (manual entry, where
@@ -121,29 +132,10 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
                   },
               ];
 
-        const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
-            args.harnNumber,
-        ])) as { lastID?: number } | undefined;
-        const buildId = Number(insert?.lastID ?? 0);
-        if (!buildId) throw new Error("Failed to create build row");
-        buildIds.push(buildId);
-
         // The LAST `excessUnits` slices are the ones that were not actually
         // owed - see the doc comment on DistributedTimeArgs.unitDecision.
         const isExcessRow = args.unitDecision != null && k >= args.units - excessUnits;
-        if (isExcessRow) {
-            await execQuery(
-                `INSERT INTO HARNBUILDTIMES
-                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
-                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, args.unitDecision]
-            );
-        } else {
-            await execQuery(
-                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
-            );
-        }
+
         // accumSeconds must be written here too: it is the duration authority
         // the analytics view sums, so a batch segment without it charts as zero.
         // builderId as well: every other writer of a segment stamps it, and a
@@ -156,28 +148,85 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         // names of everyone else on it, so per-person hours add up.
         const sliceStart = args.startMs + k * sliceMs;
         let shareBefore = 0;
+        const segments: DistributedUnit["segments"] = [];
         for (let j = 0; j < pieces.length; j++) {
             const p = pieces[j];
             const pieceStart = sliceStart + shareBefore * sliceMs;
             shareBefore += p.share;
             const pieceEnd = j === pieces.length - 1 ? args.startMs + (k + 1) * sliceMs : sliceStart + shareBefore * sliceMs;
-            const primaryId = p.primaryId ?? builderId ?? null;
+            segments.push({
+                startTime: formatTimestamp(new Date(pieceStart)),
+                endTime: formatTimestamp(new Date(pieceEnd)),
+                numberOfBuilders: p.numberOfBuilders,
+                accumSeconds: p.seconds,
+                builderId: p.primaryId ?? builderId ?? null,
+                crewIds: p.crewIds,
+            });
+        }
+        units.push({
+            builderId,
+            numberOfBuilders,
+            unitDecision: isExcessRow ? args.unitDecision ?? null : null,
+            segments,
+            secondaryIds: secondaryBuilderIds,
+        });
+    }
+    return units;
+}
+
+/**
+ * Records one timed window that covered `units` physical units of a PN -
+ * batched operations like "strip every cable for all 12 harnesses" or a
+ * manually entered total. Writes the exact same row shape as a normal
+ * single-unit session, once per unit, with the window sliced into equal
+ * consecutive segments: unit counts, progress bars, the analytics chart, and
+ * HARNBUILDTIMES_VIEW all work unchanged, and each unit carries the honest
+ * per-unit average. With `crewStretches`, each unit gets one segment per live
+ * segment, like a single build that rolled. Returns the new buildIds (first =
+ * oldest slice).
+ *
+ * On PostgreSQL the whole batch is ONE server-side transaction
+ * (/api/build/batch): RT-MCS groups a session's units by consecutive build
+ * ids, which only one transaction holding its lock can promise there.
+ */
+export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<number[]> {
+    const plan = planDistributedTimes(args);
+    if (dbEngine() === "pg") return writeBatchPg(args, plan);
+    const buildIds: number[] = [];
+    for (const unit of plan) {
+        const builderId = unit.builderId;
+        const numberOfBuilders = unit.numberOfBuilders;
+        const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
+            args.harnNumber,
+        ])) as { lastID?: number } | undefined;
+        const buildId = Number(insert?.lastID ?? 0);
+        if (!buildId) throw new Error("Failed to create build row");
+        buildIds.push(buildId);
+
+        if (unit.unitDecision != null) {
+            await execQuery(
+                `INSERT INTO HARNBUILDTIMES
+                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
+                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, unit.unitDecision]
+            );
+        } else {
+            await execQuery(
+                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
+                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
+            );
+        }
+        for (const seg of unit.segments) {
+            const primaryId = seg.builderId;
             const segment = (await execQuery(
                 `INSERT INTO HARNBUILDSEGMENTS
                     (buildId, startTime, endTime, numberOfBuilders, accumSeconds, builderId)
                  VALUES(?, ?, ?, ?, ?, ?)`,
-                [
-                    buildId,
-                    formatTimestamp(new Date(pieceStart)),
-                    formatTimestamp(new Date(pieceEnd)),
-                    p.numberOfBuilders,
-                    p.seconds,
-                    primaryId,
-                ]
+                [buildId, seg.startTime, seg.endTime, seg.numberOfBuilders, seg.accumSeconds, primaryId]
             )) as { lastID?: number } | undefined;
             const segmentId = Number(segment?.lastID ?? 0);
             if (args.writeSegCrew && segmentId) {
-                for (const crewId of p.crewIds) {
+                for (const crewId of seg.crewIds) {
                     if (Number(crewId) === Number(primaryId ?? -1)) continue;
                     await execQuery("INSERT INTO HARNBUILDSEGCREW (segmentId, buildId, builderId) VALUES (?, ?, ?)", [
                         segmentId,
@@ -193,13 +242,35 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         // candidate list, but this writes straight from shared state, so it
         // gets its own defensive filter rather than trusting every caller
         // upstream got that right.
-        for (const secondaryId of secondaryBuilderIds) {
+        for (const secondaryId of unit.secondaryIds) {
             if (Number(secondaryId) === Number(builderId ?? -1)) continue;
             await execQuery("INSERT INTO SECONDARYBUILDERS (buildId, builderId) VALUES (?, ?)", [
                 buildId,
                 secondaryId,
             ]);
         }
+    }
+    return buildIds;
+}
+
+/** PostgreSQL: the planned units in one transaction (server.ts /api/build/batch). */
+async function writeBatchPg(args: DistributedTimeArgs, units: DistributedUnit[]): Promise<number[]> {
+    const response = await fetch("http://localhost:5000/api/build/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            harnNumber: args.harnNumber,
+            rev: args.rev ?? null,
+            timeTypeId: args.timeTypeId,
+            writeSegCrew: args.writeSegCrew === true,
+            units,
+        }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!data?.success) throw new Error(String(data?.error ?? `batch write failed (HTTP ${response.status})`));
+    const buildIds = (data.result?.buildIds ?? []).map(Number);
+    if (buildIds.length !== units.length || buildIds.some((id: number) => !(id > 0))) {
+        throw new Error("Failed to create build row");
     }
     return buildIds;
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { sqlFor } from "../assets/dbEngine";
 
 /**
  * The master schedule, as the bench sees it.
@@ -113,7 +114,7 @@ SELECT PH.HARNPN AS partNum,
          WHERE T.harnNumber = PH.HARNPN AND T.REV = PH.RID
            AND T.timeTypeId = ${PROGRESS_TIMETYPE} AND T.openSegments > 0) AS running
   FROM PROJHARN PH
- WHERE PH.RID = ? AND (? IS NULL OR PH.KITID = ?)`;
+ WHERE PH.RID = ? AND (${sqlFor("? IS NULL OR PH.KITID = ?", "?::integer IS NULL OR PH.KITID = ?::integer")})`;
 }
 
 /** Finished work: the job has fully shipped (the board's Completed block). */
