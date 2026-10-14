@@ -138,7 +138,7 @@ export function compareRows(lite: any[], pg: any[], ordered: boolean): RowDiff |
 // --------------------
 
 export function workerRun(db: Database.Database, payload: any): any {
-    const runOne = (query: string, params: any[]) => {
+    const runOne = (query: string, params: any[]): any => {
         const stmt = db.prepare(query);
         if (query.trim().toUpperCase().startsWith("SELECT")) return stmt.all(params ?? []);
         const info = stmt.run(params ?? []);
@@ -198,11 +198,18 @@ export interface RunningServer {
     proc: ChildProcess;
     log: () => string;
     stop: () => Promise<void>;
+    /** The folder holding db-config.json - and pending-writes.jsonl. */
+    dir: string;
 }
 
 /** server.ts on port 5000 with the given db-config (one at a time: the port is fixed). */
-export async function startServer(config: object, label: string): Promise<RunningServer> {
+export async function startServer(
+    config: object,
+    label: string,
+    opts: { waitReadable?: boolean; before?: (dir: string) => void } = {}
+): Promise<RunningServer> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rtt-srv-${label}-`));
+    opts.before?.(dir);
     const cfg = path.join(dir, "db-config.json");
     fs.writeFileSync(cfg, JSON.stringify(config, null, 2));
     let out = "";
@@ -222,7 +229,7 @@ export async function startServer(config: object, label: string): Promise<Runnin
         try {
             const r = await fetch("http://localhost:5000/api/db-status", { signal: AbortSignal.timeout(5_000) });
             const s: any = await r.json();
-            if (s.readable) break;
+            if (s.readable || opts.waitReadable === false) break;
             if (Date.now() > deadline) throw new Error(`server never readable: ${JSON.stringify(s)}\n${out}`);
         } catch (err) {
             if (Date.now() > deadline) throw new Error(`server never answered: ${err}\n${out}`);
@@ -231,6 +238,7 @@ export async function startServer(config: object, label: string): Promise<Runnin
     }
     return {
         proc,
+        dir,
         log: () => out,
         stop: () =>
             new Promise((resolve) => {

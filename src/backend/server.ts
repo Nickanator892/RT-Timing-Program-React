@@ -440,6 +440,18 @@ async function flushWriteQueue(): Promise<void> {
     if (flushing || !dbConfigured() || (engine === "sqlite" && !rtmcsKey)) return;
     flushing = true;
     try {
+        // While the pg engine refuses to run (not started yet, stamp or 0011
+        // objects missing) every replay would come back refused and be PARKED
+        // - in memory only, so a restart would lose it. Hold the queue
+        // instead, and look at the schema again: after a power cut this tick
+        // can come before the startup check has finished.
+        if (engine === "pg" && pgBlocked()) {
+            if (!pgStartError && writeQueue.pending > 0) await checkSchemaStamp();
+            if (pgBlocked()) {
+                lastFlushError = pgStartError ?? pgBlocked();
+                return;
+            }
+        }
         for (;;) {
             const entry = writeQueue.peek();
             if (!entry) {
@@ -549,12 +561,15 @@ setInterval(() => { void flushWriteQueue(); }, 15_000);
  */
 async function startPg(config: any): Promise<void> {
   try {
-    pgConfig = readPgConfig(config);
+    const cfg = readPgConfig(config);
     engine = "pg";
     if (typeof config.rtmcsUrl === "string" && config.rtmcsUrl !== "" && !process.env.RTMCS_URL) {
       rtmcsUrl = config.rtmcsUrl;
     }
-    openPool(pgConfig);
+    openPool(cfg);
+    // Only once there is a pool: a config whose password file cannot be read
+    // must not count as a configured database.
+    pgConfig = cfg;
   } catch (err) {
     // engine stays "pg" once the config says so: a broken pg config must not
     // quietly fall back to a SQLite path nobody configured.

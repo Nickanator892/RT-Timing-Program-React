@@ -51,6 +51,16 @@ for (const oid of [1082, 1114, 1184]) pg.types.setTypeParser(oid, (v) => v); // 
 /** A reply that never comes (a dead link with no FIN) must still end the wait:
  *  the RT-MCS proxy gave up after 20 s too. */
 const QUERY_TIMEOUT_MS = 25_000;
+const IDLE_IN_TX_TIMEOUT_MS = 30_000;
+
+/** Schema script 0011's triggers and 0008's crew table. whpp_schema does not
+ *  move for 0004-0019, so the stamp alone cannot tell a database reloaded
+ *  without them - and without the triggers ONE PLACE AT A TIME is silently off. */
+const REQUIRED_TRIGGERS: [table: string, trigger: string][] = [
+    ["harnbuildsegments", "trg_timer_one_place_seg_v1"],
+    ["secondarybuilders", "trg_timer_one_place_crew_v1"],
+];
+const REQUIRED_TABLES = ["harnbuildsegcrew"];
 
 export interface PgConfig {
     host: string;
@@ -133,7 +143,13 @@ export function openPool(cfg: PgConfig, tuning: { lockTimeoutMs?: number; busyRe
         // Session settings at connect: the ONE PLACE contract asks every writer
         // for a bounded lock wait (0011 header). READ COMMITTED is also set
         // explicitly on every write transaction below.
-        options: `-c lock_timeout=${tuning.lockTimeoutMs ?? LOCK_TIMEOUT_MS}`,
+        // idle_in_transaction_session_timeout: a Pi that dies mid-transaction
+        // would otherwise hold the RT-MCS lock until TCP gives up (hours), and
+        // every writer on the floor fails with 55P03 meanwhile. Ours never sit
+        // idle inside a transaction - statements go back to back.
+        options:
+            `-c lock_timeout=${tuning.lockTimeoutMs ?? LOCK_TIMEOUT_MS}` +
+            ` -c idle_in_transaction_session_timeout=${IDLE_IN_TX_TIMEOUT_MS}`,
         max: 4,
         idleTimeoutMillis: 30_000,
         connectionTimeoutMillis: 10_000,
@@ -428,6 +444,22 @@ export async function checkSchemaStamp(): Promise<string | null> {
             if (v == null) problems.push(`${component} has no whpp_schema row (this build needs v${need})`);
             else if (v < need) problems.push(`${component} is v${v} in the database, this build needs v${need}`);
         }
+        const trg = await pool.query(
+            `SELECT c.relname AS tbl, t.tgname AS trg
+               FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+              WHERE NOT t.tgisinternal AND t.tgenabled <> 'D'
+                AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`
+        );
+        const live = new Set(trg.rows.map((x: any) => `${x.tbl}.${x.trg}`));
+        for (const [table, trigger] of REQUIRED_TRIGGERS) {
+            if (!live.has(`${table}.${trigger}`)) problems.push(`trigger ${trigger} on ${table} is missing or disabled (script 0011)`);
+        }
+        const tabs = await pool.query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ANY($1::text[])",
+            [REQUIRED_TABLES]
+        );
+        const haveTables = new Set(tabs.rows.map((x: any) => String(x.table_name)));
+        for (const t of REQUIRED_TABLES) if (!haveTables.has(t)) problems.push(`table ${t} is missing (script 0008)`);
         blocked = problems.length
             ? `The PostgreSQL schema is behind this timer: ${problems.join("; ")}. ` +
               "The timer never changes the schema - apply the numbered scripts (Scripts\\postgres\\schema) first."
@@ -482,8 +514,12 @@ export async function pgWithWriteTx<T>(work: (run: TxRunner) => Promise<T>): Pro
         let client: pg.PoolClient | null = null;
         let broken = false;
         let committing = false;
+        // A backend that drops while we hold the client emits 'error' on it;
+        // note it so the client is destroyed, not returned to the pool.
+        const onClientError = () => { broken = true; };
         try {
             client = await pool!.connect();
+            client.on("error", onClientError);
             await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
             await client.query("SELECT pg_advisory_xact_lock($1)", [WRITE_LOCK_KEY]);
             const c = client;
@@ -514,8 +550,11 @@ export async function pgWithWriteTx<T>(work: (run: TxRunner) => Promise<T>): Pro
                 console.warn("COMMIT outcome unknown:", err?.code, err?.message);
                 throw e;
             }
-            if (isBusyError(err) && attempt === 1) {
-                console.warn("PostgreSQL busy, retrying once:", pgErrorMessage(err));
+            // Busy, or the link dropped before COMMIT was sent (nothing can have
+            // landed): the whole transaction once more, on a fresh connection.
+            if ((isBusyError(err) || (isConnectionError(err) && !committing)) && attempt === 1) {
+                console.warn("PostgreSQL write failed, retrying once:", pgErrorMessage(err));
+                client?.removeListener("error", onClientError);
                 client?.release(broken);
                 client = null;
                 await new Promise((res) => setTimeout(res, busyRetryDelayMs));
@@ -527,6 +566,7 @@ export async function pgWithWriteTx<T>(work: (run: TxRunner) => Promise<T>): Pro
             e.code = err?.code;
             throw e;
         } finally {
+            client?.removeListener("error", onClientError);
             client?.release(broken);
         }
     }

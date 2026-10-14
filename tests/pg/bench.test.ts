@@ -15,7 +15,9 @@
 // Skips unless both variables are set. Never runs against anything but whpp_bench_*.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
 import os from "os";
+import path from "path";
 import Database from "better-sqlite3";
 import pg from "pg";
 import {
@@ -478,5 +480,41 @@ test("the schema stamp fails closed", { skip }, async () => {
     } finally {
         REQUIRED_SCHEMA.core = was;
         assert.equal(await checkSchemaStamp(), null);
+    }
+});
+
+test("queued writes are held, not parked, while the pg engine cannot run - and drain once it can", { skip }, async () => {
+    // One queued pg write, as an outage would have left it: harmless (no row 0).
+    const entry = {
+        id: "pgport-test-1", seq: 1, createdAt: nowLocal(), kind: "heartbeat", attempts: 0, engine: "pg",
+        statements: [{ query: "UPDATE HARNBUILDSEGMENTS SET heartbeatAt = ? WHERE segmentId = ?", params: [nowLocal(), 0] }],
+    };
+    const seed = (dir: string) => fs.writeFileSync(path.join(dir, "pending-writes.jsonl"), JSON.stringify(entry) + "\n");
+    // 1. The password file is missing: the engine never starts.
+    const broken = { ...env!.rawConfig, pg: { ...env!.rawConfig.pg, passwordFile: path.join(os.tmpdir(), "no-such-pg-password-file") } };
+    let server = await startServer(broken, "held", { waitReadable: false, before: seed });
+    try {
+        await new Promise((r) => setTimeout(r, 17_000)); // past the first 15 s flush tick
+        const q = await api("/api/write-queue");
+        assert.equal(q.result.pending, 1, "still waiting");
+        assert.equal(q.result.rejected.length, 0, "not parked");
+        assert.match(fs.readFileSync(path.join(server.dir, "pending-writes.jsonl"), "utf-8"), /pgport-test-1/, "still on disk");
+    } finally {
+        await server.stop();
+    }
+    // 2. A working config with the same queue file: it goes through.
+    const heldDir = server.dir;
+    server = await startServer(env!.rawConfig, "drain", { before: (dir) => fs.copyFileSync(path.join(heldDir, "pending-writes.jsonl"), path.join(dir, "pending-writes.jsonl")) });
+    try {
+        const deadline = Date.now() + 25_000;
+        let q: any;
+        do {
+            await new Promise((r) => setTimeout(r, 1_000));
+            q = await api("/api/write-queue");
+        } while (q.result.pending > 0 && Date.now() < deadline);
+        assert.equal(q.result.pending, 0, "drained");
+        assert.equal(q.result.rejected.length, 0);
+    } finally {
+        await server.stop();
     }
 });
