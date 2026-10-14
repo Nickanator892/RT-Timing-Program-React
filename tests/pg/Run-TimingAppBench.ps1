@@ -39,9 +39,14 @@ $env:PG_BENCH_CONFIG = $config
 $env:SQLITE_SCRATCH = $SqliteSnapshot
 Push-Location $repo
 try {
-    $npx = (Get-Command npx.cmd).Source
-    & $npx tsx --test --test-force-exit --test-timeout=240000 --test-concurrency=1 --test-reporter=spec tests/pg/bench.test.ts *> $log
+    # node itself with the tsx loader (no npx: its "npm notice" lines on stderr
+    # read as errors here), and Continue so PS 5.1 does not turn any native
+    # stderr line into a terminating error. The exit code is what counts.
+    $node = (Get-Command node.exe).Source
+    $ErrorActionPreference = "Continue"
+    & $node --import tsx --test --test-force-exit --test-timeout=240000 --test-concurrency=1 --test-reporter=spec tests/pg/bench.test.ts *> $log
     $code = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
 } finally {
     Pop-Location
     Remove-Item Env:PG_BENCH_CONFIG, Env:SQLITE_SCRATCH -ErrorAction SilentlyContinue
