@@ -216,6 +216,9 @@ const SESSION_KEYS = [
     // batchPauses carries its pauses: the live build - and its
     // HARNBUILDSEGCREW rows - are already dropped by then (timingPage batchCrew).
     "batchCrew",
+    // Timer:SharedSessions (2026-10-16): the packaging session timing here and
+    // the checklist being filled in. Never set while the switch is off.
+    "packSession", "packDraft",
 ];
 
 function saveSession(why) {

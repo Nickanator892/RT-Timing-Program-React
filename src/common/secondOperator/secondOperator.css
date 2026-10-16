@@ -102,3 +102,33 @@
 .second-operator.loaded .second-operator-drop {
     flex: 0 0 auto;
 }
+
+/* Timer:SharedSessions: the whole crew, any number, each with their own Leave.
+   Compact rows - a crew of four must still fit the panel's info column. */
+.second-operator.crew-roster {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.second-operator.crew-roster .crew-member {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.6em;
+    padding: 0.3em 0.5em 0.3em 0.8em;
+}
+
+.second-operator.crew-roster .crew-member .second-operator-name {
+    font-size: 1.1em;
+}
+
+.second-operator.crew-roster .crew-leave {
+    min-height: 1.9em;
+    padding: 0.25em 0.7em;
+}
+
+.second-operator.crew-roster .crew-member,
+.second-operator.crew-roster .second-operator-add {
+    width: auto;
+    flex: 0 0 auto;
+}

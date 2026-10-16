@@ -10,6 +10,8 @@ import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import { usePixelShift } from "../../hooks/usePixelShift";
 import { parseTimestamp } from "../../assets/timeDistribution";
 import { PACKAGING_MODE } from "../../common/timerModeDropdown/timerModeDropdown";
+import { timerFeatures } from "../../hooks/useTimerFeatures";
+import { markText, readEditMarks } from "../../assets/editMarks";
 import {
     fetchScheduleWindow,
     computeScheduleStatus,
@@ -34,7 +36,7 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
     });
         const [timerMode, _setTimerMode] = useSharedState<{header: string, id: number}>("timerMode", {header: "Timing Build", id: 1})
     const [harnCounts, setHarnCounts] = useState<Record<string, number>>({});
-    const [times, setTimes] = useState<{ seconds: number; formattedTime: string }[]>([]);
+    const [times, setTimes] = useState<{ seconds: number; formattedTime: string; mark?: string }[]>([]);
     // undefined = not fetched yet, null = the run has no schedule dates
     const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindow | null | undefined>(undefined);
     // Build-mode (timeTypeId 1) completions regardless of the viewed timer mode -
@@ -106,6 +108,10 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
             console.log("Timer mode:", timerMode.header)
             const result = await fetchTimes(selectedHarn, timerMode.id);
             if (Array.isArray(result)) {
+                // Timer:TimeEdits: "*" on a hand-fixed time (editMarks.ts). Off, nothing is read.
+                const marks = (await timerFeatures()).timeEdits
+                    ? await readEditMarks(result.map((t: any) => Number(t.buildId)))
+                    : null;
                 setTimes(
                     result.map((t: LoggedTime) => {
                         // workedSeconds sums the per-segment worked time, which
@@ -134,7 +140,8 @@ function AnalyticsPage({ harn }: analyticsPageProps) {
                         const m = Math.floor((seconds % 3600) / 60);
                         const s = seconds % 60;
                         const formattedTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-                        return { seconds, formattedTime };
+                        const mark = marks ? markText(marks.get(Number((t as any).buildId))) : "";
+                        return mark ? { seconds, formattedTime, mark } : { seconds, formattedTime };
                     })
                 );
             }

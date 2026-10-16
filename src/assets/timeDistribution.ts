@@ -79,10 +79,15 @@ export interface DistributedTimeArgs {
      *  created the table - see crewSlices.ts). Manual entry never does: it has
      *  a head-count and no names. */
     writeSegCrew?: boolean;
+    /** Timer:SharedSessions packaging (Randy 2026-10-16): the harness of each
+     *  unit, in order - one unit per checked quantity, so each harness gets
+     *  its quantity's share. Omitted: every unit is harnNumber, as always. */
+    unitHarns?: string[];
 }
 
 /** One unit's rows, worked out before anything is written. */
 export interface DistributedUnit {
+    harnNumber: string;
     builderId: number | null | undefined;
     numberOfBuilders: number;
     /** Set only on the excess units (see DistributedTimeArgs.unitDecision). */
@@ -164,6 +169,7 @@ export function planDistributedTimes(args: DistributedTimeArgs): DistributedUnit
             });
         }
         units.push({
+            harnNumber: args.unitHarns?.[k] || args.harnNumber,
             builderId,
             numberOfBuilders,
             unitDecision: isExcessRow ? args.unitDecision ?? null : null,
@@ -197,7 +203,7 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         const builderId = unit.builderId;
         const numberOfBuilders = unit.numberOfBuilders;
         const insert = (await execQuery("INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", [
-            args.harnNumber,
+            unit.harnNumber,
         ])) as { lastID?: number } | undefined;
         const buildId = Number(insert?.lastID ?? 0);
         if (!buildId) throw new Error("Failed to create build row");
@@ -208,12 +214,12 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
                 `INSERT INTO HARNBUILDTIMES
                     (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
                  VALUES(?, ?, ?, ?, ?, ?, ?)`,
-                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, unit.unitDecision]
+                [buildId, unit.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, unit.unitDecision]
             );
         } else {
             await execQuery(
                 "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-                [buildId, args.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
+                [buildId, unit.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
             );
         }
         for (const seg of unit.segments) {

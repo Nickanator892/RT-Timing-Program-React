@@ -260,6 +260,91 @@ export async function findOpenElsewhere(builderIds: number[], excludeBuildId: nu
     return out;
 }
 
+/** One open build of a person elsewhere, with its state (Timer:PausedFree). */
+export interface OpenBuild extends OpenElsewhere {
+    /** Its open segment is stopped (heartbeatState PAUSE): paused, or ended and not yet submitted. */
+    paused: boolean;
+    /** When the build started, 'YYYY-MM-DD HH:mm:ss'. */
+    since: string;
+    timeTypeId: number;
+}
+
+/**
+ * Timer:PausedFree (Randy 2026-10-16): EVERY open build these people are on
+ * elsewhere, running ones first - findOpenElsewhere's rows (same station rule)
+ * without the one-per-person cut, each saying whether it is stopped. A paused
+ * build no longer blocks: Start warns about it, Resume refuses only a running
+ * one. Read-only; [] when the read fails.
+ */
+export async function findOpenAll(builderIds: number[], excludeBuildId: number): Promise<OpenBuild[]> {
+    const list = [...new Set(toIds(builderIds))];
+    if (!list.length) return [];
+    const station = await ownStation();
+    const rows = await execQuery(
+        `SELECT b.Id AS builderId, b.userName AS name, s.buildId AS buildId, s.stationId AS stationId,
+                h.harnNumber AS harnNumber, CASE WHEN s.builderId = b.Id THEN 1 ELSE 0 END AS isPrimary,
+                CASE WHEN COALESCE(s.heartbeatState, '') = 'PAUSE' THEN 1 ELSE 0 END AS paused,
+                (SELECT MIN(x.startTime) FROM HARNBUILDSEGMENTS x WHERE x.buildId = s.buildId) AS since,
+                (SELECT t.timeTypeId FROM HARNBUILDTIMES t WHERE t.buildId = s.buildId AND t.timeTypeId <> 4
+                  ORDER BY t.harnBuildTimeId LIMIT 1) AS timeTypeId
+           FROM HARNBUILDERS b
+           JOIN HARNBUILDSEGMENTS s
+             ON COALESCE(s.endTime, '') = '' AND s.stationId IS NOT NULL AND s.buildId <> ?
+            AND (${sqlFor("s.stationId <> ? COLLATE NOCASE", "lower(s.stationId) <> lower(?::text)")} OR s.stationId = 'RT-MCS phone')
+            AND (s.builderId = b.Id
+                 OR EXISTS (SELECT 1 FROM SECONDARYBUILDERS sb WHERE sb.buildId = s.buildId AND sb.builderId = b.Id))
+           LEFT JOIN HARNBUILDS h ON h.buildId = s.buildId
+          WHERE b.Id IN (${list.map(() => "?").join(",")})
+          ORDER BY CASE WHEN COALESCE(s.heartbeatState, '') = 'PAUSE' THEN 1 ELSE 0 END, s.segmentId DESC`,
+        [Number(excludeBuildId) || 0, station, ...list]
+    );
+    if (!Array.isArray(rows)) return [];
+    const seen = new Set<string>();
+    const out: OpenBuild[] = [];
+    for (const r of rows as any[]) {
+        const key = `${Number(r.builderId)}:${Number(r.buildId)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+            builderId: Number(r.builderId),
+            name: String(r.name ?? `builder ${r.builderId}`),
+            buildId: Number(r.buildId) || 0,
+            isPrimary: Number(r.isPrimary) === 1,
+            stationId: String(r.stationId ?? ""),
+            harnNumber: String(r.harnNumber ?? ""),
+            paused: Number(r.paused) === 1,
+            since: String(r.since ?? ""),
+            timeTypeId: Number(r.timeTypeId) || 0,
+        });
+    }
+    return out;
+}
+
+/** "HH:mm" for today, "MMM d HH:mm" for an older start - the phone's SinceText. */
+export function sinceText(stamp: string): string {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(stamp ?? ""));
+    if (!m) return "earlier";
+    const d = new Date(+m[1], +m[2] - 1, +m[3]);
+    const today = new Date();
+    if (d.toDateString() === today.toDateString()) return `${m[4]}:${m[5]}`;
+    return `${d.toLocaleString("en-US", { month: "short" })} ${d.getDate()} ${m[4]}:${m[5]}`;
+}
+
+/** The phone's paused-warning line for one held build: "You have HYSV-20008
+ *  (Build) stopped on timer station pi2 since 13:40." */
+export function describeHeld(o: OpenBuild, selfId: number, modeName: (id: number) => string): string {
+    const who = o.builderId === selfId ? "You have" : `${o.name} has`;
+    const state = o.stationId === "RT-MCS phone" ? "paused" : "stopped";
+    const role = o.isPrimary ? "" : " as 2nd operator";
+    return `${who} ${o.harnNumber || "a build"} (${modeName(o.timeTypeId)}) ${state}${role} ${whereOpen(o.stationId)} since ${sinceText(o.since)}.`;
+}
+
+/** "You are timing HYSV-20008 (Build) on timer station pi2" - a RUNNING build in the way of a Resume. */
+export function describeRunning(o: OpenBuild, selfId: number, modeName: (id: number) => string): string {
+    const who = o.builderId === selfId ? "You are" : `${o.name} is`;
+    return `${who} timing ${o.harnNumber || "a build"} (${modeName(o.timeTypeId)}) ${whereOpen(o.stationId)}`;
+}
+
 const whereOpen = (stationId: string) =>
     stationId === "RT-MCS phone" ? "on the RT-MCS phone timer" : `on timer station ${stationId}`;
 

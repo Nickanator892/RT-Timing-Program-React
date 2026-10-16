@@ -1,0 +1,137 @@
+/* Packaging sessions (Timer:SharedSessions). Every stylesheet in this app is
+   global, so every rule is scoped under .pack-session. */
+.pack-session .pack-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3em 0.8em;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(16px, 2.6vh, 22px);
+}
+
+.pack-session .pack-label {
+    font-family: "Orbitron", monospace;
+    color: #4da3ff;
+}
+
+.pack-session .pack-pns {
+    color: #eaf4ff;
+}
+
+.pack-session button {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(14px, 2vh, 20px);
+    padding: 0.4em 0.9em;
+    min-height: 2.2em;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 2px solid #4da3ff;
+    background: #142236;
+    color: #eaf4ff;
+}
+
+.pack-session .pack-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20002;
+    background: rgba(0, 0, 0, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3vh 3vw;
+}
+
+.pack-session .pack-card {
+    background: #16233a;
+    border: 3px solid #4da3ff;
+    border-radius: 14px;
+    padding: 2vh 2vw;
+    max-width: 52em;
+    width: 100%;
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    color: #eaf4ff;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.pack-session .pack-card h2 {
+    font-family: "Orbitron", monospace;
+    font-size: clamp(18px, 2.8vh, 26px);
+    margin: 0 0 0.5em;
+}
+
+.pack-session .pack-note {
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(14px, 2vh, 18px);
+    margin: 0 0 0.6em;
+}
+
+.pack-session .pack-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.pack-session .pack-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8em;
+    padding: 0.5em 0.2em;
+    border-bottom: 1px solid #2a3c58;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(15px, 2.2vh, 20px);
+}
+
+.pack-session .pack-rows label {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    flex: 1 1 auto;
+}
+
+.pack-session .pack-rows input[type="checkbox"] {
+    width: 1.5em;
+    height: 1.5em;
+}
+
+.pack-session .pack-ship {
+    color: #9fb3c8;
+    font-size: 0.85em;
+}
+
+.pack-session .pack-qty {
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+}
+
+.pack-session .pack-qty input {
+    width: 4.5ch;
+    height: 1.9em;
+    font-size: 1em;
+    text-align: center;
+}
+
+.pack-session .pack-qty button {
+    min-width: 2.2em;
+    padding: 0.2em 0.5em;
+}
+
+.pack-session .pack-buttons {
+    display: flex;
+    gap: 1em;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 1em;
+}
+
+.pack-session .pack-cancel {
+    border-color: #6b7683;
+    background: #1b2027;
+    color: #dfe6ee;
+}

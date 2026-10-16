@@ -4,6 +4,7 @@ import { useSettings } from "../../hooks/useSettings";
 import AnchoredList from "../anchoredList/anchoredList";
 import type { User } from "../../assets/types/UserType";
 import { recentOperatorsFirst, rememberOperator } from "../../assets/operatorOrder";
+import { useTimerFeatures } from "../../hooks/useTimerFeatures";
 import "./primaryOperator.css";
 
 /**
@@ -30,10 +31,31 @@ function PrimaryOperator() {
         "selectedUser",
         undefined
     );
-    const [, setSecondaryBuilders] = useSharedState<{ Id: Number; name: string }[]>(
+    const [secondaryBuilders, setSecondaryBuilders] = useSharedState<{ Id: Number; name: string }[]>(
         "secondaryBuilders",
         []
     );
+    // Randy 2026-10-16, both off by default (useTimerFeatures):
+    // Timer:SharedSessions - the builder can LEAVE a time others are still on;
+    // it hands over to whoever has been on it longest (the first on the
+    // roster, RT-MCS FloorLeave), with no password: they are already on it.
+    // Timer:PausedFree - handing a PAUSED build to someone who is not on it is
+    // a takeover (timingPage handleBuilderChange), so it says so.
+    const features = useTimerFeatures();
+    const [timerDone] = useSharedState<boolean>("timerDone", true);
+    const [isRunning] = useSharedState<boolean>("isRunning", false);
+    const [pauseStart] = useSharedState<string | null>("pauseStart", null);
+    const canLeave = features.sharedSessions && !timerDone && secondaryBuilders.length > 0;
+    const takingOver = features.pausedFree && !timerDone && !isRunning && !!pauseStart;
+
+    function leave() {
+        const next = secondaryBuilders[0];
+        const full = (users ?? []).find((u: User) => Number(u.Id) === Number(next?.Id));
+        if (!next || !full) return;
+        setSecondaryBuilders((prev) => prev.filter((s) => Number(s.Id) !== Number(next.Id)));
+        setSelectedUser(full);
+        setOpen(false);
+    }
     const [open, setOpen] = useState(false);
     /** Picked, but not yet through their password. */
     const [pending, setPending] = useState<User | null>(null);
@@ -68,7 +90,7 @@ function PrimaryOperator() {
         return (
             <div className="primary-operator handing-over">
                 <div className="primary-operator-prompt">
-                    <span className="primary-operator-label">HAND OVER TO</span>
+                    <span className="primary-operator-label">{takingOver ? "TAKE OVER AS" : "HAND OVER TO"}</span>
                     <span className="primary-operator-name">{pending.name}</span>
                 </div>
                 <input
@@ -112,8 +134,13 @@ function PrimaryOperator() {
                 aria-expanded={open}
                 onClick={() => setOpen((o) => !o)}
             >
-                Hand Over...
+                {takingOver ? "Take Over..." : "Hand Over..."}
             </button>
+            {canLeave && (
+                <button type="button" className="primary-operator-switch primary-operator-leave" onClick={leave}>
+                    Leave
+                </button>
+            )}
             {open && (
                 <AnchoredList
                     anchorRef={buttonRef}
