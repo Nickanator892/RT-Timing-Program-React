@@ -3,6 +3,7 @@ import { useSharedState } from "../../hooks/useSharedState"
 import { useSettings } from "../../hooks/useSettings"
 import AnchoredList from "../anchoredList/anchoredList"
 import { recentOperatorsFirst, rememberOperator } from "../../assets/operatorOrder"
+import { useTimerFeatures } from "../../hooks/useTimerFeatures"
 import "./secondOperator.css"
 
 interface User {
@@ -52,6 +53,66 @@ function SecondOperator() {
                 !secondaryBuilders.some((s) => Number(s.Id) === Number(u.Id))
         )
     );
+    // Timer:SharedSessions (Randy 2026-10-16): any number of people on a time,
+    // each joining and leaving at the station - every join or leave rolls the
+    // segment (timingPage's crew check), so each is credited exactly the
+    // stretches they were on. Off: one 2nd operator, as before.
+    const { sharedSessions } = useTimerFeatures();
+
+    if (sharedSessions) {
+        const n = secondaryBuilders.length + 1;
+        return (
+            <div className={`second-operator crew-roster${secondaryBuilders.length ? " loaded" : ""}`}>
+                {secondaryBuilders.map((b) => (
+                    <div className="second-operator-badge crew-member" role="status" key={String(b.Id)}>
+                        <span className="second-operator-label">WITH</span>
+                        <span className="second-operator-name">{b.name}</span>
+                        <button
+                            type="button"
+                            className="second-operator-drop crew-leave"
+                            onClick={() => setSecondaryBuilders((prev) => prev.filter((u) => Number(u.Id) !== Number(b.Id)))}
+                        >
+                            Leave
+                        </button>
+                    </div>
+                ))}
+                {secondaryBuilders.length > 0 && (
+                    <span className="second-operator-rate crew-rate">
+                        {n} people - recording {n}&times; time
+                    </span>
+                )}
+                <button
+                    type="button"
+                    ref={buttonRef}
+                    className="second-operator-add"
+                    aria-haspopup="listbox"
+                    aria-expanded={open}
+                    onClick={() => setOpen((o) => !o)}
+                >
+                    + Add Person
+                </button>
+                {open && (
+                    <AnchoredList
+                        anchorRef={buttonRef}
+                        ariaLabel="Add a person"
+                        className="operator-panel"
+                        emptyText="No other builders active"
+                        items={candidates.map((u: User) => ({ key: u.Id, label: u.name }))}
+                        onPick={(key) => {
+                            const picked = candidates.find((u: User) => Number(u.Id) === Number(key));
+                            if (picked) {
+                                rememberOperator(picked.Id);
+                                setSecondaryBuilders((prev) => [...prev, { Id: picked.Id, name: picked.name }]);
+                            }
+                            setOpen(false);
+                        }}
+                        onClose={() => setOpen(false)}
+                    />
+                )}
+            </div>
+        );
+    }
+
 
     if (second) {
         return (

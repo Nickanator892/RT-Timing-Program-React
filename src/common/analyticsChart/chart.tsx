@@ -7,6 +7,8 @@ interface chartData {
     loggedTimes: {
         seconds: number;
         formattedTime: string;
+        /** " *" / " * under review" on a time fixed by hand (Timer:TimeEdits, editMarks.ts). */
+        mark?: string;
     }[];
     harnNumber: string;
     buildNumber: number;
@@ -28,7 +30,7 @@ function AnalyticsChart({
     const chartData =
         loggedTimes.length > 0
             ? loggedTimes.map((time, i) => ({
-                  x: `Build ${i + 1}`,
+                  x: `Build ${i + 1}${time.mark ?? ""}`,
                   y: parseFloat((time.seconds / 60).toFixed(2)),
               }))
             : [{ x: "No builds yet", y: 0 }];

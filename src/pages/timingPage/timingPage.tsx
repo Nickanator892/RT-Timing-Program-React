@@ -21,10 +21,14 @@ import RTLogo from "../../components/RTLogo/RTLogo";
 import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
 import {
     describeBlockingTime,
+    describeHeld,
     describeOpenElsewhere,
     describeRelease,
+    describeRunning,
+    findOpenAll,
     findOpenElsewhere,
     isOnePlaceRefusal,
+    sinceText,
     readBuilder,
     readLiveBuild,
     readRecordedCrew,
@@ -36,6 +40,17 @@ import { fetchHarnProgress } from "../../hooks/useJobs";
 import { checkSegmentStatus, clearCarryoverClock, isSegmentStale } from "../../assets/carryoverGuard";
 import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
 import { sqlFor } from "../../assets/dbEngine";
+import { timerFeatures, useTimerFeatures } from "../../hooks/useTimerFeatures";
+import { PACKAGING_MODE, timerModes } from "../../common/timerModeDropdown/timerModeDropdown";
+import PackagingSession, {
+    expandPackUnits,
+    readPackOfBuild,
+    type PackDraft,
+    type PackSession,
+} from "../../common/packagingSession/packagingSession";
+
+/** "Build", "Final Test" - the mode list's own words. */
+const modeName = (id: number) => timerModes.find((m) => m.id === id)?.label.replace("Timer Mode: ", "") ?? `Mode ${id}`;
 
 /** Must match the seeded reason name in the backend migration. */
 const CLOCKED_OUT_REASON = "Clocked out (QuickBooks)";
@@ -153,6 +168,25 @@ function TimingPage({
     const [confirmingRelease, setConfirmingRelease] = useState(false);
     const { writeTime, fetchTimes, countOnRev } = useTimes();
     const nav = useNavigate();
+    // Randy 2026-10-16 (docs/TIMER-PAUSE-PACKAGING-EDIT-DESIGN.md in HPP): all
+    // off unless this station switches them on - see useTimerFeatures.
+    const features = useTimerFeatures();
+    // Timer:SharedSessions packaging: the checklist being filled in before
+    // Start, and the session running now. Shared, like batchMode, because this
+    // page remounts on every pause detour.
+    const [packDraft, setPackDraft] = useSharedState<PackDraft | null>("packDraft", null);
+    const [packSession, setPackSession] = useSharedState<PackSession | null>("packSession", null);
+    const [packPickerOpen, setPackPickerOpen] = useState(false);
+    const packing = features.sharedSessions && timerMode.id === PACKAGING_MODE;
+    /** The harness the live build is on: a packaging session's first checked one. */
+    const liveHarn = packSession?.pns?.[0]?.pn || selectedHarn;
+    // Timer:PausedFree: "Leave it paused?" before a Start that leaves one waiting.
+    const [pausedWarn, setPausedWarn] = useState<{ text: string; resolve: (go: boolean) => void } | null>(null);
+    const askPausedWarn = (text: string) => new Promise<boolean>((resolve) => setPausedWarn({ text, resolve }));
+    function answerPausedWarn(go: boolean) {
+        pausedWarn?.resolve(go);
+        setPausedWarn(null);
+    }
 
     // Straight off the kit - no effect, no state. The scheduled quantity is
     // already in hand the moment the kit is. Moved above the batch-default
@@ -337,9 +371,24 @@ function TimingPage({
             // the time this effect fires), so this filter is what stops a
             // handover target who was already loaded as second operator from
             // riding along as their own second operator too.
-            const rollSecondaryIds = L.secondaryBuilders
-                .map((b) => Number(b.Id))
-                .filter((id) => id !== L.primaryId);
+            // Timer:PausedFree (Randy 2026-10-16): handing a PAUSED build to
+            // someone who was not on it is a takeover - Caleb paused it and
+            // went packaging, Joe carries on. As on the phone: the old crew
+            // stops with it (Joe adds people back), the old primary keeps every
+            // second he worked and is off the build, and MSTIMERRELEASE gets a
+            // TAKEOVER row (his notice). Handing it to someone already on it,
+            // or any handover while running, is the ordinary handover.
+            const f = await timerFeatures();
+            const shared = f.pausedFree && handover && !wasRunning ? await window.electron.getSharedData() : null;
+            const fromUser = before.selectedUser;
+            const takeover =
+                !!shared?.pauseStart &&
+                !!fromUser &&
+                Number(fromUser.Id) !== L.primaryId &&
+                !before.secondaryBuilders.some((b) => Number(b.Id) === L.primaryId);
+            const rollSecondaryIds = takeover
+                ? []
+                : L.secondaryBuilders.map((b) => Number(b.Id)).filter((id) => id !== L.primaryId);
             const rolled = await postApi("/api/build/segment-roll", {
                 buildId: L.currentBuildId,
                 segmentId: L.currentSegmentId,
@@ -350,6 +399,16 @@ function TimingPage({
                 // today, but it is the one field that rewrites who owns the
                 // build, so it travels only when that is what happened.
                 builderId: handover ? L.primaryId : undefined,
+                // Read by the backend only with Timer:PausedFree on: a roll
+                // made with the clock stopped opens its segment stopped.
+                running: wasRunning,
+                takeover: takeover
+                    ? {
+                          fromBuilderId: Number(fromUser!.Id),
+                          workedSeconds: Math.round(Number(shared?.elapsedTime ?? 0) / 1000),
+                          harn: liveHarn,
+                      }
+                    : undefined,
             });
             // Main first, directly: the setters below only reach main from
             // inside a React state update, which never runs if the page left
@@ -359,6 +418,7 @@ function TimingPage({
             setCurrentSegmentStart(rolled.startTime);
             setCurrentSegmentId(rolled.segmentId);
             window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
+            if (takeover) await finishTakeover(fromUser!, String(shared!.pauseStart), rolled?.audited !== false);
         } catch (e: any) {
             // Randy, 2026-10-07: the roll did not happen, so neither did the
             // change - put the screen back to what the database holds. Left
@@ -460,6 +520,118 @@ function TimingPage({
         if (user) _setSelectedUser(user);
         setSecondaryBuilders(crew);
         return true;
+    }
+
+    // --- Timer:PausedFree (Randy 2026-10-16) --------------------------------
+    // One RUNNING build per person, any number paused. The V2 triggers let a
+    // Start through past a paused build; these are the checks around them, to
+    // the RT-MCS phone timer's rules (FloorTimer.cs FloorWarnPaused,
+    // FloorResume, TakeoverCore).
+
+    /** After a takeover's roll: the old primary's pause so far goes on record
+     *  as HIS pause row, and the new primary's own wait starts now (written at
+     *  Resume as usual). The old crew is off the build, so off the screen. Never
+     *  throws: the roll itself already happened. */
+    async function finishTakeover(from: User, pausedAt: string, audited: boolean) {
+        const now = formatTimestamp(new Date().toISOString());
+        const reason = (await window.electron.getSharedData())?.pauseReason as PauseReason | undefined;
+        if (reason?.Id) {
+            try {
+                await execWrite(
+                    "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    [latest.current.currentBuildId, pausedAt, now, liveHarn, buildKit?.REV, from.Id, 4, reason.Id],
+                    { kind: "pause row" }
+                );
+                setPauseStart(now);
+            } catch (e: any) {
+                // Left as one pause: the next Resume writes it, under the new primary.
+                console.warn("takeover: the old primary's pause row was not written:", e?.message ?? e);
+            }
+        }
+        prevSecondaryBuilders.current = [];
+        window.electron.updateSharedData({ secondaryBuilders: [] });
+        setSecondaryBuilders([]);
+        const who = latest.current.selectedUser?.name ?? "You";
+        setErr(
+            `${who} took over ${from.name}'s ${liveHarn} (paused since ${sinceText(pausedAt)}). Press Resume to carry on.` +
+                (audited ? "" : " (RT-MCS did not record the takeover notice.)")
+        );
+    }
+
+    /** Roll the live build now, with the clock stopped, to this crew - Resume
+     *  taking someone off who is timing elsewhere. The crew check is told it
+     *  has seen this roster, so it does not roll it again. */
+    async function rollCrewNow(keep: { Id: Number; name: string }[]): Promise<boolean> {
+        const L = latest.current;
+        if (inFlight.roll) {
+            setErr("A crew change is still being saved - press Resume again in a moment.");
+            return false;
+        }
+        inFlight.roll = true;
+        try {
+            const ids = keep.map((b) => Number(b.Id)).filter((id) => id !== L.primaryId);
+            const rolled = await postApi("/api/build/segment-roll", {
+                buildId: L.currentBuildId,
+                segmentId: L.currentSegmentId,
+                accumSeconds: await window.electron.getSegmentSeconds(),
+                numberOfBuilders: ids.length + 1,
+                secondaryBuilderIds: ids,
+                running: false,
+            });
+            prevSecondaryBuilders.current = keep;
+            window.electron.updateSharedData({
+                currentSegmentId: rolled.segmentId,
+                currentSegmentStart: rolled.startTime,
+                secondaryBuilders: keep,
+            });
+            setCurrentSegmentStart(rolled.startTime);
+            setCurrentSegmentId(rolled.segmentId);
+            setSecondaryBuilders(keep);
+            window.electron.timerSegment({ segmentId: rolled.segmentId, segmentAccumSeconds: 0 });
+            return true;
+        } catch (e: any) {
+            setErr(`Not resumed - could not take them off this build: ${e?.message ?? e}`);
+            return false;
+        } finally {
+            inFlight.roll = false;
+        }
+    }
+
+    /** Before a new Start: the paused builds it leaves waiting, for the starter
+     *  and everyone starting with them. Asks; false = Cancel. A RUNNING build
+     *  elsewhere is left to the database, whose refusal already says who. */
+    async function warnHeldBuilds(): Promise<boolean> {
+        const me = Number(selectedUser?.Id ?? 0);
+        const crewIds = secondaryBuilders.map((b) => Number(b.Id)).filter((id) => id !== me);
+        const open = await findOpenAll([me, ...crewIds], 0).catch(() => []);
+        if (!open.length || open.some((o) => !o.paused)) return true;
+        const lines = open.map((o) => describeHeld(o, me, modeName));
+        return askPausedWarn(`${lines.join(" ")} It stays paused while this one is timed.`);
+    }
+
+    /** Before a Resume (an UPDATE no insert trigger sees, refused by RT-MCS's
+     *  RESUME_V2 trigger otherwise): the builder must not be running another
+     *  build, and a crew member who is gets taken off this one first. Returns
+     *  whether to go on, and the line to show when someone was taken off. */
+    async function checkResumePeople(): Promise<{ go: boolean; note: string }> {
+        const L = latest.current;
+        const buildId = Number(L.currentBuildId) || 0;
+        if (!buildId || !(Number(L.currentSegmentId) > 0)) return { go: true, note: "" };
+        const me = L.primaryId;
+        const crew = L.secondaryBuilders.map((b) => Number(b.Id)).filter((id) => id !== me);
+        const open = await findOpenAll([me, ...crew], buildId).catch(() => null);
+        if (!open) return { go: true, note: "" };
+        const mine = open.find((o) => o.builderId === me && !o.paused);
+        if (mine) {
+            setErr(`${describeRunning(mine, me, modeName)} - pause or end it first.`);
+            return { go: false, note: "" };
+        }
+        const busy = new Set(open.filter((o) => !o.paused && o.builderId !== me).map((o) => o.builderId));
+        if (!busy.size) return { go: true, note: "" };
+        const keep = L.secondaryBuilders.filter((b) => !busy.has(Number(b.Id)));
+        const gone = L.secondaryBuilders.filter((b) => busy.has(Number(b.Id))).map((b) => b.name);
+        if (!(await rollCrewNow(keep))) return { go: false, note: "" };
+        return { go: true, note: `${gone.join(", ")} ${gone.length === 1 ? "is" : "are"} timing something else - taken off this build` };
     }
 
     // --- The live build, changed from somewhere else ------------------------
@@ -1237,7 +1409,7 @@ function TimingPage({
         if (!sharedPauseReason) return;
         await execWrite(
             "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            [currentBuildId, pauseStart, pauseEnd, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id],
+            [currentBuildId, pauseStart, pauseEnd, liveHarn, buildKit?.REV, selectedUser?.Id, 4, sharedPauseReason.Id],
             // Held on the panel if the database is out of reach. Without this a
             // break taken during an outage is charged to the build as worked
             // time, which is the expensive direction to be wrong in.
@@ -1311,6 +1483,37 @@ function TimingPage({
             setErr(`Database is not writable - nothing would be recorded (${notWritable})`);
             return;
         }
+        // Randy 2026-10-16 - both switched off by default, and then nothing
+        // here runs. Asked BEFORE the clock starts: a Cancel, or a Resume
+        // refused, leaves everything exactly where it was.
+        const f = await timerFeatures();
+        // A packaging session needs its harnesses before it can start.
+        const packStart =
+            timerDone && f.sharedSessions && timerMode.id === PACKAGING_MODE
+                ? (packDraft?.rows ?? []).filter((r) => r.on && r.qty > 0)
+                : null;
+        if (packStart && !packStart.length) {
+            setActiveButton(null);
+            setErr("Pick the harnesses you are packaging, and how many, then press Start.");
+            setPackPickerOpen(true);
+            return;
+        }
+        let resumeNote = "";
+        if (f.pausedFree) {
+            if (timerDone) {
+                if (!(await warnHeldBuilds())) {
+                    setActiveButton(null);
+                    return;
+                }
+            } else {
+                const r = await checkResumePeople();
+                if (!r.go) {
+                    setActiveButton(pauseStart ? "pause" : null);
+                    return;
+                }
+                resumeNote = r.note;
+            }
+        }
         window.electron.timerStart();
         if (pauseStart) {
             // Decided by whether rows exist, not by the Batch box: the box can be
@@ -1380,16 +1583,37 @@ function TimingPage({
             // build row with no segment, which carries no time and is invisible
             // to the recovery scan.
             inFlight.start = true;
+            // A packaging session is a batch of one unit per checked quantity,
+            // each on its own harness (Submit splits it - submitBatch).
+            const packPns = packStart ? packStart.map((r) => ({ pn: r.pn, qty: Math.floor(r.qty) })) : null;
+            if (packPns) {
+                setBatchMode(true);
+                setBatchUnits(packPns.reduce((t, p) => t + p.qty, 0));
+            }
             try {
                 const created = await postApi("/api/build/start", {
-                    harnNumber: selectedHarn,
-                    rev: buildKit?.REV,
+                    harnNumber: packPns ? packPns[0].pn : selectedHarn,
+                    rev: packPns ? packDraft?.rev ?? buildKit?.REV : buildKit?.REV,
                     builderId: selectedUser?.Id,
                     timeTypeId: timerMode.id,
                     numberOfBuilders: startSecondaryIds.length + 1,
                     secondaryBuilderIds: startSecondaryIds,
                     startTime,
+                    ...(packPns ? { pack: { msid: packDraft?.msid, pns: packPns } } : {}),
                 });
+                if (packPns) {
+                    const session: PackSession = {
+                        buildId: Number(created.buildId) || 0,
+                        packId: Number(created.packId) || 0,
+                        msid: Number(packDraft?.msid) || 0,
+                        rev: Number(packDraft?.rev ?? buildKit?.REV) || 0,
+                        job: packDraft?.job ?? "",
+                        pns: packPns,
+                    };
+                    window.electron.updateSharedData({ packSession: session, packDraft: null });
+                    setPackSession(session);
+                    setPackDraft(null);
+                }
                 // Main first, directly, as after a roll: the page may have
                 // left (the pause detour) while this write was out.
                 window.electron.updateSharedData({ currentBuildId: created.buildId, currentSegmentId: created.segmentId });
@@ -1434,7 +1658,7 @@ function TimingPage({
             return;
         }
         setIsRunning(true);
-        setErr("");
+        setErr(resumeNote);
         setDbSuccess("Submit");
     }
 
@@ -1546,7 +1770,20 @@ function TimingPage({
 
     /** Batch submit: slice the timed window across the unit count. */
     async function submitBatch() {
-        const units = Math.max(1, Math.floor(batchUnits));
+        let units = Math.max(1, Math.floor(batchUnits));
+        // Timer:SharedSessions packaging session: one unit per checked
+        // quantity, each on its own harness - the time split by quantity, the
+        // RT-MCS phone's SubmitCore exactly. The database's own rows are the
+        // record (a session restored after a restart, or changed nowhere
+        // else); the shared copy only covers a read that failed.
+        let pack: PackSession | null = null;
+        if ((await timerFeatures()).sharedSessions && Number(currentBuildId) > 0) {
+            const read = await readPackOfBuild(Number(currentBuildId));
+            pack = read !== undefined ? read : packSession?.buildId === Number(currentBuildId) ? packSession : null;
+        }
+        const unitHarns = pack ? expandPackUnits(pack.pns) : undefined;
+        if (unitHarns?.length) units = unitHarns.length;
+        const packRev = pack?.rev || buildKit?.REV;
 
         // Extra-units question - BEFORE anything is written (setDbSuccess
         // below is just a label). A Cancel here must leave every row, the
@@ -1706,8 +1943,9 @@ function TimingPage({
             const remainingForExcess = unitsTotal - (freshUnitsBuilt ?? 0);
             const excessUnits = decision ? Math.max(0, units - Math.max(remainingForExcess, 0)) : 0;
             const buildIds = await writeDistributedTimes({
-                harnNumber: selectedHarn,
-                rev: buildKit?.REV,
+                harnNumber: unitHarns?.[0] ?? selectedHarn,
+                unitHarns,
+                rev: packRev,
                 builderId: selectedUser?.Id,
                 timeTypeId: timerMode.id,
                 units,
@@ -1729,12 +1967,22 @@ function TimingPage({
             for (const pause of pauses) {
                 await execWrite(
                     "INSERT INTO HARNBUILDTIMES (buildId, startTime, endTime, harnNumber, REV, builderId, timeTypeId, pauseReasonId) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                    [buildIds[0], pause.start, pause.end, selectedHarn, buildKit?.REV, selectedUser?.Id, 4, pause.reasonId],
+                    [buildIds[0], pause.start, pause.end, unitHarns?.[0] ?? selectedHarn, packRev, selectedUser?.Id, 4, pause.reasonId],
                     { kind: "pause row" }
                 );
             }
             setBatchPauses([]);
             setBatchCrew([]);
+            if (pack?.packId && buildIds?.[0]) {
+                // The session closes, pointing at its first unit (RT-MCS MarkPackSubmitted).
+                await execWrite(
+                    "UPDATE HARNPACKSESSION SET STATUS = 'SUBMITTED', SUBMITTED = ?, FIRSTBUILDID = ? WHERE PACKID = ? AND STATUS = 'OPEN'",
+                    [formatTimestamp(new Date().toISOString()), buildIds[0], pack.packId],
+                    { kind: "packaging session closed" }
+                ).catch((e: any) => console.warn("packaging session not marked submitted:", e?.message ?? e));
+            }
+            window.electron.updateSharedData({ packSession: null });
+            setPackSession(null);
             // The dropped build's bobbin changes go onto the first unit, like
             // its pauses - the discard above removed the id they pointed at.
             if (timerMode.id === BRAID_MODE && droppedBuildId > 0 && buildIds?.[0]) {
@@ -1905,7 +2153,8 @@ function TimingPage({
             }
         }
 
-        if (batchMode) {
+        // A packaging session always splits, whatever the Batch box says.
+        if (batchMode || (packSession?.buildId && packSession.buildId === Number(currentBuildId))) {
             await submitBatch();
             return;
         }
@@ -2107,7 +2356,20 @@ function TimingPage({
                     <TimerModeDropdown/>
                     <PrimaryOperator />
                     <SecondOperator />
-                    <div className="batch-controls">
+                    {(packing || (features.sharedSessions && !!packSession && !timerDone)) && (
+                        <PackagingSession
+                            open={packPickerOpen}
+                            setOpen={setPackPickerOpen}
+                            idle={timerDone}
+                            draft={packDraft}
+                            setDraft={setPackDraft}
+                            session={!timerDone ? packSession : null}
+                        />
+                    )}
+                    <div
+                        className="batch-controls"
+                        style={packing || (features.sharedSessions && !!packSession && !timerDone) ? { display: "none" } : undefined}
+                    >
                         <label className="batch-toggle">
                             {/* Usable mid-run (Randy, 2026-09-09): a single build
                                 switched to batch is converted at Submit, a batch
@@ -2222,6 +2484,24 @@ function TimingPage({
                 left. Local to this page - unlike the carryover lock, both
                 submit paths that need it (submitTime, submitBatch) only ever
                 run from here. */}
+            {/* Timer:PausedFree: a Start that leaves a paused build waiting
+                (RT-MCS phone: "Leave it paused?"). Same card as the
+                extra-units question below. */}
+            {pausedWarn && (
+                <div className="extra-units-backdrop" role="dialog" aria-modal="true" aria-label="Leave it paused">
+                    <div className="extra-units-card">
+                        <p className="extra-units-body">{pausedWarn.text}</p>
+                        <div className="extra-units-buttons">
+                            <button type="button" id="paused-warn-start" onClick={() => answerPausedWarn(true)}>
+                                Start anyway
+                            </button>
+                            <button type="button" id="paused-warn-cancel" onClick={() => answerPausedWarn(false)}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {extraUnitsPrompt && (
                 <div className="extra-units-backdrop" role="dialog" aria-modal="true" aria-label="Extra units">
                     <div className="extra-units-card">

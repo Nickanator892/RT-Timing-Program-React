@@ -56,9 +56,12 @@ const IDLE_IN_TX_TIMEOUT_MS = 30_000;
 /** Schema script 0011's triggers and 0008's crew table. whpp_schema does not
  *  move for 0004-0019, so the stamp alone cannot tell a database reloaded
  *  without them - and without the triggers ONE PLACE AT A TIME is silently off. */
-const REQUIRED_TRIGGERS: [table: string, trigger: string][] = [
-    ["harnbuildsegments", "trg_timer_one_place_seg_v1"],
-    ["secondarybuilders", "trg_timer_one_place_crew_v1"],
+// Either pair is a live one-place rule: V1 blocks on any other open segment,
+// V2 (Timer:PausedFree, Randy 2026-10-16) only on a RUNNING one. Script B swaps
+// the pair, and a Pi older than this one would refuse a database that has V2.
+const REQUIRED_TRIGGERS: [table: string, triggers: string[]][] = [
+    ["harnbuildsegments", ["trg_timer_one_place_seg_v1", "trg_timer_one_place_seg_v2"]],
+    ["secondarybuilders", ["trg_timer_one_place_crew_v1", "trg_timer_one_place_crew_v2"]],
 ];
 const REQUIRED_TABLES = ["harnbuildsegcrew"];
 
@@ -451,8 +454,10 @@ export async function checkSchemaStamp(): Promise<string | null> {
                 AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`
         );
         const live = new Set(trg.rows.map((x: any) => `${x.tbl}.${x.trg}`));
-        for (const [table, trigger] of REQUIRED_TRIGGERS) {
-            if (!live.has(`${table}.${trigger}`)) problems.push(`trigger ${trigger} on ${table} is missing or disabled (script 0011)`);
+        for (const [table, triggers] of REQUIRED_TRIGGERS) {
+            if (!triggers.some((t) => live.has(`${table}.${t}`))) {
+                problems.push(`trigger ${triggers[0]} on ${table} is missing or disabled (script 0011)`);
+            }
         }
         const tabs = await pool.query(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ANY($1::text[])",

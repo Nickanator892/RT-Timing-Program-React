@@ -566,7 +566,8 @@ hr {
     color: #eaf4ff;
 }
 
-#extra-units-cancel {
+#extra-units-cancel,
+#paused-warn-cancel {
     border-color: #6b7683;
     background: #1b2027;
     color: #dfe6ee;

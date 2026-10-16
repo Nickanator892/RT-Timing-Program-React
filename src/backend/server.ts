@@ -399,6 +399,82 @@ async function segCrewExists(): Promise<boolean> {
   return segCrewSeen;
 }
 
+// --------------------
+// Timer feature switches (Randy, 2026-10-16)
+// --------------------
+// The RT-MCS phone timer's three 2026-10-16 switches, matched here so the phone
+// and the panels go live together (docs/TIMER-PAUSE-PACKAGING-EDIT-DESIGN.md in
+// the HPP repo). Each is off unless this station's db-config.json says
+//   "timer": { "pausedFree": true, "sharedSessions": true, "timeEdits": true }
+// and off means the panel behaves exactly as before. A switch on is still only
+// USED once the database has what it needs - the V2 one-place triggers, the
+// packaging tables, the time-edit tables - the same rule RT-MCS applies, so a
+// panel never offers what the database would refuse.
+type TimerSwitches = { pausedFree: boolean; sharedSessions: boolean; timeEdits: boolean };
+let timerSwitches: TimerSwitches = { pausedFree: false, sharedSessions: false, timeEdits: false };
+function readTimerSwitches(config: any): void {
+  const t = config?.timer;
+  timerSwitches = {
+    pausedFree: t?.pausedFree === true,
+    sharedSessions: t?.sharedSessions === true,
+    timeEdits: t?.timeEdits === true,
+  };
+  if (timerSwitches.pausedFree || timerSwitches.sharedSessions || timerSwitches.timeEdits) {
+    console.log("timer switches on:", Object.entries(timerSwitches).filter(([, v]) => v).map(([k]) => k).join(", "));
+  }
+}
+
+const FEATURE_OBJECTS = [
+  "trg_timer_one_place_seg_v2",
+  "trg_timer_one_place_crew_v2",
+  "harnpacksession",
+  "harnpacksessionpn",
+  "harntimeedit",
+  "harntimeeditbuild",
+];
+let featureCache: { at: number; value: TimerSwitches } | null = null;
+/** What this panel may use now: each switch AND the database objects behind it.
+ *  Cached for a minute; nothing is asked of the database while every switch is off. */
+async function timerFeatures(): Promise<TimerSwitches> {
+  const sw = timerSwitches;
+  if (!sw.pausedFree && !sw.sharedSessions && !sw.timeEdits) {
+    return { pausedFree: false, sharedSessions: false, timeEdits: false };
+  }
+  if (featureCache && Date.now() - featureCache.at < 60_000) return featureCache.value;
+  const list = FEATURE_OBJECTS.map(() => "?").join(", ");
+  const out = await runQuery(
+    sqlFor(
+      `SELECT lower(name) AS name FROM sqlite_master WHERE type IN ('trigger', 'table') AND lower(name) IN (${list})`,
+      `SELECT lower(t.tgname) AS name
+         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgenabled <> 'D'
+          AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+          AND lower(t.tgname) IN (${list})
+       UNION
+       SELECT lower(table_name) AS name FROM information_schema.tables
+        WHERE table_schema = current_schema() AND lower(table_name) IN (${list})`
+    ),
+    engine === "pg" ? [...FEATURE_OBJECTS, ...FEATURE_OBJECTS] : FEATURE_OBJECTS
+  );
+  // Unreadable is "not there": the panel then behaves as before.
+  const have = new Set<string>(
+    out?.success && Array.isArray(out.result) ? out.result.map((r: any) => String(r.name)) : []
+  );
+  const value = {
+    pausedFree: sw.pausedFree && have.has("trg_timer_one_place_seg_v2") && have.has("trg_timer_one_place_crew_v2"),
+    sharedSessions: sw.sharedSessions && have.has("harnpacksession") && have.has("harnpacksessionpn"),
+    timeEdits: sw.timeEdits && have.has("harntimeedit") && have.has("harntimeeditbuild"),
+  };
+  if (out?.success) featureCache = { at: Date.now(), value };
+  return value;
+}
+
+/** RT-MCS's proxy refusing a table this release writes (MSTIMERRELEASE,
+ *  HARNPACKSESSION*) - an RT-MCS older than the matching allow-list. */
+function isTableRefusal(err: unknown, table: string): boolean {
+  return new RegExp(`not allowed[^\\n]*\\b${table}\\b`, "i").test(String((err as any)?.message ?? err ?? ""));
+}
+
 /** Throws with the worker's message instead of returning a failure envelope. */
 async function mustRun(
     statements: { query: string; params?: any[]; requireChanges?: number }[]
@@ -523,6 +599,7 @@ setInterval(() => { void flushWriteQueue(); }, 15_000);
   try {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
     const config = JSON.parse(raw);
+    readTimerSwitches(config);
     if (config.engine === "pg") {
       await startPg(config);
       return;
@@ -826,6 +903,43 @@ app.get("/api/jobs/shipped", async (_req, res) => {
 });
 
 /**
+ * Per harness of one job: what it owes and what has shipped (RT-MCS JobState.cs,
+ * the board's own split) - the packaging checklist's "not fully shipped" default
+ * (Randy 2026-10-16, design section 2). Asked of RT-MCS like /api/jobs/shipped;
+ * on any failure the checklist falls back to the scheduled quantities.
+ */
+app.get("/api/jobs/shipstate", async (req, res) => {
+  const msid = Number(req.query?.msid);
+  if (!(msid > 0)) return res.status(400).json({ success: false, error: "msid is required" });
+  try {
+    const r = await fetch(`${rtmcsUrl}/api/jobs/shipstate?msid=${encodeURIComponent(String(msid))}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const out: any = await r.json().catch(() => null);
+    if (!r.ok || !out || !Array.isArray(out.pns)) {
+      return res.json({ success: false, error: String(out?.error ?? `RtMcs answered HTTP ${r.status}`) });
+    }
+    res.json({
+      success: true,
+      pns: out.pns.map((p: any) => ({ pn: String(p?.pn ?? ""), owed: Number(p?.owed) || 0, shipped: Number(p?.shipped) || 0 })),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.json({ success: false, error: `RtMcs unreachable at ${rtmcsUrl}: ${message}` });
+  }
+});
+
+/** Which of the 2026-10-16 timer features this panel uses now (timerFeatures). */
+app.get("/api/timer/features", async (_req, res) => {
+  if (!dbConfigured()) return res.json({ success: true, result: { pausedFree: false, sharedSessions: false, timeEdits: false } });
+  try {
+    res.json({ success: true, result: { ...(await timerFeatures()), switches: timerSwitches, station: STATION_ID } });
+  } catch (err) {
+    res.json({ success: true, result: { pausedFree: false, sharedSessions: false, timeEdits: false }, error: String(err) });
+  }
+});
+
+/**
  * `ready` deliberately keeps its old meaning - configured, present and a real
  * SQLite file - because App.tsx sends the operator to the database SETUP screen
  * when it is false. A share that is merely read-only is not a reason to ask
@@ -1090,9 +1204,40 @@ app.post("/api/build/start", async (req, res) => {
   const NEW_BUILD_ID = sqlFor(SQLITE_NEW_BUILD_ID, PG_NEW_BUILD_ID);
   const NEW_SEGMENT_ID = sqlFor(`(SELECT MAX(segmentId) FROM HARNBUILDSEGMENTS WHERE buildId = ${NEW_BUILD_ID})`, PG_NEW_SEGMENT_ID);
   if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
-  const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime, unitDecision } =
+  const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime, unitDecision, pack } =
     req.body ?? {};
   if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
+  // Timer:SharedSessions packaging session (Randy 2026-10-16, design section
+  // 2): the live Packaging time is an ordinary build on the first checked
+  // harness, and the session row with its checked harnesses goes in with it,
+  // in the same transaction - RT-MCS FloorPackStart's rows exactly, but with
+  // this station's name. Submit splits it (timingPage submitBatch).
+  let packRows: { pn: string; qty: number }[] = [];
+  if (pack != null) {
+    if (!(await timerFeatures()).sharedSessions) {
+      return res.status(409).json({ success: false, error: "Packaging sessions are not switched on for this station." });
+    }
+    const merged = new Map<string, { pn: string; qty: number }>();
+    for (const p of Array.isArray(pack?.pns) ? pack.pns : []) {
+      const pn = String(p?.pn ?? "").trim();
+      const qty = Math.floor(Number(p?.qty) || 0);
+      if (!pn || qty <= 0) continue;
+      const key = pn.toUpperCase();
+      const had = merged.get(key);
+      merged.set(key, { pn: had?.pn ?? pn, qty: (had?.qty ?? 0) + qty });
+    }
+    packRows = [...merged.values()];
+    if (!(Number(pack?.msid) > 0)) return res.status(400).json({ success: false, error: "pack.msid is required" });
+    if (!packRows.length) {
+      return res.status(400).json({ success: false, error: "Check at least one harness and how many you are packaging." });
+    }
+    if (packRows.reduce((t, p) => t + p.qty, 0) > 500) {
+      return res.status(400).json({ success: false, error: "At most 500 harnesses in one packaging session." });
+    }
+    if (packRows[0].pn.toUpperCase() !== String(harnNumber).trim().toUpperCase()) {
+      return res.status(400).json({ success: false, error: "A packaging session's build is on its first checked harness." });
+    }
+  }
   const start = startTime || nowLocal();
   // finding [7]: nobody is the builder AND the second operator. Every current
   // client caller already filters secondaryBuilderIds against the primary
@@ -1155,6 +1300,27 @@ app.post("/api/build/start", async (req, res) => {
                 VALUES (${NEW_SEGMENT_ID}, ${NEW_BUILD_ID}, ?)`,
         params: [id],
       })),
+      ...(packRows.length ? packStatements() : []),
+    ];
+  }
+
+  // Found by its build: the session id is never needed before its own rows
+  // go in, and this works whatever the id column is on either engine.
+  function packStatements() {
+    const NEW_PACK_ID = `(SELECT MAX(PACKID) FROM HARNPACKSESSION WHERE BUILDID = ${NEW_BUILD_ID})`;
+    return [
+      {
+        query: `INSERT INTO HARNPACKSESSION (MSID, REV, BUILDID, STATUS, CREATED, CREATEDBY, STATIONID)
+                VALUES (?, ?, ${NEW_BUILD_ID}, 'OPEN', ?, ?, ?)`,
+        params: [Number(pack.msid), rev ?? null, start, builderId ?? null, STATION_ID],
+        requireChanges: 1,
+      },
+      ...packRows.map((p, i) => ({
+        query: `INSERT INTO HARNPACKSESSIONPN (PACKID, PN, QTY, SEQ) VALUES (${NEW_PACK_ID}, ?, ?, ?)`,
+        params: [p.pn, p.qty, i],
+        requireChanges: 1,
+      })),
+      { query: `SELECT ${NEW_PACK_ID} AS packId`, params: [] },
     ];
   }
 
@@ -1182,8 +1348,15 @@ app.post("/api/build/start", async (req, res) => {
       }
     }
     const buildId = Number(out[0].lastID);
-    res.json({ success: true, result: { buildId, segmentId: Number(out[2].lastID), startTime: start } });
+    const packId = packRows.length ? Number(out[out.length - 1]?.[0]?.packId ?? 0) || null : null;
+    res.json({ success: true, result: { buildId, segmentId: Number(out[2].lastID), startTime: start, packId } });
   } catch (err) {
+    if (packRows.length && isTableRefusal(err, "HARNPACKSESSION(PN)?")) {
+      return res.status(409).json({
+        success: false,
+        error: "This RT-MCS does not take packaging sessions from a timer station yet - nothing was started.",
+      });
+    }
     res.status(500).json({ success: false, error: String(err) });
   }
 });
@@ -1202,12 +1375,31 @@ app.post("/api/build/start", async (req, res) => {
  */
 app.post("/api/build/segment-roll", async (req, res) => {
   if (!dbConfigured()) return res.status(400).json({ success: false, error: "Database not configured" });
-  const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds, builderId } =
+  const { buildId, segmentId, accumSeconds, numberOfBuilders, secondaryBuilderIds, builderId, running, takeover } =
     req.body ?? {};
   if (!buildId || !segmentId) {
     return res.status(400).json({ success: false, error: "buildId and segmentId are required" });
   }
   const now = nowLocal();
+  // Timer:PausedFree (Randy 2026-10-16). A roll made while the clock is stopped
+  // opens the new segment PAUSED, not RUN: with the V2 triggers a paused build
+  // may share its people with a running one elsewhere, and a RUN insert would
+  // be refused for them. Off, every new segment opens RUN as it always has.
+  // `takeover` - someone else picking up a PAUSED build here: audited in
+  // MSTIMERRELEASE as TAKEOVER (the old primary's notice), in this transaction.
+  const features = await timerFeatures();
+  const newState = features.pausedFree && running === false ? "PAUSE" : "RUN";
+  const audit =
+    features.pausedFree && takeover && Number(takeover.fromBuilderId) > 0 && Number(builderId) > 0
+      ? {
+          query: `INSERT INTO MSTIMERRELEASE (BUILDID, BUILDERID, BYBUILDERID, ACTION, STATION, VIA, AT, WORKEDSECONDS, HARN)
+                  VALUES (?, ?, ?, 'TAKEOVER', ?, ?, ?, ?, ?)`,
+          params: [
+            Number(buildId), Number(takeover.fromBuilderId), Number(builderId), STATION_ID, `station:${STATION_ID}`, now,
+            Math.max(0, Math.floor(Number(takeover.workedSeconds) || 0)), String(takeover.harn ?? ""),
+          ],
+        }
+      : null;
   // A handover names the incoming builder; a plain crew change does not, and
   // must leave both the build row and the new segment on whoever is already
   // recorded - never NULL them.
@@ -1268,11 +1460,11 @@ app.post("/api/build/segment-roll", async (req, res) => {
         // null and the new segment inherits the builder the build already has.
         query: `INSERT INTO HARNBUILDSEGMENTS
                   (buildId, startTime, endTime, numberOfBuilders, accumSeconds, heartbeatAt, heartbeatState, stationId, builderId)
-                VALUES (?, ?, '', ?, 0, ?, 'RUN', ?,
+                VALUES (?, ?, '', ?, 0, ?, ?, ?,
                         COALESCE(?, (SELECT t.builderId FROM HARNBUILDTIMES t
                                       WHERE t.buildId = ? AND t.timeTypeId <> 4
                                       ORDER BY t.harnBuildTimeId LIMIT 1)))`,
-        params: [buildId, now, builders, now, STATION_ID, newPrimary, buildId],
+        params: [buildId, now, builders, now, newState, STATION_ID, newPrimary, buildId],
         requireChanges: 1,
       },
       {
@@ -1295,19 +1487,37 @@ app.post("/api/build/segment-roll", async (req, res) => {
         params: engine === "pg" ? [buildId, id] : [buildId, buildId, id],
       }))
     );
+    if (withAudit && audit) statements.push(audit);
     return { statements, newSegmentAt };
     };
-    const withSegCrew = await hasSegCrew();
+    let withSegCrew = await hasSegCrew();
+    let withAudit = audit != null;
     let roll = rollStatements(withSegCrew);
     let out;
-    try {
-      out = await mustRun(roll.statements);
-    } catch (err) {
-      if (!(withSegCrew && noteSegCrewRefusal(err))) throw err;
-      roll = rollStatements(false);
-      out = await mustRun(roll.statements);
+    // Each fallback at most once: an RT-MCS that refuses the crew table, and
+    // one whose allow-list does not have MSTIMERRELEASE yet (the takeover
+    // still happens, as a plain handover, and says so in the log).
+    for (;;) {
+      try {
+        out = await mustRun(roll.statements);
+        break;
+      } catch (err) {
+        if (withSegCrew && noteSegCrewRefusal(err)) {
+          withSegCrew = false;
+        } else if (withAudit && isTableRefusal(err, "MSTIMERRELEASE")) {
+          console.warn("segment-roll: RtMcs refuses MSTIMERRELEASE - takeover recorded without its audit row:", String(err));
+          withAudit = false;
+        } else {
+          throw err;
+        }
+        roll = rollStatements(withSegCrew);
+      }
     }
-    res.json({ success: true, result: { segmentId: Number(out[roll.newSegmentAt].lastID), startTime: now } });
+    res.json({
+      success: true,
+      // audited: only for a takeover - whether its TAKEOVER row went in.
+      result: { segmentId: Number(out[roll.newSegmentAt].lastID), startTime: now, audited: audit ? withAudit : undefined },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -1339,7 +1549,9 @@ app.post("/api/build/batch", async (req, res) => {
       const ids: number[] = [];
       for (const u of units) {
         const builderId = id(u?.builderId);
-        const insert = await run({ query: "INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", params: [harnNumber] });
+        // A packaging session's units each sit on their own harness (planDistributedTimes unitHarns).
+        const unitHarn = typeof u?.harnNumber === "string" && u.harnNumber ? u.harnNumber : harnNumber;
+        const insert = await run({ query: "INSERT INTO HARNBUILDS (harnNumber) VALUES(?)", params: [unitHarn] });
         const buildId = Number(insert?.lastID ?? 0);
         if (!buildId) throw new Error("Failed to create build row");
         ids.push(buildId);
@@ -1348,12 +1560,12 @@ app.post("/api/build/batch", async (req, res) => {
             query: `INSERT INTO HARNBUILDTIMES
                     (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
                  VALUES(?, ?, ?, ?, ?, ?, ?)`,
-            params: [buildId, harnNumber, rev ?? null, builderId, timeTypeId, u.numberOfBuilders, u.unitDecision],
+            params: [buildId, unitHarn, rev ?? null, builderId, timeTypeId, u.numberOfBuilders, u.unitDecision],
           });
         } else {
           await run({
             query: "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-            params: [buildId, harnNumber, rev ?? null, builderId, timeTypeId, u.numberOfBuilders],
+            params: [buildId, unitHarn, rev ?? null, builderId, timeTypeId, u.numberOfBuilders],
           });
         }
         for (const s of Array.isArray(u?.segments) ? u.segments : []) {
@@ -1680,7 +1892,14 @@ app.post("/api/set-db-path", (req, res) => {
   try {
     validateSQLitePath(incomingPath);
     dbPath = incomingPath;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath, rtmcsUrl }, null, 2), "utf-8");
+    // The timer switches ride along: choosing a database file must not turn
+    // a station's features off behind its back.
+    const keep: any = {};
+    try {
+      const old = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      if (old?.timer && typeof old.timer === "object") keep.timer = old.timer;
+    } catch { /* no config yet */ }
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dbPath, rtmcsUrl, ...keep }, null, 2), "utf-8");
     console.log("Database path saved:", dbPath);
     void loadRtmcsKey();
     res.json({ success: true });
