@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import { fileURLToPath } from "url";
 import ora from "ora";
+import { decideUpdate } from "./versionOrder.js";
 
 const serverPort = 5000;
 // The repo clone this script runs from (updater/ -> clone root).
@@ -486,6 +487,23 @@ async function installedVersion(): Promise<string> {
     return "Not Installed";   // config-files, not-installed
 }
 
+/** Says why a release was passed over - once per tag per boot (the marker is in
+ *  /tmp), not on every poll. */
+const SKIPPED_MARK = "/tmp/rt-timing-skipped-release";
+function noteSkippedRelease(latest: string, current: string, why: "older" | "unreadable") {
+    try {
+        if (fs.readFileSync(SKIPPED_MARK, "utf8") === latest) return;
+    } catch { /* first time this boot */ }
+    console.warn(
+        why === "older"
+            ? `Release ${latest} is OLDER than the installed ${current} - not installing it (updates only go forward).`
+            : `Release tag "${latest}" is not a version number - not installing it (installed: ${current}).`
+    );
+    try {
+        fs.writeFileSync(SKIPPED_MARK, latest);
+    } catch { /* logging again next time is harmless */ }
+}
+
 async function getLatestVersion() {
     const spinner = spin('Checking for updates...');
     try {
@@ -497,8 +515,16 @@ async function getLatestVersion() {
         const latestVersion = await response.json();
         const currentVersion = await installedVersion();
         const latestString: string = latestVersion.tag_name.toString().trim();
-        if (currentVersion === latestString) {
+        // Only ever forwards (ruling 119, versionOrder.ts): a 1.x release made
+        // after the 2.0 PostgreSQL cutover must not replace 2.0 on a station.
+        const decision = decideUpdate(currentVersion, latestString);
+        if (decision === "current") {
             spinner.succeed(`Already on latest version ${currentVersion}`);
+            return false;
+        }
+        if (decision === "older" || decision === "unreadable") {
+            spinner.succeed(`Staying on ${currentVersion} (latest release is ${latestString})`);
+            noteSkippedRelease(latestString, currentVersion, decision);
             return false;
         }
         spinner.succeed(`New version available: ${latestString} (current: ${currentVersion})`);
