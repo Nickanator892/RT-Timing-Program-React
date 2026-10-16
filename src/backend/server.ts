@@ -424,16 +424,42 @@ function readTimerSwitches(config: any): void {
   }
 }
 
-const FEATURE_OBJECTS = [
-  "trg_timer_one_place_seg_v2",
-  "trg_timer_one_place_crew_v2",
-  "harnpacksession",
-  "harnpacksessionpn",
-  "harntimeedit",
-  "harntimeeditbuild",
-];
+// Timer:PausedFree needs the whole V2 set live and no V1 left (RT-MCS
+// ReadPgPausedFree): with a half-applied script, or V1 still enabled, the panel
+// would promise a second open build that V1 then refuses.
+const V2_TRIGGERS = ["trg_timer_one_place_seg_v2", "trg_timer_one_place_crew_v2", "trg_timer_one_place_resume_v2"];
+const V1_TRIGGERS = ["trg_timer_one_place_seg_v1", "trg_timer_one_place_crew_v1"];
+const FEATURE_TABLES = ["harnpacksession", "harnpacksessionpn", "harntimeedit", "harntimeeditbuild"];
+const quoted = (names: string[]) => names.map((n) => `'${n}'`).join(", ");
+
+/** SQLite: the trigger and table names present. Writes go through RT-MCS, whose
+ *  allow-list (not a grant) decides - a refusal there is handled where it happens. */
+const FEATURES_SQLITE = `
+SELECT lower(name) AS name FROM sqlite_master
+ WHERE type IN ('trigger', 'table') AND lower(name) IN (${quoted([...V2_TRIGGERS, ...V1_TRIGGERS, ...FEATURE_TABLES])})`;
+
+/** PostgreSQL: one row. Triggers count only when enabled for normal operation
+ *  ('O' origin, 'A' always - not 'R' replica-only, not 'D'); tables only when this
+ *  role holds the privilege each feature uses, one privilege per call - a table
+ *  the role can merely SELECT is listed in information_schema.tables but would
+ *  fail its first INSERT. to_regclass is NULL for a missing table, and the
+ *  oid form of has_table_privilege is then NULL too, never an error. */
+const pgTrig = (names: string[]) => `(SELECT COUNT(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE NOT t.tgisinternal AND t.tgenabled IN ('O', 'A')
+       AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+       AND lower(t.tgname) IN (${quoted(names)}))`;
+const pgPriv = (table: string, priv: string) => `COALESCE(has_table_privilege(to_regclass('${table}'), '${priv}'), false)`;
+const FEATURES_PG = `
+SELECT ${pgTrig(V2_TRIGGERS)} AS v2live,
+       ${pgTrig(V1_TRIGGERS)} AS v1live,
+       ${pgPriv("mstimerrelease", "INSERT")} AS releaseins,
+       (${pgPriv("harnpacksession", "INSERT")} AND ${pgPriv("harnpacksession", "UPDATE")}
+        AND ${pgPriv("harnpacksessionpn", "INSERT")}
+        AND ${pgPriv("harnpacksession", "SELECT")} AND ${pgPriv("harnpacksessionpn", "SELECT")}) AS packok,
+       (${pgPriv("harntimeedit", "SELECT")} AND ${pgPriv("harntimeeditbuild", "SELECT")}) AS editok`;
+
 let featureCache: { at: number; value: TimerSwitches } | null = null;
-/** What this panel may use now: each switch AND the database objects behind it.
+/** What this panel may use now: each switch AND what the database has for it.
  *  Cached for a minute; nothing is asked of the database while every switch is off. */
 async function timerFeatures(): Promise<TimerSwitches> {
   const sw = timerSwitches;
@@ -441,29 +467,31 @@ async function timerFeatures(): Promise<TimerSwitches> {
     return { pausedFree: false, sharedSessions: false, timeEdits: false };
   }
   if (featureCache && Date.now() - featureCache.at < 60_000) return featureCache.value;
-  const list = FEATURE_OBJECTS.map(() => "?").join(", ");
-  const out = await runQuery(
-    sqlFor(
-      `SELECT lower(name) AS name FROM sqlite_master WHERE type IN ('trigger', 'table') AND lower(name) IN (${list})`,
-      `SELECT lower(t.tgname) AS name
-         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-        WHERE NOT t.tgisinternal AND t.tgenabled <> 'D'
-          AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
-          AND lower(t.tgname) IN (${list})
-       UNION
-       SELECT lower(table_name) AS name FROM information_schema.tables
-        WHERE table_schema = current_schema() AND lower(table_name) IN (${list})`
-    ),
-    engine === "pg" ? [...FEATURE_OBJECTS, ...FEATURE_OBJECTS] : FEATURE_OBJECTS
-  );
-  // Unreadable is "not there": the panel then behaves as before.
-  const have = new Set<string>(
-    out?.success && Array.isArray(out.result) ? out.result.map((r: any) => String(r.name)) : []
-  );
+  const out = await runQuery(engine === "pg" ? FEATURES_PG : FEATURES_SQLITE, []);
+  const rows: any[] = out?.success && Array.isArray(out.result) ? out.result : [];
+  let have: { v2: boolean; noV1: boolean; pack: boolean; edits: boolean };
+  if (engine === "pg") {
+    // Unreadable is "not there": the panel then behaves as before.
+    const r = rows[0] ?? {};
+    have = {
+      v2: Number(r.v2live) === V2_TRIGGERS.length && r.releaseins === true,
+      noV1: Number(r.v1live ?? 1) === 0,
+      pack: r.packok === true,
+      edits: r.editok === true,
+    };
+  } else {
+    const names = new Set(rows.map((r) => String(r.name)));
+    have = {
+      v2: V2_TRIGGERS.every((n) => names.has(n)),
+      noV1: rows.length > 0 && !V1_TRIGGERS.some((n) => names.has(n)),
+      pack: names.has("harnpacksession") && names.has("harnpacksessionpn"),
+      edits: names.has("harntimeedit") && names.has("harntimeeditbuild"),
+    };
+  }
   const value = {
-    pausedFree: sw.pausedFree && have.has("trg_timer_one_place_seg_v2") && have.has("trg_timer_one_place_crew_v2"),
-    sharedSessions: sw.sharedSessions && have.has("harnpacksession") && have.has("harnpacksessionpn"),
-    timeEdits: sw.timeEdits && have.has("harntimeedit") && have.has("harntimeeditbuild"),
+    pausedFree: sw.pausedFree && have.v2 && have.noV1,
+    sharedSessions: sw.sharedSessions && have.pack,
+    timeEdits: sw.timeEdits && have.edits,
   };
   if (out?.success) featureCache = { at: Date.now(), value };
   return value;
