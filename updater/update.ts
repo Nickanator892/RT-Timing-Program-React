@@ -807,6 +807,41 @@ async function buildModule() {
     await verifyPatiently(MODULE_BUILT);
 }
 
+/**
+ * Runs `work` (the npm steps in this clone) and then puts the clone's TRACKED
+ * package-lock.json back byte for byte if npm rewrote it.
+ *
+ * The Pi's npm normalises the lockfile as it installs (2026-10-16: the 1.0.36
+ * install changed its root "version" and some "peer" flags at 17:37), and the
+ * edited file then refused the next `git pull --ff-only` that ships an updater
+ * change (Deploy-TimingUpdater.ps1). What npm installs and builds is untouched:
+ * it read the lockfile as it was and is done with it by the time it is restored.
+ * No git here - the clone's .git may belong to root (the deploy pulls with
+ * sudo), while this file is writable by whoever npm ran as. Never throws: a
+ * restore that fails is only a dirty clone, which the deploy reports.
+ */
+async function keepingTrackedLockfile(work: () => Promise<void>): Promise<void> {
+    const file = path.join(REPO_ROOT, "package-lock.json");
+    let saved: Buffer | null = null;
+    try {
+        saved = fs.readFileSync(file);
+    } catch { /* no lockfile: nothing to keep */ }
+    try {
+        await work();
+    } finally {
+        if (saved) {
+            try {
+                if (!fs.readFileSync(file).equals(saved)) {
+                    fs.writeFileSync(file, saved);
+                    console.log("npm rewrote the clone's package-lock.json - put back as tracked (keeps the next updater git pull clean).");
+                }
+            } catch (e) {
+                console.error(`Could not put package-lock.json back (${e}) - the next updater deploy will find the clone dirty.`);
+            }
+        }
+    }
+}
+
 const REPAIRING = "Repairing the build timer.\nIt will be back in a few minutes - please do not switch the Pi off.";
 
 /** `repairNotice`: what the panel says while this runs, if the app is down
@@ -823,8 +858,10 @@ async function fixSQLite(repairNotice?: string) {
     try {
         let source = "";
         try {
-            await runBounded(`npm install --omit=dev --no-audit --no-fund`, NPM_INSTALL_TIMEOUT_MS, { cwd: REPO_ROOT });
-            await buildModule();
+            await keepingTrackedLockfile(async () => {
+                await runBounded(`npm install --omit=dev --no-audit --no-fund`, NPM_INSTALL_TIMEOUT_MS, { cwd: REPO_ROOT });
+                await buildModule();
+            });
             source = MODULE_BUILT;
         } catch (buildErr: any) {
             // Fallback: the last known-good binary. Only used if it still
