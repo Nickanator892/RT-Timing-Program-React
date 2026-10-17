@@ -497,6 +497,46 @@ async function timerFeatures(): Promise<TimerSwitches> {
   return value;
 }
 
+// ONE PLACE AT A TIME in this app's own code while Timer:PausedFree is off
+// (Randy ruling 123 follow-up, 2026-10-17). Until now the panel left the rule
+// to the database's V1 triggers; the V2 set (PostgreSQL 0022, RT-MCS's SQLite
+// SegTriggerV2/CrewTriggerV2) counts only RUNNING segments, so with V2 live and
+// the switch off a Start here would quietly go through past a paused build
+// elsewhere while the phone (RT-MCS FloorRequireFree) still refuses it. This is
+// V1's rule exactly - an open segment on another build, on another station or
+// on the phone, with the person as its builder or on its SECONDARYBUILDERS -
+// with V1's own texts, so the page's refusal handling (isOnePlaceRefusal, the
+// release offer) works unchanged. Switch on and V2 live, the triggers decide.
+const ONE_PLACE_PRIMARY =
+  "ONE PLACE AT A TIME: this builder already has a build open on another timer station or on the phone timer - pause and finish it there first";
+const ONE_PLACE_CREW =
+  "ONE PLACE AT A TIME: a crew member already has a build open on another timer station or on the phone timer - they must finish it there first";
+const OPEN_ELSEWHERE = `
+  FROM HARNBUILDSEGMENTS s
+ WHERE COALESCE(s.endTime, '') = '' AND s.buildId <> ? AND s.stationId IS NOT NULL
+   AND (s.stationId <> ? OR s.stationId = 'RT-MCS phone')`;
+
+/** null when everyone may go on a build at this station, else the refusal.
+ *  `buildId` 0 for a new build. Nothing is read while PausedFree is in use. */
+async function onePlaceRefusal(primary: number | null, crew: number[], buildId: number): Promise<string | null> {
+  if ((await timerFeatures()).pausedFree) return null;
+  const ids = [...new Set([...(primary ? [primary] : []), ...crew].map(Number))].filter((n) => n > 0);
+  if (!ids.length) return null;
+  const marks = ids.map(() => "?").join(", ");
+  const out = await runQuery(
+    `SELECT s.builderId AS builderId ${OPEN_ELSEWHERE} AND s.builderId IN (${marks})
+     UNION
+     SELECT sb.builderId AS builderId ${OPEN_ELSEWHERE.replace("FROM HARNBUILDSEGMENTS s", "FROM HARNBUILDSEGMENTS s JOIN SECONDARYBUILDERS sb ON sb.buildId = s.buildId")}
+        AND sb.builderId IN (${marks})`,
+    [Number(buildId) || 0, STATION_ID, ...ids, Number(buildId) || 0, STATION_ID, ...ids]
+  );
+  // Unreadable is not "free": with V2 live nothing else would stop the write.
+  if (!out?.success) throw new Error(`Could not check where these builders are open - nothing was written: ${out?.error ?? "no answer"}`);
+  const busy = new Set((Array.isArray(out.result) ? out.result : []).map((r: any) => Number(r.builderId)));
+  if (primary && busy.has(Number(primary))) return ONE_PLACE_PRIMARY;
+  return busy.size ? ONE_PLACE_CREW : null;
+}
+
 /** RT-MCS's proxy refusing a table this release writes (MSTIMERRELEASE,
  *  HARNPACKSESSION*) - an RT-MCS older than the matching allow-list. */
 function isTableRefusal(err: unknown, table: string): boolean {
@@ -1353,6 +1393,8 @@ app.post("/api/build/start", async (req, res) => {
   }
 
   try {
+    const refused = await onePlaceRefusal(primary, filteredSecondaryIds, 0);
+    if (refused) return res.status(409).json({ success: false, error: refused });
     let withSegCrew = await hasSegCrew();
     let withDecision = decision != null;
     let out;
@@ -1453,6 +1495,9 @@ app.post("/api/build/segment-roll", async (req, res) => {
       (id: number) => id > 0 && (resolvedPrimary == null || id !== resolvedPrimary)
     );
     const builders = Math.max(1, filteredSecondaryIds.length + 1);
+    // Everyone the new segment and its roster name, as V1 checks each insert.
+    const refused = await onePlaceRefusal(resolvedPrimary, filteredSecondaryIds, Number(buildId));
+    if (refused) return res.status(409).json({ success: false, error: refused });
     // Built twice at most: with the crew rows, and - if RT-MCS refuses the
     // table (see isSegCrewRefusal) - the same roll without them.
     const rollStatements = (withSegCrew: boolean) => {
