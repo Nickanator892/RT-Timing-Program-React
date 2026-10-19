@@ -99,7 +99,7 @@ function TimingPage({
     pauseStart,
     setPauseStart,
 }: timingPageProps) {
-    const { buildKit } = useBuildKit();
+    const { buildKit, fetchKit } = useBuildKit();
     const [dbSuccess, setDbSuccess] = useState("Submit");
     const [harnBuilt, setHarnBuilt] = useState(0);
     const [harnTotal, setHarnTotal] = useState(0);
@@ -263,7 +263,24 @@ function TimingPage({
     // which count time ROWS for the current mode and drive "ALL BUILT" on the
     // submit button.
     const [unitsBuilt, setUnitsBuilt] = useState<number | null>(null);
-    const [selectedJob] = useSharedState<{ phkid?: number | null } | null>("selectedJob", null);
+    const [selectedJob] = useSharedState<{ phkid?: number | null; rev?: number } | null>("selectedJob", null);
+
+    /**
+     * The REV a new build goes in under (2026-10-19). The kit is normally loaded when the job is picked; if it is
+     * missing (a restart before 2.0.1 did not bring it back) it is reloaded from the selected job. Null = no job is
+     * known: the caller refuses to start rather than write a build no count can see.
+     */
+    async function kitRevNow(): Promise<number | null> {
+        if (Number(buildKit?.REV) > 0) return Number(buildKit?.REV);
+        const jobRev = Number(selectedJob?.rev);
+        if (!(jobRev > 0)) return null;
+        try {
+            const kit = await fetchKit(jobRev, selectedJob?.phkid ?? null);
+            return Number(kit?.REV) > 0 ? Number(kit?.REV) : null;
+        } catch {
+            return null;
+        }
+    }
 
     // Depends on the kit's REV, NOT the kit object: useBuildKit hands back a new
     // object on every render, so an effect keyed on it re-ran forever, each pass
@@ -1483,6 +1500,13 @@ function TimingPage({
             setErr(`Database is not writable - nothing would be recorded (${notWritable})`);
             return;
         }
+        // 2026-10-19: a new build needs its job's REV (reloaded from the job if the kit is missing).
+        const startRev = timerDone ? await kitRevNow() : Number(buildKit?.REV) || null;
+        if (timerDone && startRev == null && !(packDraft?.rev)) {
+            setActiveButton(pauseStart ? "pause" : null);
+            setErr("No job (REV) for this build - the timer has lost which job it is on (it restarted?). Go back to Jobs, pick the job again, then Start.");
+            return;
+        }
         // Randy 2026-10-16 - both switched off by default, and then nothing
         // here runs. Asked BEFORE the clock starts: a Cancel, or a Resume
         // refused, leaves everything exactly where it was.
@@ -1593,7 +1617,7 @@ function TimingPage({
             try {
                 const created = await postApi("/api/build/start", {
                     harnNumber: packPns ? packPns[0].pn : selectedHarn,
-                    rev: packPns ? packDraft?.rev ?? buildKit?.REV : buildKit?.REV,
+                    rev: packPns ? packDraft?.rev ?? startRev : startRev,
                     builderId: selectedUser?.Id,
                     timeTypeId: timerMode.id,
                     numberOfBuilders: startSecondaryIds.length + 1,
@@ -1606,7 +1630,7 @@ function TimingPage({
                         buildId: Number(created.buildId) || 0,
                         packId: Number(created.packId) || 0,
                         msid: Number(packDraft?.msid) || 0,
-                        rev: Number(packDraft?.rev ?? buildKit?.REV) || 0,
+                        rev: Number(packDraft?.rev ?? startRev) || 0,
                         job: packDraft?.job ?? "",
                         pns: packPns,
                     };
@@ -1783,7 +1807,8 @@ function TimingPage({
         }
         const unitHarns = pack ? expandPackUnits(pack.pns) : undefined;
         if (unitHarns?.length) units = unitHarns.length;
-        const packRev = pack?.rev || buildKit?.REV;
+        // 2026-10-19: reloaded from the job if the kit went missing (kitRevNow) - /api/build/batch refuses no REV.
+        const packRev = pack?.rev || (await kitRevNow()) || undefined;
 
         // Extra-units question - BEFORE anything is written (setDbSuccess
         // below is just a label). A Cancel here must leave every row, the
@@ -2048,7 +2073,7 @@ function TimingPage({
         // fails and nothing here was ever created.
         const created = await postApi("/api/build/start", {
             harnNumber: selectedHarn,
-            rev: buildKit?.REV,
+            rev: (await kitRevNow()) ?? undefined,
             builderId: selectedUser?.Id,
             timeTypeId: timerMode.id,
             numberOfBuilders: newBuildSecondaryIds.length + 1,

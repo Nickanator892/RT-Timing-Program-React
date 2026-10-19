@@ -1275,6 +1275,9 @@ app.post("/api/build/start", async (req, res) => {
   const { harnNumber, rev, builderId, timeTypeId, numberOfBuilders, secondaryBuilderIds, startTime, unitDecision, pack } =
     req.body ?? {};
   if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
+  // 2026-10-19: every build belongs to a job. After a restart the restore used to bring back the harness without the
+  // kit the REV comes from, and 5 HYSV-20008 Builds went in with REV NULL - invisible to every built count. Refuse.
+  if (!(Number(rev) > 0)) return res.status(400).json({ success: false, error: "No job (REV) for this build - the timer has lost which job it is on (it restarted?). Go back to Jobs, pick the job again, then Start." });
   // Timer:SharedSessions packaging session (Randy 2026-10-16, design section
   // 2): the live Packaging time is an ordinary build on the first checked
   // harness, and the session row with its checked harnesses goes in with it,
@@ -1613,6 +1616,8 @@ app.post("/api/build/batch", async (req, res) => {
   }
   const { harnNumber, rev, timeTypeId, writeSegCrew, units } = req.body ?? {};
   if (!harnNumber) return res.status(400).json({ success: false, error: "harnNumber is required" });
+  // 2026-10-19: no build without its job's REV (see /api/build/start).
+  if (!(Number(rev) > 0)) return res.status(400).json({ success: false, error: "No job (REV) for this build - the timer has lost which job it is on (it restarted?). Go back to Jobs, pick the job again, then Start." });
   if (!Array.isArray(units) || units.length < 1 || units.length > 500) {
     return res.status(400).json({ success: false, error: "units must list 1 to 500 units" });
   }

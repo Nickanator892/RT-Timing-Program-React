@@ -205,6 +205,9 @@ const SESSION_FILE = () => path.join(app.getPath("userData"), "session-state.jso
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const SESSION_KEYS = [
     "selectedUser", "selectedHarn", "selectedJob", "timerMode",
+    // 2026-10-19: the kit is where a build's REV comes from. Without it a restart put the operator back on the
+    // harness with no REV, and every Start until a job was picked again wrote REV NULL (HYSV-20008, 2026-10-16).
+    "selectedBuildKit",
     "batchMode", "batchUnits", "batchPauses", "secondaryBuilders",
     "currentBuildId", "currentSegmentId", "currentSegmentStart",
     "startTime", "endTime", "timerDone", "pauseReason",
