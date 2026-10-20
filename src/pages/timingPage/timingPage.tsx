@@ -42,6 +42,7 @@ import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
 import { sqlFor } from "../../assets/dbEngine";
 import { timerFeatures, useTimerFeatures } from "../../hooks/useTimerFeatures";
 import { PACKAGING_MODE, timerModes } from "../../common/timerModeDropdown/timerModeDropdown";
+import { PREBUILD_MODE, STEP_DONE_MODES, type PrebuildShare } from "../../hooks/useHarnSteps";
 import PackagingSession, {
     expandPackUnits,
     readPackOfBuild,
@@ -178,6 +179,16 @@ function TimingPage({
     const [packSession, setPackSession] = useSharedState<PackSession | null>("packSession", null);
     const [packPickerOpen, setPackPickerOpen] = useState(false);
     const packing = features.sharedSessions && timerMode.id === PACKAGING_MODE;
+    // Harness Steps (Randy 2026-10-20): a shared prebuild session, picked on
+    // the mode list - one timed prebuild for every harness in the group, and
+    // Submit writes each of them its units with the time split evenly, the
+    // way a packaging session splits across its part numbers. Only while
+    // Prebuild is the mode and the harness it was picked on is on screen.
+    const [prebuildShare] = useSharedState<PrebuildShare | null>("prebuildShare", null);
+    const sharedPrebuild =
+        timerMode.id === PREBUILD_MODE && !!prebuildShare && prebuildShare.harn === selectedHarn && prebuildShare.members.length >= 2
+            ? prebuildShare
+            : null;
     /** The harness the live build is on: a packaging session's first checked one. */
     const liveHarn = packSession?.pns?.[0]?.pn || selectedHarn;
     // Timer:PausedFree: "Leave it paused?" before a Start that leaves one waiting.
@@ -1792,6 +1803,64 @@ function TimingPage({
         return askExtraUnitsQuestion({ qty: unitsTotal, remaining, units, harn: selectedHarn });
     }
 
+    // --- "Finished this step for these units?" (Harness Steps) -----------
+    // Randy, 2026-10-20 (HPP docs/HARNESS-STEPS-DESIGN.md section 5, answer D):
+    // a Prebuild or Strip & Crimp session can cover part of a step, so Submit
+    // asks, one tick per harness, ticked by default. HARNBUILDTIMES.stepdone
+    // = 1 finished, 0 part only; every other step leaves it NULL. The column
+    // comes with 0026-harnsteps.sql, so with no column there is no question
+    // and nothing is written - same rule as unitDecision above.
+    const stepDoneColumnRef = useRef<boolean | null>(null);
+    async function columnSupportsStepDone(): Promise<boolean> {
+        if (stepDoneColumnRef.current !== null) return stepDoneColumnRef.current;
+        try {
+            const data = await execQuery(
+                sqlFor(
+                    `SELECT COUNT(*) AS n FROM pragma_table_info('HARNBUILDTIMES') WHERE name = 'stepdone'`,
+                    `SELECT COUNT(*) AS n FROM information_schema.columns
+                      WHERE table_schema = current_schema() AND table_name = 'harnbuildtimes' AND column_name = 'stepdone'`
+                )
+            );
+            // A failed read is not cached: the next Submit asks again.
+            if (!data?.result) return false;
+            const present = Number(data.result[0]?.n ?? 0) > 0;
+            stepDoneColumnRef.current = present;
+            if (!present) console.warn("HARNBUILDTIMES.stepdone not present yet - skipping the step-finished question");
+            return present;
+        } catch {
+            return false;
+        }
+    }
+
+    const [stepDonePrompt, setStepDonePrompt] = useState<{
+        step: string;
+        rows: { pn: string; units: number; done: boolean }[];
+        resolve: (answer: Record<string, 0 | 1> | "CANCEL") => void;
+    } | null>(null);
+
+    /** Ask, on a Prebuild or Strip & Crimp submit, whether the step is finished
+     *  for each harness's units. Null when the question does not apply - the
+     *  rows then carry no stepdone. `unitHarns` is one entry per unit. */
+    async function maybeAskStepDone(unitHarns: string[]): Promise<Record<string, 0 | 1> | null | "CANCEL"> {
+        if (!STEP_DONE_MODES.includes(timerMode.id)) return null;
+        if (!(await columnSupportsStepDone())) return null;
+        const rows: { pn: string; units: number; done: boolean }[] = [];
+        for (const pn of unitHarns) {
+            const row = rows.find((r) => r.pn === pn);
+            if (row) row.units++;
+            else rows.push({ pn, units: 1, done: true });
+        }
+        return new Promise((resolve) => setStepDonePrompt({ step: modeName(timerMode.id), rows, resolve }));
+    }
+
+    function answerStepDone(ok: boolean) {
+        if (!stepDonePrompt) return;
+        const answer: Record<string, 0 | 1> = {};
+        for (const r of stepDonePrompt.rows) answer[r.pn] = r.done ? 1 : 0;
+        stepDonePrompt.resolve(ok ? answer : "CANCEL");
+        setStepDonePrompt(null);
+    }
+
     /** Batch submit: slice the timed window across the unit count. */
     async function submitBatch() {
         let units = Math.max(1, Math.floor(batchUnits));
@@ -1805,7 +1874,19 @@ function TimingPage({
             const read = await readPackOfBuild(Number(currentBuildId));
             pack = read !== undefined ? read : packSession?.buildId === Number(currentBuildId) ? packSession : null;
         }
-        const unitHarns = pack ? expandPackUnits(pack.pns) : undefined;
+        let unitHarns = pack ? expandPackUnits(pack.pns) : undefined;
+        // A shared prebuild: the unit count is per harness - every harness in
+        // the group gets that many units, and the time is split evenly across
+        // all of them (design section 5).
+        if (!pack && sharedPrebuild) {
+            const perHarn = batchMode ? units : 1;
+            if (perHarn * sharedPrebuild.members.length > 500) {
+                setErr(`Not submitted - ${perHarn} units on each of ${sharedPrebuild.members.length} harnesses is more than 500.`);
+                setDbSuccess("Submit");
+                return;
+            }
+            unitHarns = sharedPrebuild.members.flatMap((pn) => Array<string>(perHarn).fill(pn));
+        }
         if (unitHarns?.length) units = unitHarns.length;
         // 2026-10-19: reloaded from the job if the kit went missing (kitRevNow) - /api/build/batch refuses no REV.
         const packRev = pack?.rev || (await kitRevNow()) || undefined;
@@ -1815,6 +1896,12 @@ function TimingPage({
         // clock and the live build exactly as they were.
         const decision = await maybeAskExtraUnits(units);
         if (decision === "CANCEL") {
+            setDbSuccess("Submit");
+            return;
+        }
+        // Same rule: asked before anything is written, Cancel leaves it all.
+        const stepDone = await maybeAskStepDone(unitHarns?.length ? unitHarns : Array<string>(units).fill(selectedHarn));
+        if (stepDone === "CANCEL") {
             setDbSuccess("Submit");
             return;
         }
@@ -1986,6 +2073,7 @@ function TimingPage({
                 excessUnits,
                 crewStretches,
                 writeSegCrew: await crewTablePresent(),
+                stepDoneByHarn: stepDone ?? undefined,
             });
             // execWrite, not execQuery: a dropped pause row here would silently
             // inflate the batch's times, and submitBatch's catch reports it.
@@ -2050,7 +2138,7 @@ function TimingPage({
      *  time row and ONE closed segment carrying the pause-free elapsed seconds
      *  from the main-process clock. Used when Submit finds no open segment to
      *  close, so the operator's time is written instead of abandoned. */
-    async function recordAsNewBuild(unitDecision?: UnitDecision) {
+    async function recordAsNewBuild(unitDecision?: UnitDecision, stepDone?: 0 | 1) {
         const shared = await window.electron.getSharedData();
         const elapsedSeconds = Math.max(1, Math.round(Number(shared?.elapsedTime ?? 0) / 1000));
         const end = endTime || formatTimestamp(new Date().toISOString());
@@ -2081,6 +2169,11 @@ function TimingPage({
             startTime: start,
             unitDecision,
         });
+        if (stepDone != null) {
+            // Before the segment closes, like unitDecision in submitTimeOnce:
+            // a failure here leaves an open build Submit can be pressed on again.
+            await execWrite("UPDATE HARNBUILDTIMES SET stepdone = ? WHERE buildId = ? AND timeTypeId <> 4", [stepDone, created.buildId]);
+        }
         await execWrite(
             `UPDATE HARNBUILDSEGMENTS
                 SET endTime = ?, accumSeconds = ?, heartbeatAt = ?, heartbeatState = 'PAUSE'
@@ -2178,8 +2271,9 @@ function TimingPage({
             }
         }
 
-        // A packaging session always splits, whatever the Batch box says.
-        if (batchMode || (packSession?.buildId && packSession.buildId === Number(currentBuildId))) {
+        // A packaging session always splits, whatever the Batch box says, and
+        // so does a shared prebuild (one unit on each harness when unticked).
+        if (batchMode || sharedPrebuild || (packSession?.buildId && packSession.buildId === Number(currentBuildId))) {
             await submitBatch();
             return;
         }
@@ -2193,6 +2287,12 @@ function TimingPage({
                 return;
             }
             const unitDecision = decision === "EXTRA" || decision === "SPREAD" ? decision : undefined;
+            const stepAnswer = await maybeAskStepDone([selectedHarn]);
+            if (stepAnswer === "CANCEL") {
+                setDbSuccess("Submit");
+                return;
+            }
+            const stepDone = stepAnswer ? stepAnswer[selectedHarn] : undefined;
 
             const timeObject: Partial<LoggedTime> = {
                 startTime: startTime,
@@ -2219,6 +2319,13 @@ function TimingPage({
                         [unitDecision, currentBuildId]
                     );
                 }
+                if (stepDone != null) {
+                    // Before the close, and not caught - same as unitDecision.
+                    await execWrite("UPDATE HARNBUILDTIMES SET stepdone = ? WHERE buildId = ? AND timeTypeId <> 4", [
+                        stepDone,
+                        currentBuildId,
+                    ]);
+                }
                 closed = await writeTime(timeObject, currentBuildId, selectedUser?.Id);
             }
             if (closed === "nomatch") {
@@ -2241,7 +2348,7 @@ function TimingPage({
                 if (state !== "missing") {
                     throw new Error("Could not close the segment - nothing was written. Check the database and Submit again.");
                 }
-                await recordAsNewBuild(unitDecision);
+                await recordAsNewBuild(unitDecision, stepDone);
             } else if (!closed) {
                 throw new Error("Could not close the segment - nothing was written. Check the database and Submit again.");
             }
@@ -2379,6 +2486,12 @@ function TimingPage({
                             Builder row needed the space more. */}
                     </div>
                     <TimerModeDropdown/>
+                    {sharedPrebuild && (
+                        <p className="shared-prebuild-note">
+                            Shared prebuild: {sharedPrebuild.members.join(" + ")} -{" "}
+                            {batchMode ? Math.max(1, Math.floor(batchUnits)) : 1} of each, time split evenly
+                        </p>
+                    )}
                     <PrimaryOperator />
                     <SecondOperator />
                     {(packing || (features.sharedSessions && !!packSession && !timerDone)) && (
@@ -2521,6 +2634,41 @@ function TimingPage({
                                 Start anyway
                             </button>
                             <button type="button" id="paused-warn-cancel" onClick={() => answerPausedWarn(false)}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {stepDonePrompt && (
+                <div className="extra-units-backdrop" role="dialog" aria-modal="true" aria-label="Step finished">
+                    <div className="extra-units-card">
+                        <p className="extra-units-body">Finished this step for these units?</p>
+                        <p className="step-done-step">{stepDonePrompt.step}</p>
+                        <div className="step-done-rows">
+                            {stepDonePrompt.rows.map((r) => (
+                                <label key={r.pn} className="step-done-row">
+                                    <input
+                                        type="checkbox"
+                                        checked={r.done}
+                                        onChange={(e) =>
+                                            setStepDonePrompt((p) =>
+                                                p && {
+                                                    ...p,
+                                                    rows: p.rows.map((x) => (x.pn === r.pn ? { ...x, done: e.target.checked } : x)),
+                                                }
+                                            )
+                                        }
+                                    />
+                                    {r.pn} - {r.units} {r.units === 1 ? "unit" : "units"} {r.done ? "finished" : "part only"}
+                                </label>
+                            ))}
+                        </div>
+                        <div className="extra-units-buttons">
+                            <button type="button" id="step-done-submit" onClick={() => answerStepDone(true)}>
+                                Submit
+                            </button>
+                            <button type="button" id="step-done-cancel" onClick={() => answerStepDone(false)}>
                                 Cancel
                             </button>
                         </div>

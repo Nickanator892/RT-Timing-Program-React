@@ -222,6 +222,9 @@ const SESSION_KEYS = [
     // Timer:SharedSessions (2026-10-16): the packaging session timing here and
     // the checklist being filled in. Never set while the switch is off.
     "packSession", "packDraft",
+    // Harness Steps (2026-10-20): a shared prebuild session picked here - the
+    // harnesses its Submit writes rows on.
+    "prebuildShare",
 ];
 
 function saveSession(why) {

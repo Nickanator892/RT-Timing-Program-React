@@ -22,3 +22,9 @@
     font-size: 0.6em;
     line-height: 1;
 }
+
+/* The shared prebuild entry names every harness in its group: wrap it rather
+   than scroll the list sideways. */
+.anchored-panel.timer-mode-panel .anchored-option {
+    white-space: normal;
+}

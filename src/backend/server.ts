@@ -1633,19 +1633,22 @@ app.post("/api/build/batch", async (req, res) => {
         const buildId = Number(insert?.lastID ?? 0);
         if (!buildId) throw new Error("Failed to create build row");
         ids.push(buildId);
+        // unitDecision and stepdone (Harness Steps, 0026-harnsteps.sql) only
+        // when the unit carries one - the page asks only once it has seen the column.
+        const timeCols = ["buildId", "harnNumber", "REV", "builderId", "timeTypeId", "numberOfBuilders"];
+        const timeVals: unknown[] = [buildId, unitHarn, rev ?? null, builderId, timeTypeId, u.numberOfBuilders];
         if (u?.unitDecision === "EXTRA" || u?.unitDecision === "SPREAD") {
-          await run({
-            query: `INSERT INTO HARNBUILDTIMES
-                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
-                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-            params: [buildId, unitHarn, rev ?? null, builderId, timeTypeId, u.numberOfBuilders, u.unitDecision],
-          });
-        } else {
-          await run({
-            query: "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-            params: [buildId, unitHarn, rev ?? null, builderId, timeTypeId, u.numberOfBuilders],
-          });
+          timeCols.push("unitDecision");
+          timeVals.push(u.unitDecision);
         }
+        if (u?.stepDone === 0 || u?.stepDone === 1) {
+          timeCols.push("stepdone");
+          timeVals.push(u.stepDone);
+        }
+        await run({
+          query: `INSERT INTO HARNBUILDTIMES (${timeCols.join(", ")}) VALUES(${timeCols.map(() => "?").join(", ")})`,
+          params: timeVals,
+        });
         for (const s of Array.isArray(u?.segments) ? u.segments : []) {
           const primaryId = id(s?.builderId);
           const segment = await run({

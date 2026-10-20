@@ -572,3 +572,41 @@ hr {
     background: #1b2027;
     color: #dfe6ee;
 }
+
+/* Harness Steps (2026-10-20): "Finished this step for these units?" - one
+   tick per harness, on the extra-units card. */
+.step-done-step {
+    font-family: "Orbitron", monospace;
+    margin: 0 0 0.8em;
+}
+
+.step-done-rows {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6em;
+    margin: 0 auto 1.2em;
+    width: fit-content;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(15px, 2.2vh, 21px);
+}
+
+.step-done-row input {
+    width: 1.4em;
+    height: 1.4em;
+    margin-right: 0.6em;
+    vertical-align: middle;
+}
+
+#step-done-cancel {
+    border-color: #6b7683;
+    background: #1b2027;
+    color: #dfe6ee;
+}
+
+.shared-prebuild-note {
+    margin: 0.2em 0;
+    color: #ffd27a;
+    font-family: "RobotoMono", monospace;
+    font-size: clamp(14px, 2.2vh, 18px);
+}
