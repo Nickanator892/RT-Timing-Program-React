@@ -83,6 +83,11 @@ export interface DistributedTimeArgs {
      *  unit, in order - one unit per checked quantity, so each harness gets
      *  its quantity's share. Omitted: every unit is harnNumber, as always. */
     unitHarns?: string[];
+    /** Harness Steps (HPP docs/HARNESS-STEPS-DESIGN.md section 5): the operator's
+     *  "finished this step for these units?" answer per harness, 1 = finished,
+     *  0 = part only. Written to HARNBUILDTIMES.stepdone; a harness not listed
+     *  (every step but Prebuild and Strip & Crimp) leaves it NULL. */
+    stepDoneByHarn?: Record<string, 0 | 1>;
 }
 
 /** One unit's rows, worked out before anything is written. */
@@ -92,6 +97,8 @@ export interface DistributedUnit {
     numberOfBuilders: number;
     /** Set only on the excess units (see DistributedTimeArgs.unitDecision). */
     unitDecision: "EXTRA" | "SPREAD" | null;
+    /** HARNBUILDTIMES.stepdone; null writes no value (see stepDoneByHarn). */
+    stepDone: 0 | 1 | null;
     segments: {
         startTime: string;
         endTime: string;
@@ -168,11 +175,14 @@ export function planDistributedTimes(args: DistributedTimeArgs): DistributedUnit
                 crewIds: p.crewIds,
             });
         }
+        const harnNumber = args.unitHarns?.[k] || args.harnNumber;
+        const stepDone = args.stepDoneByHarn?.[harnNumber];
         units.push({
-            harnNumber: args.unitHarns?.[k] || args.harnNumber,
+            harnNumber,
             builderId,
             numberOfBuilders,
             unitDecision: isExcessRow ? args.unitDecision ?? null : null,
+            stepDone: stepDone === 0 || stepDone === 1 ? stepDone : null,
             segments,
             secondaryIds: secondaryBuilderIds,
         });
@@ -209,19 +219,22 @@ export async function writeDistributedTimes(args: DistributedTimeArgs): Promise<
         if (!buildId) throw new Error("Failed to create build row");
         buildIds.push(buildId);
 
+        // unitDecision and stepdone only when set, so a database without
+        // either column still takes every other unit.
+        const timeCols = ["buildId", "harnNumber", "REV", "builderId", "timeTypeId", "numberOfBuilders"];
+        const timeVals: unknown[] = [buildId, unit.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders];
         if (unit.unitDecision != null) {
-            await execQuery(
-                `INSERT INTO HARNBUILDTIMES
-                    (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders, unitDecision)
-                 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-                [buildId, unit.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders, unit.unitDecision]
-            );
-        } else {
-            await execQuery(
-                "INSERT INTO HARNBUILDTIMES (buildId, harnNumber, REV, builderId, timeTypeId, numberOfBuilders) VALUES(?, ?, ?, ?, ?, ?)",
-                [buildId, unit.harnNumber, args.rev, builderId, args.timeTypeId, numberOfBuilders]
-            );
+            timeCols.push("unitDecision");
+            timeVals.push(unit.unitDecision);
         }
+        if (unit.stepDone != null) {
+            timeCols.push("stepdone");
+            timeVals.push(unit.stepDone);
+        }
+        await execQuery(
+            `INSERT INTO HARNBUILDTIMES (${timeCols.join(", ")}) VALUES(${timeCols.map(() => "?").join(", ")})`,
+            timeVals
+        );
         for (const seg of unit.segments) {
             const primaryId = seg.builderId;
             const segment = (await execQuery(
