@@ -1204,9 +1204,12 @@ function TimingPage({
     /** Close whatever change this builder has open. Safe to call when none is.
      *  `force` writes even when this panel has no change on screen - Submit
      *  uses it so a change orphaned by a crash cannot stay open for good. */
-    async function closeBobbin(force = false) {
+    async function closeBobbin(force = false, stamp?: string) {
         if (!bobbinStart && !force) return;
-        const at = formatTimestamp(new Date().toISOString());
+        // `stamp` is the pause moment when a pause closes the change: the pause
+        // row opens with the very same text, which is how Resume recognises
+        // the pause that interrupted a change (reopenBobbinAfterPause).
+        const at = stamp ?? formatTimestamp(new Date().toISOString());
         // Restart the braid clock from the frozen value (a no-op when nothing is
         // held). Pause/End/clock-out stop it again straight after.
         window.electron.timerHold({ held: false });
@@ -1226,6 +1229,41 @@ function TimingPage({
             );
         } catch (e: any) {
             setErr(`Could not end the bobbin change: ${e?.message ?? e}`);
+        }
+    }
+
+    /** Randy, 2026-10-20: "Pausing a timer in a change bobbin task and resuming
+     *  starts the braiding timer again, not the bobbin change task." Pause closes
+     *  the open change at the pause moment, so the paused time is never bobbin
+     *  time. Resume gives the change back when that is what the pause
+     *  interrupted: a Braid run, and a change of this build and builder closed at
+     *  exactly the stamp the pause opened with. A plain pause, or an End, finds no
+     *  such row and reopens nothing. Same rule as RT-MCS FloorResume (d990499);
+     *  both write the same MSTIMERBOBBIN rows. */
+    async function reopenBobbinAfterPause(pausedAt: string) {
+        if (timerMode.id !== BRAID_MODE || bobbinStart || !currentBuildId || !currentSegmentId) return;
+        try {
+            const hit = await execWrite(
+                "SELECT 1 AS hit FROM MSTIMERBOBBIN WHERE BUILDID = ? AND BUILDERID = ? AND ENDTIME = ?",
+                [currentBuildId, selectedUser?.Id, pausedAt]
+            );
+            if (!Array.isArray(hit) || hit.length === 0) return;
+            const at = formatTimestamp(new Date().toISOString());
+            // Hold from the resume tap so the braid earns nothing while the change runs.
+            window.electron.timerHold({ held: true });
+            try {
+                await execWrite(
+                    `INSERT INTO MSTIMERBOBBIN (HARN, REV, BUILDID, BUILDERID, STATION, STARTTIME, ENDTIME)
+                     SELECT ${sqlFor("?, ?, ?, ?", "?::text, ?::integer, ?::integer, ?::integer")}, stationId, ${sqlFor("?", "?::text")}, '' FROM HARNBUILDSEGMENTS WHERE segmentId = ?`,
+                    [selectedHarn, buildKit?.REV ?? null, currentBuildId, selectedUser?.Id, at, currentSegmentId]
+                );
+                setBobbinStart(at);
+            } catch (e: any) {
+                window.electron.timerHold({ held: false, undo: true });
+                throw e;
+            }
+        } catch (e: any) {
+            setErr(`Could not resume the bobbin change: ${e?.message ?? e}`);
         }
     }
 
@@ -1318,14 +1356,15 @@ function TimingPage({
 
             if (offTheClock && isRunning && !timerDone && !autoPausedRef.current) {
                 autoPausedRef.current = true;
-                closeBobbin();
+                const pausedAt = formatTimestamp(new Date().toISOString());
+                closeBobbin(false, pausedAt);
                 window.electron.timerPause();
                 setIsRunning(false);
                 // Move the lit indicator to Pause, which is where the timer now
                 // is. Left on Start it stayed green through the whole break.
                 setActiveButton("pause");
-                setPauseStart(formatTimestamp(new Date().toISOString()));
-                setEndTime(formatTimestamp(new Date().toISOString()));
+                setPauseStart(pausedAt);
+                setEndTime(pausedAt);
                 // Preset the reason so the existing resume path writes a proper
                 // pause row without sending the operator to the reason screen.
                 if (row.reasonId) {
@@ -1570,7 +1609,10 @@ function TimingPage({
                     await insertPause();
                     // Consumed: it is on record now. Left set, a later batch
                     // Submit counted it a second time as "never resumed".
+                    const pausedAt = pauseStart;
                     setPauseStart(null);
+                    // A pause that interrupted a bobbin change resumes the change.
+                    if (!timerDone) await reopenBobbinAfterPause(pausedAt);
                 } catch (e: any) {
                     // Without this row the paused window is charged to the build
                     // as worked time. Refuse the resume rather than quietly
@@ -1701,13 +1743,14 @@ function TimingPage({
         // A crew-change roll that is out will want to restart the clock it
         // paused - the operator has stopped it on purpose (see handleBuilderChange).
         if (inFlight.roll) inFlight.stoppedDuringRoll = true;
-        closeBobbin();
+        // One stamp for the bobbin close and the pause row's start, so Resume can match them.
+        const pauseStartTime = formatTimestamp(new Date().toISOString());
+        closeBobbin(false, pauseStartTime);
         // A new pause starts with no reason: the reason page sets it. Left over
         // from the last pause, it labelled this one if the operator walked away
         // from the reason page (and survived an update restart that way too).
         _setSharedPauseReason(undefined);
         window.electron.timerPause();
-        const pauseStartTime = formatTimestamp(new Date().toISOString())
         setPauseStart(pauseStartTime);
         // Local "YYYY-MM-DD HH:mm:ss" like every other timestamp. This was the
         // one writer still emitting an ISO/UTC string, and a Submit straight
