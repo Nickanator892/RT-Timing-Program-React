@@ -1315,6 +1315,11 @@ function TimingPage({
     const CLOCK_POLL_MS = 30_000;
     const CLOCK_STALE_MS = 3 * 60_000; // poller runs every 30s; 3 min = clearly dead
     const [clockBlocked, setClockBlocked] = useState(false);
+    // Randy, 2026-11-16: the poller sat dead for 8 days (its token had
+    // expired) and nobody knew - clocking out paused nothing. Stale still
+    // never reads as clocked out, but an opted-in builder is now told that
+    // the clock link is down, so they pause the timer themselves.
+    const [clockStale, setClockStale] = useState(false);
     const autoPausedRef = useRef(false);
 
     useEffect(() => {
@@ -1339,6 +1344,7 @@ function TimingPage({
             const row = data?.result?.[0];
             if (!row || Number(row.qbAutoPause) !== 1 || !row.qbTimeUserId) {
                 setClockBlocked(false);
+                setClockStale(false);
                 return;
             }
 
@@ -1348,8 +1354,10 @@ function TimingPage({
             const polled = parseTimestamp(row.lastPollAt);
             if (!polled || Date.now() - polled.getTime() > CLOCK_STALE_MS) {
                 setClockBlocked(false);
+                setClockStale(true);
                 return;
             }
+            setClockStale(false);
 
             const offTheClock = Number(row.onTheClock) === 0;
             setClockBlocked(offTheClock);
@@ -2595,6 +2603,12 @@ function TimingPage({
                     </div>
                 </div>
 
+                {clockStale && !dbBlocked && (
+                    <p className="db-warning clock-stale">
+                        QuickBooks clock check is down - clocking out will NOT pause this timer.
+                        Pause it yourself when you leave.
+                    </p>
+                )}
                 {dbBlocked && (
                     <p className="db-warning">
                         The database cannot be written to right now. Time started here would not be
