@@ -114,6 +114,20 @@ export interface DistributedUnit {
  * The rows writeDistributedTimes writes, unit by unit, without writing them.
  * Pure, so the same plan goes to either engine.
  */
+/**
+ * How many of `units` about to be submitted are past what the order still
+ * needs for this step: `total` is the order quantity (QTY x ALTQTY), `done` the
+ * finished units the step already has on the run (SPREAD rows left out). 0 when
+ * there is no order quantity to be over. RT-MCS FloorTimer.SubmitCore:
+ * `excess = Math.Max(0, units - Math.Max(0, total - built))`. Both the
+ * extra-units question (asked when this is above 0) and the count of trailing
+ * units that carry the answer (excessUnits) come from here.
+ */
+export function unitsPastOrder(units: number, total: number, done: number): number {
+    if (!(total > 0)) return 0;
+    return Math.max(0, units - Math.max(0, total - done));
+}
+
 export function planDistributedTimes(args: DistributedTimeArgs): DistributedUnit[] {
     const units: DistributedUnit[] = [];
     const sliceMs = (args.endMs - args.startMs) / args.units;
