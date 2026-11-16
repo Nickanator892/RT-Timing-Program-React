@@ -425,20 +425,26 @@ hr {
    the state belongs on Pause - where the clock is - rather than on a green
    Start button (Randy, 2026-09-11).
 
-   Slow on purpose. This can sit on screen for a whole lunch break, and the
-   0.25s flash the pressed states use is punishing to sit beside; the second
-   operator badge settled on the same ~1Hz for the same reason. !important
-   because the button is disabled while it shows, and the disabled rule would
-   otherwise win. */
+   Randy, 2026-11-03: pink, in a quick-quick-quick-slow pattern, so it cannot
+   be mistaken for any other flashing state on the panel. One 2.4s cycle:
+   three short flashes, then one long one. Same pattern as the RT-MCS phone
+   timer's Clocked Out button. !important because the button is disabled
+   while it shows, and the disabled rule would otherwise win. */
 #pause-button.clocked-out {
-    animation: clockedOutFlash 1.2s ease-in-out infinite !important;
-    border: 3px solid #ffd34d;
+    animation: clockedOutFlash 2.4s step-end infinite !important;
+    border: 3px solid #ff5fb4;
 }
 
 @keyframes clockedOutFlash {
-    0%   { background-color: #3a3320; color: #ffd34d; }
-    50%  { background-color: #ffd34d; color: #1a1a1a; }
-    100% { background-color: #3a3320; color: #ffd34d; }
+    0%   { background-color: #ff5fb4; color: #1a1a1a; }
+    8%   { background-color: #3a1830; color: #ff5fb4; }
+    16%  { background-color: #ff5fb4; color: #1a1a1a; }
+    24%  { background-color: #3a1830; color: #ff5fb4; }
+    32%  { background-color: #ff5fb4; color: #1a1a1a; }
+    40%  { background-color: #3a1830; color: #ff5fb4; }
+    52%  { background-color: #ff5fb4; color: #1a1a1a; }
+    85%  { background-color: #3a1830; color: #ff5fb4; }
+    100% { background-color: #3a1830; color: #ff5fb4; }
 }
 
 /* A disabled button is normally dimmed; this one is an indicator and has to
@@ -450,7 +456,7 @@ hr {
 @media (prefers-reduced-motion: reduce) {
     #pause-button.clocked-out {
         animation: none !important;
-        background-color: #ffd34d;
+        background-color: #ff5fb4;
         color: #1a1a1a;
     }
 }
