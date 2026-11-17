@@ -18,7 +18,7 @@ import type { PauseReason } from "../../assets/types/pauseReasonType";
 import type { User } from "../../assets/types/UserType";
 import { useSyncedTimer } from "../../hooks/useSyncedTimer";
 import RTLogo from "../../components/RTLogo/RTLogo";
-import { writeDistributedTimes, parseTimestamp } from "../../assets/timeDistribution";
+import { writeDistributedTimes, parseTimestamp, unitsPastOrder } from "../../assets/timeDistribution";
 import {
     describeBlockingTime,
     describeHeld,
@@ -42,7 +42,7 @@ import { carryoverBridge } from "../../common/carryoverLock/carryoverLock";
 import { sqlFor } from "../../assets/dbEngine";
 import { timerFeatures, useTimerFeatures } from "../../hooks/useTimerFeatures";
 import { PACKAGING_MODE, timerModes } from "../../common/timerModeDropdown/timerModeDropdown";
-import { PREBUILD_MODE, STEP_DONE_MODES, type PrebuildShare } from "../../hooks/useHarnSteps";
+import { COUNTED_STEP_MODES, PREBUILD_MODE, STEP_DONE_MODES, type PrebuildShare } from "../../hooks/useHarnSteps";
 import PackagingSession, {
     expandPackUnits,
     readPackOfBuild,
@@ -1818,21 +1818,21 @@ function TimingPage({
     }
 
     type UnitDecision = "EXTRA" | "SPREAD";
-    const [extraUnitsPrompt, setExtraUnitsPrompt] = useState<{
+    type ExtraUnitsArgs = {
         qty: number;
         remaining: number;
         units: number;
         harn: string;
-        resolve: (choice: UnitDecision | "CANCEL") => void;
-    } | null>(null);
+        /** Overmold / Prebuild / Strip & Crimp: the step's name and the units it
+         *  already has on the run. Absent for Build. */
+        step?: { name: string; done: number };
+    };
+    const [extraUnitsPrompt, setExtraUnitsPrompt] = useState<
+        (ExtraUnitsArgs & { resolve: (choice: UnitDecision | "CANCEL") => void }) | null
+    >(null);
 
     /** Resolves once the operator picks a button on the extra-units dialog. */
-    function askExtraUnitsQuestion(args: {
-        qty: number;
-        remaining: number;
-        units: number;
-        harn: string;
-    }): Promise<UnitDecision | "CANCEL"> {
+    function askExtraUnitsQuestion(args: ExtraUnitsArgs): Promise<UnitDecision | "CANCEL"> {
         return new Promise((resolve) => setExtraUnitsPrompt({ ...args, resolve }));
     }
 
@@ -1841,17 +1841,49 @@ function TimingPage({
         setExtraUnitsPrompt(null);
     }
 
-    /** Ask, if this submit (Build mode, `units` of them) would run past what
-     *  the schedule has left. Returns null when the question does not apply
-     *  (wrong mode, no schedule data yet, column missing, or units fit) - the
-     *  caller writes no flag at all in that case, same as before this
-     *  feature existed. */
-    async function maybeAskExtraUnits(units: number): Promise<UnitDecision | null | "CANCEL"> {
-        if (timerMode.id !== 1 || unitsTotal <= 0 || unitsBuilt === null) return null;
-        const remaining = unitsTotal - unitsBuilt;
-        if (units <= remaining) return null;
+    /** The units this step already has on the run, for the extra-units question.
+     *  Build: the "Harness x of y" count. Overmold / Prebuild / Strip & Crimp
+     *  (Randy 2026-11-16): finished rows of THAT step on this harness and REV,
+     *  SPREAD rows left out - countOnRev, the same count as RT-MCS's
+     *  FloorUnitsOn(..., mode). `fresh` re-reads Build's count too (the dialog
+     *  can stay open while someone else finishes units). Null = unknown. */
+    async function unitsDoneOnStep(fresh: boolean): Promise<number | null> {
+        if (timerMode.id === 1) {
+            if (!fresh || kitRev == null) return unitsBuilt;
+            try {
+                const progress = await fetchHarnProgress(kitRev, jobKitId);
+                return progress.get(selectedHarn)?.built ?? unitsBuilt;
+            } catch {
+                return unitsBuilt;
+            }
+        }
+        const rev = await kitRevNow();
+        if (rev == null) return null;
+        return countOnRev(selectedHarn, timerMode.id, rev).catch(() => null);
+    }
+
+    /** Ask, if this submit (`units` of them, on Build or one of its counted
+     *  sub-steps) would run past what the order has left for that step.
+     *  `severalHarns`: a shared prebuild or packaging session - its units land
+     *  on several harnesses, so there is no one harness to be over and the
+     *  question is never asked (RT-MCS SubmitCore: `unitHarns == null`).
+     *  Returns null when the question does not apply (wrong mode, no schedule
+     *  data yet, column missing, or units fit) - the caller writes no flag at
+     *  all in that case, same as before this feature existed. */
+    async function maybeAskExtraUnits(units: number, severalHarns = false): Promise<UnitDecision | null | "CANCEL"> {
+        if (!COUNTED_STEP_MODES.includes(timerMode.id) || severalHarns || unitsTotal <= 0) return null;
+        const done = await unitsDoneOnStep(false);
+        if (done === null) return null;
+        const remaining = unitsTotal - done;
+        if (unitsPastOrder(units, unitsTotal, done) === 0) return null;
         if (!(await columnSupportsUnitDecision())) return null;
-        return askExtraUnitsQuestion({ qty: unitsTotal, remaining, units, harn: selectedHarn });
+        return askExtraUnitsQuestion({
+            qty: unitsTotal,
+            remaining,
+            units,
+            harn: selectedHarn,
+            step: timerMode.id === 1 ? undefined : { name: modeName(timerMode.id), done },
+        });
     }
 
     // --- "Finished this step for these units?" (Harness Steps) -----------
@@ -1945,12 +1977,13 @@ function TimingPage({
         // Extra-units question - BEFORE anything is written (setDbSuccess
         // below is just a label). A Cancel here must leave every row, the
         // clock and the live build exactly as they were.
-        const decision = await maybeAskExtraUnits(units);
+        const decision = await maybeAskExtraUnits(units, !!unitHarns?.length);
         if (decision === "CANCEL") {
             setDbSuccess("Submit");
             return;
         }
         // Same rule: asked before anything is written, Cancel leaves it all.
+        // Asked AFTER the extra-units question, like the RT-MCS phone.
         const stepDone = await maybeAskStepDone(unitHarns?.length ? unitHarns : Array<string>(units).fill(selectedHarn));
         if (stepDone === "CANCEL") {
             setDbSuccess("Submit");
@@ -2091,20 +2124,14 @@ function TimingPage({
             // 0, excessUnits comes out 0 and writeDistributedTimes flags
             // nothing (isExcessRow is never true for excessUnits === 0) -
             // nothing is excess, so no flag is silently wrong either way.
-            let freshUnitsBuilt = unitsBuilt;
-            if (decision && kitRev != null) {
-                try {
-                    const freshProgress = await fetchHarnProgress(kitRev, jobKitId);
-                    freshUnitsBuilt = freshProgress.get(selectedHarn)?.built ?? unitsBuilt;
-                } catch {
-                    // Could not re-fetch - fall back to the value already on
-                    // screen rather than aborting a batch whose time is real.
-                }
-            }
+            // Overmold / Prebuild / Strip & Crimp re-count that step's own
+            // rows (unitsDoneOnStep). A count that cannot be re-read falls
+            // back to the one on screen (Build) or 0 rather than aborting a
+            // batch whose time is real.
+            const freshUnitsBuilt = decision ? await unitsDoneOnStep(true) : unitsBuilt;
             // The decision applies only to the EXCESS units - the ones past
             // what was actually still owed (item 4's rule).
-            const remainingForExcess = unitsTotal - (freshUnitsBuilt ?? 0);
-            const excessUnits = decision ? Math.max(0, units - Math.max(remainingForExcess, 0)) : 0;
+            const excessUnits = decision ? unitsPastOrder(units, unitsTotal, freshUnitsBuilt ?? 0) : 0;
             const buildIds = await writeDistributedTimes({
                 harnNumber: unitHarns?.[0] ?? selectedHarn,
                 unitHarns,
@@ -2734,6 +2761,28 @@ function TimingPage({
             )}
             {extraUnitsPrompt && (
                 <div className="extra-units-backdrop" role="dialog" aria-modal="true" aria-label="Extra units">
+                    {extraUnitsPrompt.step ? (
+                    // Overmold / Prebuild / Strip & Crimp - the RT-MCS phone's
+                    // wording (FloorTimer.cs submitSheet, Randy 2026-11-16).
+                    <div className="extra-units-card">
+                        <p className="extra-units-body">
+                            <strong>{extraUnitsPrompt.step.name}: more than the order needs?</strong>
+                            <br />
+                            {`${extraUnitsPrompt.harn} already has ${extraUnitsPrompt.step.done} of ${extraUnitsPrompt.qty} unit(s) of ${extraUnitsPrompt.step.name} - this submits ${extraUnitsPrompt.units}.`}
+                        </p>
+                        <div className="extra-units-buttons">
+                            <button type="button" id="extra-units-spread" onClick={() => answerExtraUnits("SPREAD")}>
+                                Within the {extraUnitsPrompt.qty} - more time on the same harnesses
+                            </button>
+                            <button type="button" id="extra-units-extra" onClick={() => answerExtraUnits("EXTRA")}>
+                                Additional harnesses past the {extraUnitsPrompt.qty}
+                            </button>
+                            <button type="button" id="extra-units-cancel" onClick={() => answerExtraUnits("CANCEL")}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                    ) : (
                     <div className="extra-units-card">
                         <p className="extra-units-body">
                             {extraUnitsPrompt.remaining <= 0
@@ -2752,6 +2801,7 @@ function TimingPage({
                             </button>
                         </div>
                     </div>
+                    )}
                 </div>
             )}
         </div>

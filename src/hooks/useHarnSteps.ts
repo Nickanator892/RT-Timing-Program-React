@@ -18,6 +18,13 @@ export const PREBUILD_MODE = 6;
 export const STRIP_CRIMP_MODE = 7;
 /** Steps whose Submit asks "finished this step for these units?" (design answer D). */
 export const STEP_DONE_MODES = [PREBUILD_MODE, STRIP_CRIMP_MODE];
+export const OVERMOLD_MODE = 5;
+/** Steps done once per harness whose Submit asks "more than the order needs?" -
+ *  Build and its sub-steps Overmold, Prebuild, Strip & Crimp. RT-MCS's
+ *  FloorTimer.CountedStep (Randy 2026-11-16: "If we are building 14 harnesses and
+ *  there are already 14 accounted for in previous prebuild sessions ask if these
+ *  are additional to the planned 14 or contained within the 14"). */
+export const COUNTED_STEP_MODES = [1, OVERMOLD_MODE, PREBUILD_MODE, STRIP_CRIMP_MODE];
 
 export interface HarnSteps {
     /** Required time type ids, in shop order. Empty = none recorded. */
